@@ -1,11 +1,21 @@
 use super::design;
-use super::widgets::{self, slider};
+use super::widgets;
 use crate::ui::scrolling::scrollable;
-use iced::widget::{column, row};
+use iced::widget::column;
 use iced::{Element, Fill};
 
-use crate::config::{Settings, CHECK_INTERVAL_MAX_MS, CHECK_INTERVAL_MIN_MS};
+use crate::config::{InputDetectionSettings, Settings};
 use crate::power::PowerPlan;
+
+const IDLE_TIMEOUT_RANGE: std::ops::RangeInclusive<u32> = 1..=3600;
+
+fn parse_idle_timeout(value: &str) -> Option<u64> {
+    value
+        .parse::<u32>()
+        .ok()
+        .filter(|value| IDLE_TIMEOUT_RANGE.contains(value))
+        .map(u64::from)
+}
 
 #[derive(Debug, Clone)]
 pub(super) enum Message {
@@ -14,141 +24,102 @@ pub(super) enum Message {
     Mouse(bool),
     Controller(bool),
     IdleTimeout(String),
-    CheckInterval(String),
     IdlePlan(Option<String>),
     ActivePlan(Option<String>),
 }
 
+fn input_change(
+    current: &InputDetectionSettings,
+    message: &Message,
+) -> Option<InputDetectionSettings> {
+    let mut changed = current.clone();
+    match *message {
+        Message::Keyboard(value) => changed.keyboard = value,
+        Message::Mouse(value) => changed.mouse = value,
+        Message::Controller(value) => changed.controller = value,
+        _ => return None,
+    }
+    changed.any_enabled().then_some(changed)
+}
+
 pub(super) fn update(settings: &mut crate::application::SettingsEditor, message: Message) {
-    let input_changed = matches!(
-        message,
-        Message::Keyboard(_) | Message::Mouse(_) | Message::Controller(_)
-    );
     let activity = &mut settings.by_activity;
     match message {
         Message::Enabled(value) => activity.enabled = value,
-        Message::Keyboard(value) => {
-            if value || activity.input_detection.mouse || activity.input_detection.controller {
-                activity.input_detection.keyboard = value;
+        Message::Keyboard(_) | Message::Mouse(_) | Message::Controller(_) => {
+            if let Some(changed) = input_change(&activity.input_detection, &message) {
+                activity.input_detection = changed;
             }
-        }
-        Message::Mouse(value) => {
-            if value || activity.input_detection.keyboard || activity.input_detection.controller {
-                activity.input_detection.mouse = value;
-            }
-        }
-        Message::Controller(value) => {
-            if value || activity.input_detection.keyboard || activity.input_detection.mouse {
-                activity.input_detection.controller = value;
-            }
+            activity.switch_to_performance_on_resume = activity.input_detection.any_enabled();
         }
         Message::IdleTimeout(value) => {
-            if let Ok(value) = value.parse::<u64>() {
-                if (1..=3600).contains(&value) {
-                    activity.idle_timeout_seconds = value;
-                }
-            }
-        }
-        Message::CheckInterval(value) => {
-            if let Ok(value) = value.parse::<u64>() {
-                if (CHECK_INTERVAL_MIN_MS..=CHECK_INTERVAL_MAX_MS).contains(&value) {
-                    settings.edit_global(|settings| settings.general.check_interval_ms = value);
-                }
+            if let Some(timeout) = parse_idle_timeout(&value) {
+                activity.idle_timeout_seconds = timeout;
             }
         }
         Message::IdlePlan(guid) => activity.power_plans.power_save_guid = guid,
         Message::ActivePlan(guid) => activity.power_plans.performance_guid = guid,
-    }
-    if input_changed {
-        settings.by_activity.switch_to_performance_on_resume =
-            settings.by_activity.input_detection.any_enabled();
     }
 }
 
 #[derive(Default)]
 pub(super) struct Inputs {
     idle: Option<String>,
-    interval: Option<String>,
 }
 
 impl Inputs {
     pub(super) fn edit(&mut self, message: &Message) {
-        match message {
-            Message::IdleTimeout(value) => self.idle = Some(value.clone()),
-            Message::CheckInterval(value) => self.interval = Some(value.clone()),
-            _ => {}
+        if let Message::IdleTimeout(value) = message {
+            self.idle = Some(value.clone());
         }
     }
 
     pub(super) fn valid(&self) -> bool {
-        self.idle.as_ref().is_none_or(|value| {
-            value
-                .parse::<u64>()
-                .is_ok_and(|value| (1..=3600).contains(&value))
-        }) && self.interval.as_ref().is_none_or(|value| {
-            value
-                .parse::<u64>()
-                .is_ok_and(|value| (CHECK_INTERVAL_MIN_MS..=CHECK_INTERVAL_MAX_MS).contains(&value))
-        })
+        self.idle
+            .as_deref()
+            .is_none_or(|value| parse_idle_timeout(value).is_some())
     }
 }
 
 pub(super) fn view<'a>(
     settings: &'a Settings,
     plans: &[PowerPlan],
-    inputs: &Inputs,
+    inputs: &'a Inputs,
 ) -> Element<'a, Message> {
     let activity = &settings.by_activity;
-    let plan_picker = |guid: &Option<String>, action: fn(Option<String>) -> Message| {
-        super::widgets::plan(guid.as_deref(), plans, action)
+    let plan_row = |key: &str, guid: Option<&str>, action: fn(Option<String>) -> Message| {
+        widgets::setting_row(
+            key,
+            iced::widget::container(widgets::plan(guid, plans, action)).width(design::SELECT_WIDTH),
+        )
     };
-    let flag = |key: &str, value, action: fn(bool) -> Message| {
-        widgets::setting_row(key, widgets::switch(value, Some(action)))
-    };
-    let number = |key: &str,
-                  value: String,
-                  range: std::ops::RangeInclusive<u64>,
-                  step: u64,
-                  unit: &str,
-                  action: fn(String) -> Message| {
-        column![
-            widgets::setting_title_with_unit(key, unit),
-            row![
-                slider(
-                    *range.start() as u32..=*range.end() as u32,
-                    value.parse::<u32>().unwrap_or(*range.start() as u32),
-                    move |v| action(v.to_string())
-                )
-                .step(step as u32)
-                .width(Fill),
-                widgets::stepper(&value, range, step, Some(action))
-            ]
-            .spacing(design::space::SMALL)
-            .align_y(iced::Center),
-        ]
-        .spacing(design::space::SMALL)
-        .into()
+    let flag = |key: &str, value: bool, action: fn(bool) -> Message| {
+        let available = input_change(&activity.input_detection, &action(!value)).is_some();
+        widgets::setting_row(key, widgets::switch(value, available.then_some(action)))
     };
     let power_plans = widgets::settings_rows([
-        widgets::setting_row(
+        plan_row(
             "by_activity.idle_plan",
-            iced::widget::container(plan_picker(
-                &activity.power_plans.power_save_guid,
-                Message::IdlePlan,
-            ))
-            .width(design::SELECT_WIDTH),
+            activity.power_plans.power_save_guid.as_deref(),
+            Message::IdlePlan,
         )
         .into(),
-        widgets::setting_row(
+        plan_row(
             "by_activity.active_plan",
-            iced::widget::container(plan_picker(
-                &activity.power_plans.performance_guid,
-                Message::ActivePlan,
-            ))
-            .width(design::SELECT_WIDTH),
+            activity.power_plans.performance_guid.as_deref(),
+            Message::ActivePlan,
         )
         .into(),
     ]);
+    let idle_timeout = widgets::slider_setting("by_activity.idle_timeout", "s", move || {
+        widgets::slider_stepper(
+            activity.idle_timeout_seconds,
+            inputs.idle.as_deref(),
+            IDLE_TIMEOUT_RANGE,
+            1,
+            Message::IdleTimeout,
+        )
+    });
     scrollable(
         column![
             widgets::toggle_card(
@@ -156,63 +127,34 @@ pub(super) fn view<'a>(
                 activity.enabled,
                 Some(Message::Enabled)
             ),
-            widgets::heading(
-                rust_i18n::t!("by_activity.power_plans").to_string(),
-                design::typography::BODY
+            widgets::settings_section(
+                "by_activity.power_plans",
+                widgets::settings_card(power_plans),
             ),
-            widgets::settings_card(power_plans),
-            widgets::heading(
-                rust_i18n::t!("by_activity.input_detection").to_string(),
-                design::typography::BODY
+            widgets::settings_section(
+                "by_activity.input_detection",
+                widgets::settings_card(widgets::settings_rows([
+                    flag(
+                        "by_activity.keyboard_input",
+                        activity.input_detection.keyboard,
+                        Message::Keyboard,
+                    )
+                    .into(),
+                    flag(
+                        "by_activity.mouse_input",
+                        activity.input_detection.mouse,
+                        Message::Mouse,
+                    )
+                    .into(),
+                    flag(
+                        "by_activity.controller_input",
+                        activity.input_detection.controller,
+                        Message::Controller,
+                    )
+                    .into(),
+                    idle_timeout,
+                ])),
             ),
-            widgets::settings_card(widgets::settings_rows([
-                flag(
-                    "by_activity.keyboard_input",
-                    activity.input_detection.keyboard,
-                    Message::Keyboard
-                )
-                .into(),
-                flag(
-                    "by_activity.mouse_input",
-                    activity.input_detection.mouse,
-                    Message::Mouse
-                )
-                .into(),
-                flag(
-                    "by_activity.controller_input",
-                    activity.input_detection.controller,
-                    Message::Controller
-                )
-                .into(),
-            ])),
-            widgets::heading(
-                rust_i18n::t!("by_activity.timing").to_string(),
-                design::typography::BODY
-            ),
-            widgets::settings_card(widgets::settings_rows([
-                number(
-                    "by_activity.idle_timeout",
-                    inputs
-                        .idle
-                        .clone()
-                        .unwrap_or_else(|| activity.idle_timeout_seconds.to_string()),
-                    1..=3600,
-                    1,
-                    "s",
-                    Message::IdleTimeout
-                ),
-                number(
-                    "by_activity.check_interval",
-                    inputs
-                        .interval
-                        .clone()
-                        .unwrap_or_else(|| settings.general.check_interval_ms.to_string()),
-                    CHECK_INTERVAL_MIN_MS..=CHECK_INTERVAL_MAX_MS,
-                    250,
-                    "ms",
-                    Message::CheckInterval
-                ),
-            ])),
         ]
         .spacing(widgets::CARD_GAP),
     )
@@ -225,36 +167,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn battery_interval_messages_edit_shared_settings_without_flattening_policies() {
-        for existing_battery in [false, true] {
-            let mut initial = Settings::default();
-            initial.by_activity.idle_timeout_seconds = 60;
-            if existing_battery {
-                initial
-                    .battery_profile_mut()
-                    .by_activity
-                    .idle_timeout_seconds = 120;
-            }
-            let mut settings = crate::application::SettingsEditor::with_settings(initial.clone());
-            settings.select_power_source(crate::config::PowerSourceProfile::OnBattery);
-            update(&mut settings, Message::CheckInterval("1234".into()));
-            assert_eq!(settings.global().general.check_interval_ms, 1234);
-            assert_eq!(settings.general.check_interval_ms, 1234);
-            assert_eq!(settings.global().by_activity.idle_timeout_seconds, 60);
+    fn idle_timeout_draft_applies_to_the_selected_power_profile() {
+        let mut initial = Settings::default();
+        initial.by_activity.idle_timeout_seconds = 60;
+        initial
+            .battery_profile_mut()
+            .by_activity
+            .idle_timeout_seconds = 120;
+        let mut settings = crate::application::SettingsEditor::with_settings(initial.clone());
+        settings.select_power_source(crate::config::PowerSourceProfile::OnBattery);
+        let mut inputs = Inputs::default();
+        for (draft, valid) in [("0", false), ("180", true)] {
+            let message = Message::IdleTimeout(draft.into());
+            inputs.edit(&message);
+            update(&mut settings, message);
+            assert_eq!(inputs.valid(), valid);
             assert_eq!(
                 settings.by_activity.idle_timeout_seconds,
-                if existing_battery { 120 } else { 60 }
+                if valid { 180 } else { 120 }
             );
-            for invalid in ["", "0", "invalid", "18446744073709551615"] {
-                update(&mut settings, Message::CheckInterval(invalid.into()));
-                assert_eq!(settings.global().general.check_interval_ms, 1234);
-            }
-            update(&mut settings, Message::IdleTimeout("180".into()));
-            assert_eq!(settings.by_activity.idle_timeout_seconds, 180);
             assert_eq!(settings.global().by_activity.idle_timeout_seconds, 60);
-            settings.cancel();
-            assert_eq!(settings.global(), &initial);
         }
+        settings.cancel();
+        assert_eq!(settings.global(), &initial);
     }
 
     #[test]
@@ -275,13 +210,56 @@ mod tests {
             settings.by_activity.power_plans.performance_guid.as_deref(),
             Some("active")
         );
-        let interval = settings.general.check_interval_ms;
-        update(&mut settings, Message::CheckInterval("0".into()));
-        assert_eq!(settings.general.check_interval_ms, interval);
-        let mut inputs = Inputs::default();
-        inputs.edit(&Message::CheckInterval(String::new()));
-        assert!(!inputs.valid());
-        inputs.edit(&Message::CheckInterval("250".into()));
-        assert!(inputs.valid());
+    }
+
+    #[test]
+    fn only_the_last_selected_input_is_unavailable_to_toggle() {
+        use iced::advanced::{
+            layout,
+            widget::{operation::Focusable, Id, Operation, Tree},
+            Layout,
+        };
+        use iced::{Rectangle, Size};
+
+        #[derive(Default)]
+        struct FocusableCount(usize);
+        impl Operation for FocusableCount {
+            fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn Operation)) {
+                visit(self);
+            }
+
+            fn focusable(&mut self, _: Option<&Id>, _: Rectangle, _: &mut dyn Focusable) {
+                self.0 += 1;
+            }
+        }
+
+        let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        let limits = layout::Limits::new(Size::ZERO, Size::new(466.0, 320.0));
+        let inputs = Inputs::default();
+        let count_focusable = |[keyboard, mouse, controller]: [bool; 3]| {
+            let mut settings = Settings::default();
+            settings.by_activity.input_detection = InputDetectionSettings {
+                keyboard,
+                mouse,
+                controller,
+            };
+            let mut view = view(&settings, &[], &inputs);
+            let mut tree = Tree::new(&view);
+            let node = view.as_widget_mut().layout(&mut tree, &renderer, &limits);
+            let mut count = FocusableCount::default();
+            view.as_widget_mut()
+                .operate(&mut tree, Layout::new(&node), &renderer, &mut count);
+            count.0
+        };
+        let all_available = count_focusable([true, true, true]);
+        for selected in [
+            [true, false, false],
+            [false, true, false],
+            [false, false, true],
+        ] {
+            assert_eq!(count_focusable(selected) + 1, all_available);
+        }
+        assert_eq!(count_focusable([true, false, true]), all_available);
+        assert_eq!(count_focusable([false, false, false]), all_available);
     }
 }

@@ -1,20 +1,101 @@
+use super::cpu_allocation::{self, Kind, SelectionCatalog};
 use super::design;
-use super::widgets::{action_button, checkbox, icon_button, pick_list, slider, text_input};
+use super::feature_tabs::{self, FeatureTab};
+use super::widgets::{self, checkbox, numeric_input, pick_list, slider};
 use crate::ui::scrolling::scrollable;
-use iced::widget::{column, row, text};
+use iced::widget::{column, row, text, Column, Row};
 use iced::{Element, Fill};
 use rust_i18n::t;
 use std::collections::HashMap;
+use std::ops::{Deref, DerefMut};
 
-use crate::config::{CpuLimiterRule, CpuLimiterSettings, ProcessRuleMode};
-use crate::ui::process_rules::{can_add_cpu_limiter_process, new_cpu_limiter_rule};
+use crate::application::SettingsEditor;
+use crate::config::{
+    CpuAllocationPreset, CpuLimiterAffinityLimit, CpuLimiterRule, CpuLimiterSettings,
+    ProcessRuleMode,
+};
+use crate::control::cpu_limiter::CpuLimiterActivation;
+use crate::cpu_topology::CpuSelection;
+use crate::features::cpu_control::cpu_limiter::{CpuLimiterAffinityStatus, CpuLimiterSnapshot};
+use crate::ui::process_rules::{
+    can_add_cpu_limiter_process, exact_path_input, new_cpu_limiter_rule, picked_path_input,
+};
+
+pub(super) const CHOOSE_PROCESSORS_ID: &str = "cpu-limiter-choose-processors";
 
 #[derive(Default)]
 pub(super) struct CpuLimiter {
     path: String,
-    expanded: bool,
     draft: Option<(usize, CpuLimiterSettings)>,
     numbers: HashMap<(String, Tier), String>,
+    affinity: Option<AffinityEditor>,
+}
+
+struct AffinityEditor {
+    catalog: SelectionCatalog,
+    trigger: String,
+    sustain: String,
+    selection: Option<CpuSelection>,
+}
+
+impl AffinityEditor {
+    fn new(limit: &CpuLimiterAffinityLimit) -> Self {
+        Self {
+            catalog: SelectionCatalog::capture(Kind::Hard),
+            trigger: limit.trigger_percent.to_string(),
+            sustain: limit.sustain_seconds.to_string(),
+            selection: None,
+        }
+    }
+
+    fn values(&self) -> Option<(u8, u64)> {
+        let trigger = self.trigger.parse().ok()?;
+        let sustain = self.sustain.parse().ok()?;
+        (CpuLimiterAffinityLimit::TRIGGER_RANGE.contains(&trigger)
+            && CpuLimiterAffinityLimit::SUSTAIN_RANGE.contains(&sustain))
+        .then_some((trigger, sustain))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Method {
+    CpuTime,
+    Affinity,
+}
+
+impl Method {
+    fn of(rule: &CpuLimiterRule) -> Self {
+        if rule.affinity_limit.is_some() {
+            Self::Affinity
+        } else {
+            Self::CpuTime
+        }
+    }
+}
+
+impl std::fmt::Display for Method {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&t!(match self {
+            Self::CpuTime => "cpu_limiter.cpu_time",
+            Self::Affinity => "cpu_limiter.load_triggered_affinity",
+        }))
+    }
+}
+
+struct SelectedLimiter<'a>(&'a mut SettingsEditor);
+
+impl Deref for SelectedLimiter<'_> {
+    type Target = CpuLimiterSettings;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0.cpu_limiter
+    }
+}
+
+impl DerefMut for SelectedLimiter<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0.cpu_limiter
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -34,8 +115,26 @@ impl Tier {
             Self::Background => "cpu_limiter.background_allowed_cpu_time",
         }
     }
-    fn label(self) -> String {
-        t!(self.key()).to_string()
+    fn default_limit(self, settings: &CpuLimiterSettings) -> u8 {
+        match self {
+            Self::Focus => settings.focus_allowed_cpu_time_percent,
+            Self::VisibleWindow => settings.visible_window_allowed_cpu_time_percent,
+            Self::Background => settings.background_allowed_cpu_time_percent,
+        }
+    }
+
+    pub(super) fn rule_values(self, rule: &CpuLimiterRule) -> (ProcessRuleMode, u8) {
+        match self {
+            Self::Focus => (rule.focus_mode, rule.focus_allowed_cpu_time_percent),
+            Self::VisibleWindow => (
+                rule.visible_window_mode,
+                rule.visible_window_allowed_cpu_time_percent,
+            ),
+            Self::Background => (
+                rule.background_mode,
+                rule.background_allowed_cpu_time_percent,
+            ),
+        }
     }
 
     fn rule_fields(self, rule: &mut CpuLimiterRule) -> (&mut ProcessRuleMode, &mut u8) {
@@ -62,10 +161,16 @@ pub(super) enum Message {
     Path(String),
     Browse,
     Number(Option<usize>, Tier, String),
-    Collapse,
     Edit(usize),
     SaveRule,
     CancelRule,
+    Method(Method),
+    AffinityTrigger(String),
+    AffinitySustain(String),
+    ChooseProcessors,
+    AffinitySelection(CpuSelection),
+    CancelProcessorSelection,
+    ConfirmProcessorSelection,
     Add,
     Default(Tier, u8),
     RuleEnabled(usize, bool),
@@ -79,10 +184,31 @@ impl CpuLimiter {
         self.draft.is_some()
     }
 
-    pub(super) fn update(&mut self, settings: &mut CpuLimiterSettings, message: Message) {
+    pub(super) fn dismiss_message(&self) -> Message {
+        if self
+            .affinity
+            .as_ref()
+            .is_some_and(|editor| editor.selection.is_some())
+        {
+            Message::CancelProcessorSelection
+        } else {
+            Message::CancelRule
+        }
+    }
+
+    pub(super) fn update_profile(&mut self, settings: &mut SettingsEditor, message: Message) {
+        self.update(SelectedLimiter(settings), message);
+    }
+
+    pub(super) fn update(
+        &mut self,
+        mut settings: impl DerefMut<Target = CpuLimiterSettings>,
+        message: Message,
+    ) {
         match message {
             Message::Edit(index) => {
-                if settings.rules.get(index).is_some() {
+                if let Some(rule) = settings.rules.get(index) {
+                    self.affinity = rule.affinity_limit.as_ref().map(AffinityEditor::new);
                     self.draft = Some((index, settings.clone()));
                 }
                 return;
@@ -92,15 +218,108 @@ impl CpuLimiter {
                     let path = &draft.rules[index].executable_path;
                     self.numbers.retain(|(p, _), _| p != path);
                 }
+                self.affinity = None;
                 return;
             }
             Message::SaveRule => {
-                if self.has_invalid_inputs() {
+                let Some((index, draft)) = &self.draft else {
+                    return;
+                };
+                let mut edited = draft.rules[*index].clone();
+                if let Some(limit) = &mut edited.affinity_limit {
+                    let Some(editor) = &mut self.affinity else {
+                        return;
+                    };
+                    if editor.selection.is_some() {
+                        return;
+                    }
+                    let Some((trigger, sustain)) = editor.values() else {
+                        return;
+                    };
+                    limit.trigger_percent = trigger;
+                    limit.sustain_seconds = sustain;
+                    if !limit.is_valid() {
+                        return;
+                    }
+                    editor.catalog = SelectionCatalog::capture(Kind::Hard);
+                    if editor.catalog.error(&limit.selection).is_some() {
+                        return;
+                    }
+                } else if self.has_invalid_inputs_for(Some(&edited.executable_path)) {
                     return;
                 }
-                if let Some((index, draft)) = self.draft.take() {
-                    if let Some(rule) = settings.rules.get_mut(index) {
-                        *rule = draft.rules[index].clone();
+                if settings
+                    .rules
+                    .get(*index)
+                    .is_some_and(|rule| rule != &edited)
+                {
+                    settings.rules[*index] = edited;
+                }
+                self.draft = None;
+                self.affinity = None;
+                return;
+            }
+            Message::Method(method) => {
+                if let Some((index, draft)) = &mut self.draft {
+                    let rule = &mut draft.rules[*index];
+                    if method != Method::of(rule) {
+                        self.numbers
+                            .retain(|(path, _), _| path != &rule.executable_path);
+                        rule.affinity_limit =
+                            (method == Method::Affinity).then(CpuLimiterAffinityLimit::default);
+                        self.affinity = rule.affinity_limit.as_ref().map(AffinityEditor::new);
+                    }
+                }
+                return;
+            }
+            Message::AffinityTrigger(raw) => {
+                if let Some(affinity) = &mut self.affinity {
+                    affinity.trigger = raw;
+                }
+                return;
+            }
+            Message::AffinitySustain(raw) => {
+                if let Some(affinity) = &mut self.affinity {
+                    affinity.sustain = raw;
+                }
+                return;
+            }
+            Message::ChooseProcessors => {
+                if let (Some((index, draft)), Some(editor)) = (&self.draft, &mut self.affinity) {
+                    if let Some(limit) = &draft.rules[*index].affinity_limit {
+                        editor
+                            .selection
+                            .get_or_insert_with(|| limit.selection.clone());
+                    }
+                }
+                return;
+            }
+            Message::AffinitySelection(selection) => {
+                if let Some(pending) = self
+                    .affinity
+                    .as_mut()
+                    .and_then(|editor| editor.selection.as_mut())
+                {
+                    *pending = selection;
+                }
+                return;
+            }
+            Message::CancelProcessorSelection => {
+                if let Some(editor) = &mut self.affinity {
+                    editor.selection = None;
+                }
+                return;
+            }
+            Message::ConfirmProcessorSelection => {
+                if let (Some((index, draft)), Some(editor)) = (&mut self.draft, &mut self.affinity)
+                {
+                    if let (Some(limit), Some(selection)) =
+                        (&mut draft.rules[*index].affinity_limit, &editor.selection)
+                    {
+                        if !selection.is_empty() && editor.catalog.error(selection).is_none() {
+                            limit.selection = selection.clone();
+                            editor.selection = None;
+                        }
                     }
                 }
                 return;
@@ -114,18 +333,32 @@ impl CpuLimiter {
             self.update_fields(settings, message);
         }
     }
-    fn update_fields(&mut self, settings: &mut CpuLimiterSettings, message: Message) {
+    fn update_fields(
+        &mut self,
+        mut settings: impl DerefMut<Target = CpuLimiterSettings>,
+        message: Message,
+    ) {
         match message {
             Message::Enabled(value) => {
-                settings.enabled = value;
+                if settings.enabled != value {
+                    settings.enabled = value;
+                }
                 if !value {
                     self.numbers.clear();
                 }
             }
             Message::Path(path) => self.path = path,
             Message::Browse => {}
-            Message::Collapse => self.expanded = !self.expanded,
-            Message::Edit(_) | Message::SaveRule | Message::CancelRule => {}
+            Message::Edit(_)
+            | Message::SaveRule
+            | Message::CancelRule
+            | Message::Method(_)
+            | Message::AffinityTrigger(_)
+            | Message::AffinitySustain(_)
+            | Message::ChooseProcessors
+            | Message::AffinitySelection(_)
+            | Message::CancelProcessorSelection
+            | Message::ConfirmProcessorSelection => {}
             Message::Number(index, tier, raw) => {
                 let path = match index {
                     Some(index) => match settings.rules.get(index) {
@@ -139,7 +372,7 @@ impl CpuLimiter {
                     .ok()
                     .filter(|value| (1..=100).contains(value));
                 if let Some(value) = parsed {
-                    self.update(
+                    self.update_fields(
                         settings,
                         match index {
                             Some(index) => Message::RuleLimit(index, tier, value),
@@ -150,35 +383,49 @@ impl CpuLimiter {
                 self.numbers.insert((path, tier), raw);
             }
             Message::Add => {
-                if can_add_cpu_limiter_process(settings, &self.path) {
-                    settings.rules.push(new_cpu_limiter_rule(&self.path));
+                let path = exact_path_input(&self.path);
+                if can_add_cpu_limiter_process(&settings, path) {
+                    settings.rules.push(new_cpu_limiter_rule(path));
                     self.path.clear();
                 }
             }
             Message::Default(tier, value) => {
                 self.numbers.remove(&(String::new(), tier));
+                let value = value.clamp(1, 100);
+                if tier.default_limit(&settings) == value {
+                    return;
+                }
                 let field = match tier {
                     Tier::Focus => &mut settings.focus_allowed_cpu_time_percent,
                     Tier::VisibleWindow => &mut settings.visible_window_allowed_cpu_time_percent,
                     Tier::Background => &mut settings.background_allowed_cpu_time_percent,
                 };
-                *field = value.clamp(1, 100);
+                *field = value;
             }
             Message::RuleEnabled(index, value) => {
-                if let Some(rule) = settings.rules.get_mut(index) {
-                    rule.enabled = value;
+                if settings
+                    .rules
+                    .get(index)
+                    .is_some_and(|rule| rule.enabled != value)
+                {
+                    settings.rules[index].enabled = value;
                 }
             }
             Message::RuleMode(index, tier, value) => {
-                if let Some(rule) = settings.rules.get_mut(index) {
+                if let Some(rule) = settings.rules.get(index) {
                     self.numbers.remove(&(rule.executable_path.clone(), tier));
-                    *tier.rule_fields(rule).0 = value;
+                    if tier.rule_values(rule).0 != value {
+                        *tier.rule_fields(&mut settings.rules[index]).0 = value;
+                    }
                 }
             }
             Message::RuleLimit(index, tier, value) => {
-                if let Some(rule) = settings.rules.get_mut(index) {
+                if let Some(rule) = settings.rules.get(index) {
                     self.numbers.remove(&(rule.executable_path.clone(), tier));
-                    *tier.rule_fields(rule).1 = value.clamp(1, 100);
+                    let value = value.clamp(1, 100);
+                    if tier.rule_values(rule).1 != value {
+                        *tier.rule_fields(&mut settings.rules[index]).1 = value;
+                    }
                 }
             }
             Message::Remove(index) => {
@@ -192,10 +439,16 @@ impl CpuLimiter {
     }
 
     pub(super) fn has_invalid_inputs(&self) -> bool {
-        self.numbers.values().any(|raw| {
-            raw.parse::<u8>()
-                .ok()
-                .is_none_or(|value| !(1..=100).contains(&value))
+        self.has_invalid_inputs_for(None)
+    }
+
+    fn has_invalid_inputs_for(&self, executable_path: Option<&str>) -> bool {
+        self.numbers.iter().any(|((path, _), raw)| {
+            executable_path.is_none_or(|target| path == target)
+                && raw
+                    .parse::<u8>()
+                    .ok()
+                    .is_none_or(|value| !(1..=100).contains(&value))
         })
     }
     fn number(&self, path: &str, tier: Tier, value: u8) -> String {
@@ -204,55 +457,60 @@ impl CpuLimiter {
             .cloned()
             .unwrap_or_else(|| value.to_string())
     }
+
+    pub(super) fn limit_field<'a, M: Clone + 'a>(
+        &self,
+        path: &str,
+        tier: Tier,
+        value: u8,
+        change: impl Fn(u8) -> M + 'a,
+        input: impl Fn(String) -> M + 'a,
+    ) -> Row<'a, M> {
+        let decrease = (value > 1).then(|| change(value.saturating_sub(1)));
+        let increase = (value < 100).then(|| change(value.saturating_add(1)));
+        widgets::slider_controls(
+            slider(1..=100, value, change).width(Fill),
+            decrease,
+            increase,
+            numeric_input("1-100", &self.number(path, tier, value)).on_input(input),
+        )
+    }
+
     fn limit_control(
         &self,
         index: Option<usize>,
         tier: Tier,
         path: &str,
         value: u8,
-    ) -> Element<'_, Message> {
+    ) -> Row<'_, Message> {
         let change = move |value| match index {
             Some(index) => Message::RuleLimit(index, tier, value),
             None => Message::Default(tier, value),
         };
-        row![
-            icon_button("icons/minus.svg")
-                .style(super::widgets::control_button)
-                .on_press_maybe((value > 1).then(|| change(value.saturating_sub(1)))),
-            slider(1..=100, value, change).width(Fill),
-            icon_button("icons/plus.svg")
-                .style(super::widgets::control_button)
-                .on_press_maybe((value < 100).then(|| change(value.saturating_add(1)))),
-            text_input("1-100", &self.number(path, tier, value))
-                .on_input(move |raw| Message::Number(index, tier, raw))
-                .width(design::NUMERIC_WIDTH)
-        ]
-        .spacing(design::space::SMALL)
-        .align_y(iced::Center)
-        .into()
-    }
-    fn limit_row(
-        &self,
-        index: Option<usize>,
-        tier: Tier,
-        path: &str,
-        value: u8,
-    ) -> Element<'_, Message> {
-        column![
-            text(super::widgets::label_with_unit(&tier.label(), "%")).width(Fill),
-            self.limit_control(index, tier, path, value)
-        ]
-        .spacing(design::space::SMALL)
-        .into()
+        self.limit_field(path, tier, value, change, move |raw| {
+            Message::Number(index, tier, raw)
+        })
     }
     pub(super) fn view<'a>(
         &'a self,
         settings: &'a CpuLimiterSettings,
         candidates: &'a [super::app_picker::Candidate],
         master_enabled: bool,
-        status: &crate::features::cpu_control::cpu_limiter::CpuLimiterSnapshot,
+        status: Option<&CpuLimiterSnapshot>,
+        tab: FeatureTab,
+        scroll_clearance: f32,
     ) -> Element<'a, Message> {
-        let mut body = column![].spacing(super::widgets::CARD_GAP);
+        let show_rules = tab == FeatureTab::CustomRules;
+        let mut body = column![].spacing(widgets::CARD_GAP);
+        if !show_rules {
+            body = body
+                .push(widgets::toggle_card(
+                    "cpu_limiter.enable",
+                    settings.enabled,
+                    Some(Message::Enabled),
+                ))
+                .push(self.defaults_view(settings));
+        }
         if self.has_invalid_inputs() {
             body = body.push(
                 text(t!("cpu_limiter.invalid_limit").to_string())
@@ -260,54 +518,63 @@ impl CpuLimiter {
                     .style(text::danger),
             );
         }
-        let mut defaults = Vec::new();
-        for (tier, value) in Tier::ALL.into_iter().zip([
-            settings.focus_allowed_cpu_time_percent,
-            settings.visible_window_allowed_cpu_time_percent,
-            settings.background_allowed_cpu_time_percent,
-        ]) {
-            defaults.push(self.limit_row(None, tier, "", value));
+        if show_rules {
+            body = body.push(self.rules_view(settings, candidates, master_enabled, status));
         }
-        body = body.push(super::widgets::setting_group(
-            "cpu_limiter.enable".to_string(),
-            self.expanded,
-            Message::Collapse,
-            super::widgets::switch(settings.enabled, Some(Message::Enabled)),
-            super::widgets::settings_rows(defaults),
-        ));
-        body = body
-            .push(super::widgets::setting_title("cpu_limiter.rules"))
-            .push(super::app_picker::view(
+        feature_tabs::scroll_content(body, scroll_clearance)
+    }
+    fn defaults_view<'a>(&'a self, settings: &'a CpuLimiterSettings) -> Element<'a, Message> {
+        let defaults = Tier::ALL.map(|tier| {
+            widgets::settings_card(widgets::slider_setting(tier.key(), "%", move || {
+                self.limit_control(None, tier, "", tier.default_limit(settings))
+            }))
+        });
+        widgets::settings_section(
+            "cpu_limiter.cpu_time",
+            column![widgets::help_text("cpu_limiter.cpu_time_defaults_help")]
+                .extend(defaults.map(Element::from))
+                .spacing(widgets::CARD_GAP),
+        )
+    }
+    fn rules_view<'a>(
+        &'a self,
+        settings: &'a CpuLimiterSettings,
+        candidates: &'a [super::app_picker::Candidate],
+        master_enabled: bool,
+        status: Option<&CpuLimiterSnapshot>,
+    ) -> Column<'a, Message> {
+        let picker = column![
+            widgets::help_text("cpu_limiter.rules_help"),
+            super::app_picker::view_with_path_selection(
                 &self.path,
                 candidates,
                 true,
-                Message::Path,
+                (Message::Path, |path| Message::Path(picked_path_input(path))),
                 Message::Browse,
-                (can_add_cpu_limiter_process(settings, &self.path)).then_some(Message::Add),
+                (can_add_cpu_limiter_process(settings, exact_path_input(&self.path)))
+                    .then_some(Message::Add),
                 |path| can_add_cpu_limiter_process(settings, path).then_some(true),
-            ));
+            ),
+        ]
+        .spacing(design::space::SMALL);
         let mut cards = Vec::new();
         for (index, rule) in settings.rules.iter().enumerate() {
-            let mut cells = Vec::new();
-            for (tier, (mode, _value)) in Tier::ALL.into_iter().zip([
-                (rule.focus_mode, rule.focus_allowed_cpu_time_percent),
-                (
-                    rule.visible_window_mode,
-                    rule.visible_window_allowed_cpu_time_percent,
-                ),
-                (
-                    rule.background_mode,
-                    rule.background_allowed_cpu_time_percent,
-                ),
-            ]) {
-                let choices: Vec<_> = ProcessRuleMode::ALL
-                    .into_iter()
-                    .map(|mode| Mode(mode, mode_label(mode)))
-                    .collect();
+            let method = Method::of(rule);
+            let mut cells = vec![text(method.to_string())
+                .wrapping(text::Wrapping::WordOrGlyph)
+                .into()];
+            for tier in Tier::ALL {
+                if method == Method::Affinity {
+                    cells.push(text("—").style(text::secondary).into());
+                    continue;
+                }
+                let (mode, _) = tier.rule_values(rule);
                 let selector: Element<'_, Message> = {
-                    pick_list(choices, Some(Mode(mode, mode_label(mode))), move |mode| {
-                        Message::RuleMode(index, tier, mode.0)
-                    })
+                    pick_list(
+                        ProcessRuleMode::ALL.map(Mode),
+                        Some(Mode(mode)),
+                        move |mode| Message::RuleMode(index, tier, mode.0),
+                    )
                     .width(Fill)
                     .into()
                 };
@@ -326,231 +593,548 @@ impl CpuLimiter {
                     .into(),
                 Some(chip.into()),
                 cells,
-                row![
-                    super::widgets::tooltip(
-                        icon_button("icons/pencil.svg").on_press(Message::Edit(index)),
-                        text(t!("common.edit").to_string()),
-                        iced::widget::tooltip::Position::Top
-                    ),
-                    super::widgets::rule_delete_button(Some(Message::Remove(index)))
-                ]
-                .width(80)
-                .align_y(iced::Center)
-                .into(),
+                super::widgets::rule_actions(
+                    Some(Message::Edit(index)),
+                    Some(Message::Remove(index)),
+                ),
             );
             cards.push((
                 super::widgets::stable_key(&rule.executable_path),
                 column![header, super::widgets::settings_divider()].into(),
             ));
         }
-        body = body.push(super::widgets::process_rules_table_with_actions(
-            [
-                t!("cpu_allocation.focus").to_string(),
-                t!("common.visible_window").to_string(),
-                t!("common.background_process").to_string(),
-            ],
-            cards,
-            t!("cpu_limiter.no_rules").to_string(),
-            80,
-            true,
-        ));
-        scrollable(body).height(Fill).into()
+        column![
+            super::widgets::settings_card(picker),
+            super::widgets::process_rules_table(
+                [
+                    t!("cpu_limiter.limit_method").to_string(),
+                    t!("cpu_allocation.focus").to_string(),
+                    t!("common.visible_window").to_string(),
+                    t!("common.background_process").to_string(),
+                ],
+                cards,
+                true,
+            ),
+        ]
+        .spacing(widgets::CARD_GAP)
     }
     pub(super) fn modal<'a>(
         &'a self,
         candidates: &[super::app_picker::Candidate],
-        status: &crate::features::cpu_control::cpu_limiter::CpuLimiterSnapshot,
+        presets: &[CpuAllocationPreset],
+        master_enabled: bool,
+        status: Option<&CpuLimiterSnapshot>,
     ) -> Option<Element<'a, Message>> {
         let (index, settings) = self.draft.as_ref()?;
         let index = *index;
         let rule = settings.rules.get(index)?;
-        let key = rule_status(rule, settings.enabled, status);
-        let mut details = column![row![
-            text(t!("common.status").to_string()).width(Fill),
-            iced::widget::container(text(t!(key).to_string()))
-                .padding([4, 8])
-                .style(move |theme| super::widgets::rule_status_chip(theme, key))
+        if let Some(editor) = &self.affinity {
+            if let Some(selection) = &editor.selection {
+                return Some(widgets::rule_dialog(
+                    t!("cpu_limiter.choose_processors").into_owned(),
+                    scrollable(
+                        column![
+                            widgets::setting_title("cpu_limiter.affinity_processors"),
+                            cpu_allocation::mask_selector(
+                                selection,
+                                &editor.catalog,
+                                presets,
+                                cpu_allocation::ProcessorPickerLayout::Buttons,
+                                Message::AffinitySelection,
+                            ),
+                        ]
+                        .spacing(widgets::CARD_GAP),
+                    )
+                    .id("cpu-limiter-processor-picker")
+                    .height(Fill),
+                    Message::CancelProcessorSelection,
+                    (!selection.is_empty() && editor.catalog.error(selection).is_none())
+                        .then_some(Message::ConfirmProcessorSelection),
+                    (900, 680),
+                ));
+            }
+        }
+        let key = rule_status(rule, master_enabled && settings.enabled, status);
+        let chip = iced::widget::container(text(t!(key).to_string()))
+            .padding([4, 8])
+            .style(move |theme| widgets::rule_status_chip(theme, key));
+        let mut live_status = row![chip]
+            .spacing(design::space::SMALL)
+            .align_y(iced::Center);
+        let method = Method::of(rule);
+        if let Some(status) = status.filter(|_| key == "common.applied") {
+            let path = rule.executable_path.trim_start();
+            let (key, value) = match method {
+                Method::CpuTime => (
+                    "cpu_limiter.active_target",
+                    active_limit_label(path, status),
+                ),
+                Method::Affinity => (
+                    "cpu_limiter.active_processors",
+                    active_affinity_label(path, status),
+                ),
+            };
+            if let Some(value) = value {
+                live_status = live_status.push(
+                    text(format!("{}  {value}", t!(key)))
+                        .style(text::secondary)
+                        .wrapping(text::Wrapping::WordOrGlyph),
+                );
+            }
+        }
+        let mut details = column![
+            super::app_picker::app_name(&rule.executable_path, candidates),
+            text(rule.executable_path.as_str())
+                .style(text::secondary)
+                .wrapping(text::Wrapping::WordOrGlyph),
+            live_status,
         ]
-        .align_y(iced::Center)]
-        .spacing(super::widgets::CARD_GAP);
+        .spacing(design::space::SMALL);
+        let mut limits = vec![widgets::setting_row(
+            "cpu_limiter.limit_method",
+            pick_list(
+                [Method::CpuTime, Method::Affinity],
+                Some(method),
+                Message::Method,
+            )
+            .width(design::SELECT_WIDTH),
+        )
+        .into()];
 
-        details = details.push(super::widgets::heading(
-            t!("common.rule_details").to_string(),
-            design::typography::BODY,
-        ));
-        details = details.push(super::widgets::settings_card(
-            column![
-                super::app_picker::app_name(&rule.executable_path, candidates),
-                text(rule.executable_path.clone()).style(text::secondary),
-            ]
-            .spacing(design::space::SMALL),
-        ));
-        let mut limits = Vec::new();
-        for (tier, (mode, value)) in Tier::ALL.into_iter().zip([
-            (rule.focus_mode, rule.focus_allowed_cpu_time_percent),
-            (
-                rule.visible_window_mode,
-                rule.visible_window_allowed_cpu_time_percent,
-            ),
-            (
-                rule.background_mode,
-                rule.background_allowed_cpu_time_percent,
-            ),
-        ]) {
+        let valid = match (&rule.affinity_limit, &self.affinity) {
+            (Some(limit), Some(editor)) => {
+                let (rows, valid) = affinity_rows(limit, editor);
+                limits.extend(rows);
+                valid
+            }
+            (None, _) => {
+                limits.extend(self.cpu_time_rows(rule, index));
+                !self.has_invalid_inputs_for(Some(&rule.executable_path))
+            }
+            _ => false,
+        };
+        details = details.push(widgets::settings_card(widgets::settings_rows(limits)));
+        Some(widgets::rule_dialog(
+            t!("common.edit_rule").to_string(),
+            scrollable(details)
+                .id("cpu-limiter-rule-details")
+                .height(Fill),
+            Message::CancelRule,
+            valid.then_some(Message::SaveRule),
+            (900, 680),
+        ))
+    }
+
+    fn cpu_time_rows<'a>(
+        &'a self,
+        rule: &'a CpuLimiterRule,
+        index: usize,
+    ) -> Vec<Element<'a, Message>> {
+        let mut limits = vec![text(t!("cpu_limiter.cpu_time_scope_help").into_owned())
+            .size(design::typography::SECONDARY)
+            .style(text::secondary)
+            .into()];
+        for tier in Tier::ALL {
+            let (mode, value) = tier.rule_values(rule);
             let mut controls = column![super::widgets::setting_row_with_unit(
                 tier.key(),
                 "%",
-                pick_list(
-                    ProcessRuleMode::ALL
-                        .into_iter()
-                        .map(|m| Mode(m, mode_label(m)))
-                        .collect::<Vec<_>>(),
-                    Some(Mode(mode, mode_label(mode))),
-                    move |m| Message::RuleMode(index, tier, m.0),
-                )
+                pick_list(ProcessRuleMode::ALL.map(Mode), Some(Mode(mode)), move |m| {
+                    Message::RuleMode(index, tier, m.0)
+                })
                 .width(design::SELECT_WIDTH),
             )]
             .spacing(design::space::SMALL);
             if mode == ProcessRuleMode::Enabled {
-                controls = controls.push(self.limit_control(
+                controls = controls.push(widgets::trailing_slider(self.limit_control(
                     Some(index),
                     tier,
                     &rule.executable_path,
                     value,
-                ));
+                )));
             }
             limits.push(controls.into());
         }
-        details = details
-            .push(super::widgets::heading(
-                t!("cpu_limiter.limits").to_string(),
-                design::typography::BODY,
-            ))
-            .push(super::widgets::settings_card(
-                super::widgets::settings_rows(limits),
-            ));
-        let header = row![
-            text(t!("common.edit").to_string()).width(Fill),
-            icon_button("icons/x.svg").on_press(Message::CancelRule)
-        ]
-        .align_y(iced::Center);
-        let footer = row![
-            iced::widget::Space::new().width(Fill),
-            action_button(t!("common.cancel").to_string())
-                .style(super::widgets::tertiary_button)
-                .on_press(Message::CancelRule),
-            action_button(t!("common.save").to_string())
-                .style(super::widgets::primary_button)
-                .on_press_maybe((!self.has_invalid_inputs()).then_some(Message::SaveRule))
-        ]
-        .spacing(design::space::SMALL);
-        Some(super::widgets::modal_frame(
-            header,
-            scrollable(details).height(Fill),
-            footer,
-            (900, 680),
-        ))
+        limits
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Mode(ProcessRuleMode, String);
+fn affinity_rows<'a>(
+    limit: &CpuLimiterAffinityLimit,
+    editor: &'a AffinityEditor,
+) -> (Vec<Element<'a, Message>>, bool) {
+    let total = editor.catalog.processor_count();
+    let count = limit.selection.processors().len();
+    let selection_error = editor.catalog.error(&limit.selection);
+    let mut choose = row![].spacing(design::space::SMALL).align_y(iced::Center);
+    if selection_error.is_none() && total > 0 {
+        choose = choose.push(
+            text(
+                t!(
+                    "cpu_limiter.affinity_selected_count",
+                    count = count,
+                    total = total
+                )
+                .into_owned(),
+            )
+            .style(text::secondary),
+        );
+    }
+    let choose = choose.push(
+        widgets::action_button(t!("cpu_limiter.choose_processors").into_owned())
+            .focus_id(CHOOSE_PROCESSORS_ID)
+            .on_press(Message::ChooseProcessors),
+    );
+    let trigger_range = CpuLimiterAffinityLimit::TRIGGER_RANGE;
+    let trigger = editor
+        .trigger
+        .parse()
+        .ok()
+        .filter(|value| trigger_range.contains(value))
+        .unwrap_or(limit.trigger_percent);
+    let mut rows = vec![
+        widgets::setting_row("cpu_allocation.selected_logical_cpus", choose).into(),
+        widgets::slider_setting("cpu_limiter.affinity_trigger", "%", move || {
+            widgets::slider_stepper(
+                u64::from(trigger),
+                Some(&editor.trigger),
+                u32::from(*trigger_range.start())..=u32::from(*trigger_range.end()),
+                1,
+                Message::AffinityTrigger,
+            )
+        }),
+        widgets::numeric_setting("cpu_limiter.affinity_sustain", "", move || {
+            widgets::stepper(
+                &editor.sustain,
+                CpuLimiterAffinityLimit::SUSTAIN_RANGE,
+                1,
+                Some(Message::AffinitySustain),
+            )
+        }),
+    ];
+    let values = editor.values();
+    let selection_valid = selection_error.is_none() && count > 0;
+    let notice = if let Some(error) = selection_error {
+        Some((error, true))
+    } else if let Some((trigger, duration)) = values {
+        selection_valid.then(|| (affinity_preview(trigger, duration, count, total), false))
+    } else {
+        Some((
+            t!("cpu_limiter.invalid_affinity_trigger").into_owned(),
+            true,
+        ))
+    };
+    if let Some((notice, invalid)) = notice {
+        rows.push(
+            text(notice)
+                .style(if invalid {
+                    text::danger
+                } else {
+                    text::secondary
+                })
+                .wrapping(text::Wrapping::WordOrGlyph)
+                .into(),
+        );
+    }
+    (rows, values.is_some() && selection_valid)
+}
+
+fn affinity_preview(trigger: u8, duration: u64, count: usize, total: usize) -> String {
+    if count == total {
+        t!("cpu_limiter.affinity_all_selected").into_owned()
+    } else {
+        t!(
+            "cpu_limiter.affinity_preview",
+            trigger = trigger,
+            duration = duration,
+            count = count,
+            total = total
+        )
+        .into_owned()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Mode(pub(super) ProcessRuleMode);
 
 impl std::fmt::Display for Mode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.1)
+        f.write_str(&t!(match self.0 {
+            ProcessRuleMode::Default => "cpu_limiter.profile_limit",
+            ProcessRuleMode::Enabled => "cpu_limiter.custom",
+            ProcessRuleMode::Disabled => "cpu_limiter.no_time_cap",
+        }))
     }
 }
 
-fn mode_label(mode: ProcessRuleMode) -> String {
-    match mode {
-        ProcessRuleMode::Default => t!("cpu_limiter.follow_default"),
-        ProcessRuleMode::Enabled => t!("cpu_limiter.custom"),
-        ProcessRuleMode::Disabled => t!("cpu_limiter.unlimited"),
-    }
-    .to_string()
+pub(super) fn observations_paused(status: &CpuLimiterSnapshot) -> bool {
+    status.waiting_for_power_source
+        || (status.observation_paused && status.active_affinity.is_empty())
 }
 
 fn rule_status(
     rule: &CpuLimiterRule,
     enabled: bool,
-    status: &crate::features::cpu_control::cpu_limiter::CpuLimiterSnapshot,
+    status: Option<&CpuLimiterSnapshot>,
 ) -> &'static str {
     if !enabled || !rule.enabled {
-        "common.inactive"
-    } else if rule.executable_path.trim().is_empty() {
-        "common.unknown"
-    } else if status.failed_apps.iter().any(|path| {
-        crate::foreground::same_executable_path(
-            std::path::Path::new(path),
-            std::path::Path::new(&rule.executable_path),
-        )
-    }) {
+        return "common.inactive";
+    }
+    let rule_path = rule.executable_path.trim_start();
+    let Some(status) = status.filter(|_| !rule_path.is_empty()) else {
+        return "common.unknown";
+    };
+    let matches_rule = |path: &String| matches_rule_path(rule_path, path);
+    if status.failed_apps.iter().any(matches_rule) {
         "common.error"
-    } else if status.enabled
-        && status.limited_apps.iter().any(|path| {
-            crate::foreground::same_executable_path(
-                std::path::Path::new(path),
-                std::path::Path::new(&rule.executable_path),
-            )
-        })
+    } else if status.waiting_for_power_source
+        || (rule.affinity_limit.is_none() && status.observation_paused)
     {
-        "common.applied"
+        "sidebar_status.paused"
     } else if !status.enabled {
         "common.unknown"
+    } else if status.restore_pending_apps.iter().any(matches_rule) {
+        "cpu_limiter.restore_pending"
+    } else if rule.affinity_limit.is_some() {
+        matching_affinity_statuses(rule_path, status)
+            .map(|status| match status {
+                CpuLimiterAffinityStatus::RestorationPending => (0, "cpu_limiter.restore_pending"),
+                CpuLimiterAffinityStatus::Active(_) => (1, "common.applied"),
+                CpuLimiterAffinityStatus::Unavailable => (2, "common.unavailable"),
+                CpuLimiterAffinityStatus::Shadowed => (3, "cpu_limiter.affinity_shadowed"),
+                CpuLimiterAffinityStatus::CoolingDown => (4, "cpu_limiter.affinity_cooling_down"),
+                CpuLimiterAffinityStatus::Qualifying => (5, "cpu_limiter.affinity_qualifying"),
+            })
+            .min_by_key(|(priority, _)| *priority)
+            .map_or("common.waiting", |(_, key)| key)
+    } else if matching_active_limits(rule_path, status).next().is_some() {
+        "common.applied"
     } else {
         "common.waiting"
     }
+}
+
+fn matches_rule_path(rule_path: &str, actual_path: &str) -> bool {
+    crate::foreground::same_executable_path(
+        std::path::Path::new(rule_path),
+        std::path::Path::new(actual_path),
+    )
+}
+
+fn matching_affinity_statuses<'a>(
+    rule_path: &'a str,
+    status: &'a CpuLimiterSnapshot,
+) -> impl Iterator<Item = CpuLimiterAffinityStatus> + 'a {
+    status
+        .active_affinity
+        .iter()
+        .filter_map(move |(path, status)| matches_rule_path(rule_path, path).then_some(*status))
+}
+
+fn active_affinity_label(rule_path: &str, status: &CpuLimiterSnapshot) -> Option<String> {
+    let mut counts =
+        matching_affinity_statuses(rule_path, status).filter_map(|status| match status {
+            CpuLimiterAffinityStatus::Active(count) => Some(count),
+            _ => None,
+        });
+    let count = counts.next()?;
+    Some(if counts.all(|other| count == other) {
+        count.to_string()
+    } else {
+        t!("cpu_limiter.active_varies").into_owned()
+    })
+}
+
+fn matching_active_limits<'a>(
+    rule_path: &'a str,
+    status: &'a CpuLimiterSnapshot,
+) -> impl Iterator<Item = CpuLimiterActivation> + 'a {
+    status
+        .active_limits
+        .iter()
+        .filter_map(move |(path, limit)| matches_rule_path(rule_path, path).then_some(*limit))
+}
+
+fn active_limit_label(rule_path: &str, status: &CpuLimiterSnapshot) -> Option<String> {
+    use CpuLimiterActivation::{AncestorJob, Job, ThreadFallback};
+
+    let mut limits = matching_active_limits(rule_path, status);
+    let first = limits.next()?;
+    let label = if limits.all(|limit| limit == first) {
+        match first {
+            Job(percent) => t!("cpu_limiter.active_app_group", percent = percent),
+            AncestorJob(percent) => t!("cpu_limiter.active_inherited", percent = percent),
+            ThreadFallback(percent) => t!("cpu_limiter.active_thread_fallback", percent = percent),
+        }
+    } else {
+        t!("cpu_limiter.active_varies")
+    };
+    Some(label.into_owned())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn limit_labels_and_controls_fit_beside_the_dock() {
-        use iced::advanced::{layout, widget::Tree};
+    fn default_limits_align_right_and_stack_beside_the_dock() {
+        use iced::advanced::{layout, widget::Tree, Layout};
         let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
         let editor = CpuLimiter::default();
-        for tier in Tier::ALL {
-            let mut view = editor.limit_row(None, tier, "", 50);
-            let mut tree = Tree::new(&view);
-            let node = view.as_widget_mut().layout(
-                &mut tree,
-                &renderer,
-                &layout::Limits::new(iced::Size::ZERO, iced::Size::new(400.0, 1000.0)),
-            );
-            let label = node.children()[0].bounds();
-            let control = node.children()[1].bounds();
-            assert_eq!(label.width, 400.0);
-            assert_eq!(control.width, 400.0);
-            assert!(control.y >= label.y + label.height);
-            assert!(control.height <= 40.0);
+        for (width, stacked) in [(400.0, true), (600.0, false), (800.0, false)] {
+            for tier in Tier::ALL {
+                let mut view = widgets::slider_setting(tier.key(), "%", || {
+                    editor.limit_control(None, tier, "", 50)
+                });
+                let mut tree = Tree::new(&view);
+                let node = view.as_widget_mut().layout(
+                    &mut tree,
+                    &renderer,
+                    &layout::Limits::new(iced::Size::ZERO, iced::Size::new(width, 1000.0)),
+                );
+                let mut children = Layout::new(&node).children().next().unwrap().children();
+                let label = children.next().unwrap().bounds();
+                let area = children.next().unwrap();
+                let control = if stacked {
+                    let control = area.children().next().unwrap();
+                    assert!(control.bounds().y >= label.y + label.height);
+                    control
+                } else {
+                    assert!(label.x + label.width < area.bounds().x);
+                    area
+                };
+                let bounds = control.bounds();
+                let slider = control.children().nth(1).unwrap().bounds();
+                assert_eq!(bounds.x + bounds.width, width);
+                assert_eq!(bounds.width, 320.0);
+                assert!(bounds.height <= 40.0);
+                assert!(slider.width >= 150.0);
+            }
         }
     }
 
     #[test]
     fn rule_status_uses_confirmed_limited_apps_and_enable_switches() {
         let mut rule = new_cpu_limiter_rule(r"C:\Apps\test.exe");
+        rule.executable_path.insert(0, ' ');
         rule.enabled = true;
-        let mut status = crate::features::cpu_control::cpu_limiter::CpuLimiterSnapshot {
+        let mut status = CpuLimiterSnapshot {
             enabled: true,
             ..Default::default()
         };
-        assert_eq!(rule_status(&rule, true, &status), "common.waiting");
-        status.limited_apps.push(r"c:\apps\TEST.exe".into());
-        assert_eq!(rule_status(&rule, true, &status), "common.applied");
-        assert_eq!(rule_status(&rule, false, &status), "common.inactive");
-        status.failed_apps.push(rule.executable_path.clone());
-        assert_eq!(rule_status(&rule, true, &status), "common.error");
+        assert_eq!(rule_status(&rule, true, Some(&status)), "common.waiting");
+        status.active_limits.push((
+            concat!(r"C:\Apps\test.exe", "\u{3000}").into(),
+            CpuLimiterActivation::Job(40),
+        ));
+        assert_eq!(rule_status(&rule, true, Some(&status)), "common.waiting");
+        status
+            .active_limits
+            .push((r"c:\apps\TEST.exe".into(), CpuLimiterActivation::Job(40)));
+        assert_eq!(rule_status(&rule, true, Some(&status)), "common.applied");
+        status.restore_pending_apps.push(r"c:\apps\TEST.exe".into());
+        assert_eq!(
+            rule_status(&rule, true, Some(&status)),
+            "cpu_limiter.restore_pending"
+        );
+        assert_eq!(rule_status(&rule, false, Some(&status)), "common.inactive");
+        status.observation_paused = true;
+        status.failed_apps.push(r"C:\Apps\test.exe".into());
+        assert_eq!(rule_status(&rule, true, Some(&status)), "common.error");
         status.failed_apps.clear();
+        assert_eq!(
+            rule_status(&rule, true, Some(&status)),
+            "sidebar_status.paused"
+        );
+        status.observation_paused = false;
         status.enabled = false;
-        assert_eq!(rule_status(&rule, true, &status), "common.unknown");
+        assert_eq!(rule_status(&rule, true, Some(&status)), "common.unknown");
         rule.enabled = false;
-        assert_eq!(rule_status(&rule, true, &status), "common.inactive");
+        assert_eq!(rule_status(&rule, true, Some(&status)), "common.inactive");
     }
 
     #[test]
-    fn rule_editor_cancel_and_save_are_isolated() {
+    fn runtime_limit_label_uses_matching_targets_and_reports_different_limits() {
+        use CpuLimiterActivation::{AncestorJob, Job, ThreadFallback};
+
+        let path = r"C:\Apps\test.exe";
+        let mut status = CpuLimiterSnapshot {
+            active_limits: vec![(r"C:\Other\test.exe".into(), Job(55))],
+            ..Default::default()
+        };
+        assert_eq!(active_limit_label(path, &status), None);
+
+        let matching = r"c:\apps\TEST.exe";
+        status.active_limits.push((matching.into(), Job(40)));
+        status.active_limits.push((matching.into(), Job(40)));
+        assert_eq!(
+            active_limit_label(path, &status).as_deref(),
+            Some(t!("cpu_limiter.active_app_group", percent = 40).as_ref())
+        );
+        status.active_limits[2].1 = Job(25);
+        assert_eq!(
+            active_limit_label(path, &status).as_deref(),
+            Some(t!("cpu_limiter.active_varies").as_ref())
+        );
+
+        status.active_limits.pop();
+        status.active_limits[1].1 = ThreadFallback(40);
+        assert_eq!(
+            active_limit_label(path, &status).as_deref(),
+            Some(t!("cpu_limiter.active_thread_fallback", percent = 40).as_ref())
+        );
+        status.active_limits[1].1 = AncestorJob(60);
+        assert_eq!(
+            active_limit_label(path, &status).as_deref(),
+            Some(t!("cpu_limiter.active_inherited", percent = 60).as_ref())
+        );
+    }
+
+    #[test]
+    fn affinity_status_uses_verified_counts_and_prioritizes_restoration() {
+        use CpuLimiterAffinityStatus::{Active, Qualifying, RestorationPending};
+
+        let path = r"C:\Apps\test.exe";
+        let matching = r"c:\apps\TEST.exe".to_owned();
+        let mut rule = new_cpu_limiter_rule(path);
+        rule.affinity_limit = Some(CpuLimiterAffinityLimit::default());
+        let mut status = CpuLimiterSnapshot {
+            enabled: true,
+            active_limits: vec![(matching.clone(), CpuLimiterActivation::Job(40))],
+            active_affinity: vec![
+                (r"C:\Other\test.exe".into(), Active(12)),
+                (matching.clone(), Qualifying),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            rule_status(&rule, true, Some(&status)),
+            "cpu_limiter.affinity_qualifying"
+        );
+        assert_eq!(active_affinity_label(path, &status), None);
+        status.observation_paused = true;
+        status.active_affinity.push((matching.clone(), Active(4)));
+        assert_eq!(rule_status(&rule, true, Some(&status)), "common.applied");
+        assert_eq!(active_affinity_label(path, &status).as_deref(), Some("4"));
+        status.waiting_for_power_source = true;
+        assert_eq!(
+            rule_status(&rule, true, Some(&status)),
+            "sidebar_status.paused"
+        );
+        status.waiting_for_power_source = false;
+        status.active_affinity.push((matching.clone(), Active(6)));
+        assert_eq!(
+            active_affinity_label(path, &status).as_deref(),
+            Some(t!("cpu_limiter.active_varies").as_ref())
+        );
+        status.active_affinity.push((matching, RestorationPending));
+        assert_eq!(
+            rule_status(&rule, true, Some(&status)),
+            "cpu_limiter.restore_pending"
+        );
+    }
+
+    #[test]
+    fn affinity_edits_require_a_verified_selection_and_valid_trigger_inputs() {
         let mut editor = CpuLimiter::default();
         let mut settings = CpuLimiterSettings::default();
         settings
@@ -558,18 +1142,114 @@ mod tests {
             .push(new_cpu_limiter_rule(r"C:\Apps\test.exe"));
         let before = settings.clone();
         editor.update(&mut settings, Message::Edit(0));
+        editor.update(&mut settings, Message::Method(Method::Affinity));
+        editor.update(&mut settings, Message::SaveRule);
         assert!(editor.has_pending_editor());
-        editor.update(&mut settings, Message::RuleLimit(0, Tier::Focus, 25));
         assert_eq!(settings, before);
-        editor.update(&mut settings, Message::CancelRule);
-        assert!(!editor.has_pending_editor());
+        let selection = editor
+            .affinity
+            .as_ref()
+            .unwrap()
+            .catalog
+            .all_selection()
+            .unwrap();
+        editor.update(&mut settings, Message::ChooseProcessors);
+        assert!(matches!(
+            editor.dismiss_message(),
+            Message::CancelProcessorSelection
+        ));
+        editor.update(&mut settings, Message::AffinitySelection(selection.clone()));
+        editor.update(&mut settings, Message::SaveRule);
+        editor.update(&mut settings, editor.dismiss_message());
         assert_eq!(settings, before);
-        editor.update(&mut settings, Message::Edit(0));
+        assert!(matches!(editor.dismiss_message(), Message::CancelRule));
+        editor.update(&mut settings, Message::SaveRule);
         assert!(editor.has_pending_editor());
-        editor.update(&mut settings, Message::RuleLimit(0, Tier::Focus, 25));
+
+        editor.update(&mut settings, Message::ChooseProcessors);
+        editor.update(&mut settings, Message::AffinitySelection(selection.clone()));
+        editor.update(&mut settings, Message::ConfirmProcessorSelection);
+        assert_eq!(settings, before);
+        assert_eq!(
+            affinity_preview(25, 5, 12, 12),
+            t!("cpu_limiter.affinity_all_selected")
+        );
+        editor.update(&mut settings, Message::AffinitySustain("601".into()));
+        editor.update(&mut settings, Message::SaveRule);
+        assert!(editor.has_pending_editor());
+        assert_eq!(settings, before);
+        editor.update(&mut settings, Message::AffinitySustain("10".into()));
+        editor.update(&mut settings, Message::AffinityTrigger("31".into()));
         editor.update(&mut settings, Message::SaveRule);
         assert!(!editor.has_pending_editor());
-        assert_eq!(settings.rules[0].focus_allowed_cpu_time_percent, 25);
+        assert_eq!(
+            settings.rules[0].affinity_limit.as_ref(),
+            Some(&CpuLimiterAffinityLimit {
+                trigger_percent: 31,
+                sustain_seconds: 10,
+                selection,
+            })
+        );
+        editor.update(&mut settings, Message::Edit(0));
+        editor.update(&mut settings, Message::Method(Method::CpuTime));
+        editor.update(&mut settings, Message::SaveRule);
+        assert_eq!(settings, before);
+    }
+
+    #[test]
+    fn rule_editor_cancel_and_save_are_isolated() {
+        let mut editor = CpuLimiter::default();
+        let mut settings = crate::config::Settings::default();
+        settings
+            .cpu_limiter
+            .rules
+            .push(new_cpu_limiter_rule(r"C:\Apps\test.exe"));
+        let before = settings.clone();
+        let mut settings = SettingsEditor::with_settings(settings);
+        settings.select_power_source(crate::config::PowerSourceProfile::OnBattery);
+        editor.update_profile(&mut settings, Message::Number(None, Tier::Focus, "".into()));
+        editor.update_profile(&mut settings, Message::Edit(0));
+        editor.update_profile(&mut settings, Message::SaveRule);
+        assert_eq!(settings.global(), &before);
+        editor.update_profile(&mut settings, Message::Edit(0));
+        assert!(editor.has_pending_editor());
+        editor.update_profile(&mut settings, Message::RuleLimit(0, Tier::Focus, 25));
+        assert_eq!(settings.global(), &before);
+        editor.update_profile(&mut settings, Message::CancelRule);
+        assert!(!editor.has_pending_editor());
+        assert!(editor.has_invalid_inputs());
+        assert_eq!(settings.global(), &before);
+        editor.update_profile(&mut settings, Message::Edit(0));
+        editor.update_profile(
+            &mut settings,
+            Message::Number(Some(0), Tier::Focus, "101".into()),
+        );
+        editor.update_profile(&mut settings, Message::SaveRule);
+        assert!(editor.has_pending_editor());
+        assert_eq!(settings.global(), &before);
+        editor.update_profile(
+            &mut settings,
+            Message::Number(Some(0), Tier::Focus, "25".into()),
+        );
+        editor.update_profile(&mut settings, Message::SaveRule);
+        assert!(!editor.has_pending_editor());
+        assert_eq!(
+            settings.cpu_limiter.rules[0].focus_allowed_cpu_time_percent,
+            25
+        );
+        assert_eq!(settings.global().cpu_limiter, before.cpu_limiter);
+        assert!(editor.has_invalid_inputs());
+    }
+    #[test]
+    fn default_limit_can_be_configured_before_enabling_the_limiter() {
+        let mut editor = CpuLimiter::default();
+        let mut settings = crate::config::Settings::default().cpu_limiter;
+
+        editor.update(&mut settings, Message::Default(Tier::Focus, 34));
+        assert!(!settings.enabled);
+        editor.update(&mut settings, Message::Enabled(true));
+        assert!(settings.enabled);
+        assert_eq!(settings.focus_allowed_cpu_time_percent, 34);
     }
     #[test]
     fn invalid_number_drafts_cannot_change_settings_and_removal_is_immediate() {

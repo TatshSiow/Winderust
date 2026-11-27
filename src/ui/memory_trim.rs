@@ -1,26 +1,106 @@
 use super::design;
-use super::widgets::{checkbox, text_input};
+use super::feature_tabs::{self, FeatureTab};
+use super::widgets::{checkbox, heading, numeric_setting, slider_setting, slider_stepper, stepper};
+use crate::application::SettingsEditor;
 use crate::config::MemoryTrimSettings;
-use crate::ui::process_rules::{can_add_memory_trim_exclusion, new_process_exclusion_rule};
-use crate::ui::scrolling::scrollable;
-use iced::widget::column;
-use iced::{Element, Fill};
+use crate::memory_trim::{size_label, MemoryTrimReadback, MemoryTrimSnapshot, MemoryTrimStatus};
+use crate::ui::process_rules::{
+    can_add_memory_trim_exclusion, exact_path_input, new_process_exclusion_rule, picked_path_input,
+};
+use iced::widget::{column, text};
+use iced::Element;
 use rust_i18n::t;
+
+#[derive(Clone, Copy)]
+struct ManualTrimResult {
+    trimmed: usize,
+    readback: Option<MemoryTrimReadback>,
+}
+
+impl ManualTrimResult {
+    fn summary(self) -> String {
+        match (self.trimmed, self.readback) {
+            (0, _) => t!("memory_trim.manual_no_trim").into_owned(),
+            (_, None) => t!("memory_trim.manual_reduction_unavailable").into_owned(),
+            (_, Some(readback)) => t!(
+                "memory_trim.manual_reduction",
+                reduction = size_label(readback.reduction_bytes)
+            )
+            .into_owned(),
+        }
+    }
+
+    fn coverage(self) -> Option<String> {
+        (self.trimmed > 0).then(|| {
+            t!(
+                "memory_trim.manual_readback_coverage",
+                measured = self.readback.map_or(0, |readback| readback.processes),
+                trimmed = self.trimmed
+            )
+            .into_owned()
+        })
+    }
+}
 
 #[derive(Default)]
 pub(super) struct Editor {
     pub(super) path: String,
-    expanded: [bool; 3],
+    thresholds: [Option<String>; 3],
+    last_result: Option<ManualTrimResult>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Threshold {
+    Load,
+    WorkingSet,
+    Idle,
+}
+impl Threshold {
+    const ALL: [Self; 3] = [Self::Load, Self::WorkingSet, Self::Idle];
+    const MAX_MEMORY_LOAD: u32 = 100;
+
+    fn label_and_maximum(self) -> (&'static str, u64) {
+        match self {
+            Self::Load => (
+                "memory_trim.memory_threshold",
+                u64::from(Self::MAX_MEMORY_LOAD),
+            ),
+            Self::WorkingSet => ("memory_trim.working_set_threshold", 1_000_000),
+            Self::Idle => ("memory_trim.idle_time", 86_400),
+        }
+    }
+
+    fn parse(self, raw: &str) -> Option<u64> {
+        raw.parse()
+            .ok()
+            .filter(|value| (1..=self.label_and_maximum().1).contains(value))
+    }
+
+    fn value(self, settings: &MemoryTrimSettings) -> u64 {
+        match self {
+            Self::Load => u64::from(settings.system_memory_load_threshold_percent),
+            Self::WorkingSet => settings.process_working_set_threshold_mb,
+            Self::Idle => settings.process_idle_seconds,
+        }
+    }
+
+    pub(super) fn error_message(self) -> String {
+        let (label, maximum) = self.label_and_maximum();
+        t!(
+            "memory_trim.invalid_threshold",
+            setting = t!(label),
+            maximum = maximum
+        )
+        .to_string()
+    }
 }
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Enabled(bool),
-    Collapse(usize),
     Path(String),
     Add,
-    Load(String),
-    WorkingSet(String),
-    Idle(String),
+    Threshold(Threshold, String),
+    ExcludeForeground(bool),
+    ExcludeVisibleWindows(bool),
     RuleEnabled(usize, bool),
     Remove(usize),
 
@@ -28,126 +108,228 @@ pub(super) enum Message {
     Browse,
 }
 impl Editor {
-    pub(super) fn update(&mut self, settings: &mut MemoryTrimSettings, message: Message) {
-        match message {
-            Message::Collapse(i) => {
-                if let Some(value) = self.expanded.get_mut(i) {
-                    *value = !*value;
+    pub(super) fn manual_result(&mut self, result: MemoryTrimSnapshot) -> Result<(), String> {
+        let key = match result.status {
+            MemoryTrimStatus::AutomationDisabled => "memory_trim.manual_automation_disabled",
+            MemoryTrimStatus::Disabled => "memory_trim.manual_disabled",
+            MemoryTrimStatus::ForegroundUnknown => "memory_trim.manual_foreground_unknown",
+            MemoryTrimStatus::VisibleWindowsUnknown => "memory_trim.manual_visible_windows_unknown",
+            MemoryTrimStatus::ManualCompleted => {
+                self.last_result = Some(ManualTrimResult {
+                    trimmed: result.trimmed_processes,
+                    readback: result.readback,
+                });
+                if result.failed_processes == 0 {
+                    return result.last_error.map_or(Ok(()), Err);
                 }
+                let summary = t!(
+                    "memory_trim.manual_failed",
+                    trimmed = result.trimmed_processes,
+                    failed = result.failed_processes
+                );
+                return Err(match result.last_error {
+                    Some(error) => format!("{summary}\n{error}"),
+                    None => summary.into_owned(),
+                });
             }
+            MemoryTrimStatus::Error(error) => return Err(error),
+            MemoryTrimStatus::WaitingForMemoryLoad { .. } | MemoryTrimStatus::Active => {
+                "memory_trim.manual_result_unavailable"
+            }
+        };
+        Err(t!(key).into_owned())
+    }
+
+    pub(super) fn reset_drafts(&mut self) {
+        *self = Self {
+            last_result: self.last_result,
+            ..Self::default()
+        };
+    }
+
+    fn last_result_view(&self) -> Option<Element<'_, Message>> {
+        let result = self.last_result?;
+        let caption = |label: String| -> Element<'_, Message> {
+            text(label)
+                .size(design::typography::CAPTION)
+                .style(text::secondary)
+                .wrapping(text::Wrapping::WordOrGlyph)
+                .into()
+        };
+        Some(
+            column![
+                heading(
+                    t!("memory_trim.last_manual_trim").into_owned(),
+                    design::typography::BODY,
+                ),
+                caption(result.summary()),
+            ]
+            .extend(result.coverage().map(caption))
+            .spacing(design::space::TIGHT)
+            .into(),
+        )
+    }
+
+    pub(super) fn invalid_threshold(&self) -> Option<Threshold> {
+        Threshold::ALL.into_iter().find(|&field| {
+            self.thresholds[field as usize]
+                .as_deref()
+                .is_some_and(|raw| field.parse(raw).is_none())
+        })
+    }
+
+    pub(super) fn update(&mut self, settings: &mut SettingsEditor, message: Message) {
+        settings.edit_global(|settings| self.update_settings(&mut settings.memory_trim, message));
+    }
+
+    fn update_settings(&mut self, settings: &mut MemoryTrimSettings, message: Message) {
+        match message {
             Message::Enabled(v) => settings.enabled = v,
             Message::Path(v) => self.path = v,
-            Message::Add if can_add_memory_trim_exclusion(settings, &self.path) => {
-                settings
-                    .exclusions
-                    .push(new_process_exclusion_rule(&self.path));
-                self.path.clear();
-            }
-            Message::Load(v) => {
-                if let Ok(v) = v.parse::<u8>() {
-                    if (1..=100).contains(&v) {
-                        settings.system_memory_load_threshold_percent = v;
-                    }
+            Message::Add => {
+                let path = exact_path_input(&self.path);
+                if can_add_memory_trim_exclusion(settings, path) {
+                    settings.exclusions.push(new_process_exclusion_rule(path));
+                    self.path.clear();
                 }
             }
-            Message::WorkingSet(v) => {
-                if let Ok(v) = v.parse::<u64>() {
-                    if (1..=1_000_000).contains(&v) {
-                        settings.process_working_set_threshold_mb = v;
+            Message::Threshold(field, raw) => {
+                if let Some(value) = field.parse(&raw) {
+                    match field {
+                        Threshold::Load => {
+                            settings.system_memory_load_threshold_percent = value as u8
+                        }
+                        Threshold::WorkingSet => settings.process_working_set_threshold_mb = value,
+                        Threshold::Idle => settings.process_idle_seconds = value,
                     }
                 }
+                self.thresholds[field as usize] = Some(raw);
             }
-            Message::Idle(v) => {
-                if let Ok(v) = v.parse::<u64>() {
-                    if (1..=86_400).contains(&v) {
-                        settings.process_idle_seconds = v;
-                    }
-                }
-            }
+            Message::ExcludeForeground(value) => settings.exclude_foreground = value,
+            Message::ExcludeVisibleWindows(value) => settings.exclude_visible_windows = value,
             Message::RuleEnabled(i, v) => {
-                if let Some(r) = settings.exclusions.get_mut(i) {
-                    r.enabled = v;
+                if let Some(rule) = settings.exclusions.get_mut(i) {
+                    rule.enabled = v;
                 }
             }
-            Message::Remove(i) => {
-                if i < settings.exclusions.len() {
-                    settings.exclusions.remove(i);
-                }
+            Message::Remove(i) if i < settings.exclusions.len() => {
+                settings.exclusions.remove(i);
             }
-
-            Message::Add | Message::TrimNow | Message::Browse => {}
+            Message::Remove(_) | Message::TrimNow | Message::Browse => {}
         }
     }
     pub(super) fn view<'a>(
         &'a self,
         settings: &'a MemoryTrimSettings,
         candidates: &'a [super::app_picker::Candidate],
+        trim_available: bool,
+        trim_pending: bool,
+        tab: FeatureTab,
+        scroll_clearance: f32,
     ) -> Element<'a, Message> {
-        let mut body = column![super::widgets::toggle_card(
-            "memory_trim.enable",
-            settings.enabled,
-            Some(Message::Enabled)
-        ),]
-        .spacing(super::widgets::CARD_GAP);
-        let field = |label: &str, unit: &str, value: String, change: fn(String) -> Message| {
-            super::widgets::setting_row_with_unit(
-                label,
-                unit,
-                text_input("", &value)
-                    .on_input_maybe(Some(change))
-                    .width(design::STANDALONE_NUMERIC_WIDTH),
-            )
+        let body = if tab == FeatureTab::Setup {
+            self.setup(settings, trim_available, trim_pending)
+        } else {
+            self.exclusions(settings, candidates)
         };
-        for (index, label, content) in [
-            (
-                0,
-                "memory_trim.category_thresholds",
-                super::widgets::settings_rows([
-                    field(
-                        "memory_trim.memory_threshold",
-                        "%",
-                        settings.system_memory_load_threshold_percent.to_string(),
-                        Message::Load,
-                    )
-                    .into(),
-                    field(
-                        "memory_trim.working_set_threshold",
-                        "MB",
-                        settings.process_working_set_threshold_mb.to_string(),
-                        Message::WorkingSet,
-                    )
-                    .into(),
-                ]),
+        feature_tabs::scroll_content(body, scroll_clearance)
+    }
+
+    fn setup<'a>(
+        &'a self,
+        settings: &'a MemoryTrimSettings,
+        trim_available: bool,
+        trim_pending: bool,
+    ) -> iced::widget::Column<'a, Message> {
+        let field = |field: Threshold, unit: &'static str| {
+            let (label, maximum) = field.label_and_maximum();
+            super::widgets::settings_card(numeric_setting(label, unit, move || {
+                let raw = self.thresholds[field as usize].as_deref();
+                stepper(
+                    raw.unwrap_or(&field.value(settings).to_string()),
+                    1..=maximum,
+                    1,
+                    Some(move |raw| Message::Threshold(field, raw)),
+                )
+            }))
+        };
+        let load = Threshold::Load;
+        let memory_load = super::widgets::settings_card(slider_setting(
+            load.label_and_maximum().0,
+            "%",
+            move || {
+                slider_stepper(
+                    load.value(settings),
+                    self.thresholds[load as usize].as_deref(),
+                    1..=Threshold::MAX_MEMORY_LOAD,
+                    1,
+                    move |raw| Message::Threshold(load, raw),
+                )
+            },
+        ));
+        let trim_label = if trim_pending {
+            t!("memory_trim.manual_trim_running")
+        } else {
+            t!("memory_trim.trim_now")
+        };
+        let manual_trim = super::widgets::setting_row(
+            "memory_trim.manual_trim",
+            super::widgets::action_button(trim_label.into_owned())
+                .on_press_maybe((trim_available && !trim_pending).then_some(Message::TrimNow)),
+        );
+        column![
+            super::widgets::settings_card(
+                column![manual_trim]
+                    .extend(self.last_result_view())
+                    .spacing(design::space::SMALL),
             ),
-            (
-                1,
-                "memory_trim.category_when_to_trim",
-                column![field(
-                    "memory_trim.idle_time",
-                    "s",
-                    settings.process_idle_seconds.to_string(),
-                    Message::Idle
-                )],
+            super::widgets::toggle_card(
+                "memory_trim.enable",
+                settings.enabled,
+                Some(Message::Enabled),
             ),
-        ] {
-            body = body.push(super::widgets::setting_group(
-                label.to_string(),
-                self.expanded[index],
-                Message::Collapse(index),
-                iced::widget::Space::new(),
-                content,
-            ));
-        }
-        let mut safety = column![super::app_picker::view(
+            super::widgets::settings_section(
+                "nav.settings",
+                column![
+                    super::widgets::settings_card(super::widgets::setting_row(
+                        "memory_trim.exclude_foreground",
+                        super::widgets::switch(
+                            settings.exclude_foreground,
+                            Some(Message::ExcludeForeground),
+                        ),
+                    )),
+                    super::widgets::settings_card(super::widgets::setting_row(
+                        "memory_trim.exclude_visible_windows",
+                        super::widgets::switch(
+                            settings.exclude_visible_windows,
+                            Some(Message::ExcludeVisibleWindows),
+                        ),
+                    )),
+                    memory_load,
+                    field(Threshold::WorkingSet, "MB"),
+                    field(Threshold::Idle, "s"),
+                ]
+                .spacing(super::widgets::CARD_GAP),
+            ),
+        ]
+        .spacing(super::widgets::CARD_GAP)
+    }
+
+    fn exclusions<'a>(
+        &'a self,
+        settings: &'a MemoryTrimSettings,
+        candidates: &'a [super::app_picker::Candidate],
+    ) -> iced::widget::Column<'a, Message> {
+        let picker = super::app_picker::view_with_path_selection(
             &self.path,
             candidates,
             true,
-            Message::Path,
+            (Message::Path, |path| Message::Path(picked_path_input(path))),
             Message::Browse,
-            (can_add_memory_trim_exclusion(settings, &self.path)).then_some(Message::Add),
-            |path| can_add_memory_trim_exclusion(settings, path).then_some(true)
-        )]
-        .spacing(design::space::MEDIUM);
+            can_add_memory_trim_exclusion(settings, exact_path_input(&self.path))
+                .then_some(Message::Add),
+            |path| can_add_memory_trim_exclusion(settings, path).then_some(true),
+        );
         let cards = settings
             .exclusions
             .iter()
@@ -167,53 +349,154 @@ impl Editor {
                 )
             })
             .collect();
-        safety = safety.push(super::widgets::settings_divider()).push(
-            super::widgets::process_rules_table(
-                [],
-                cards,
-                t!("memory_trim.no_exclusions").to_string(),
+        column![
+            super::widgets::settings_card(
+                column![super::widgets::help_text("memory_trim.rules_help"), picker,]
+                    .spacing(design::space::SMALL),
             ),
-        );
-
-        body = body.push(super::widgets::setting_group(
-            "memory_trim.category_safety".to_string(),
-            self.expanded[2],
-            Message::Collapse(2),
-            iced::widget::Space::new(),
-            safety,
-        ));
-        scrollable(body).height(Fill).into()
+            super::widgets::process_rules_table([], cards, false),
+        ]
+        .spacing(super::widgets::CARD_GAP)
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{PowerSourceProfile, Settings};
+
     #[test]
-    fn groups_start_collapsed_and_toggle_without_changing_settings() {
+    fn last_manual_trim_remains_visible_after_skipped_commands_and_draft_resets() {
         let mut editor = Editor::default();
-        let mut settings = MemoryTrimSettings::default();
-        let before = settings.clone();
-        assert_eq!(editor.expanded, [false; 3]);
-        editor.update(&mut settings, Message::Collapse(0));
-        editor.update(&mut settings, Message::Collapse(2));
-        assert_eq!(editor.expanded, [true, false, true]);
-        editor.update(&mut settings, Message::Collapse(0));
-        assert_eq!(editor.expanded, [false, false, true]);
-        assert_eq!(settings, before);
+        assert!(editor.last_result_view().is_none());
+
+        let result = editor.manual_result(MemoryTrimSnapshot {
+            status: MemoryTrimStatus::ManualCompleted,
+            trimmed_processes: 3,
+            failed_processes: 1,
+            readback: Some(MemoryTrimReadback {
+                processes: 2,
+                reduction_bytes: 0,
+            }),
+            ..Default::default()
+        });
+        assert!(result.is_err());
+        assert!(editor.last_result_view().is_some());
+        assert!(editor.last_result.unwrap().summary().contains("0 B"));
+        assert!(editor
+            .last_result
+            .unwrap()
+            .coverage()
+            .unwrap()
+            .contains('2'));
+
+        assert!(editor.manual_result(MemoryTrimSnapshot::default()).is_err());
+        editor.reset_drafts();
+        assert_eq!(editor.last_result.unwrap().trimmed, 3);
+
+        editor
+            .manual_result(MemoryTrimSnapshot {
+                status: MemoryTrimStatus::ManualCompleted,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(editor.last_result.unwrap().trimmed, 0);
+        assert!(editor.last_result.unwrap().coverage().is_none());
     }
+
+    #[test]
+    fn picked_memory_exclusion_preserves_a_distinct_executable_path_on_save() {
+        let mut editor = Editor::default();
+        let ordinary = r"C:\Apps\test.exe";
+        let literal = concat!(r"C:\Apps\test.exe", " ");
+        let mut settings = Settings::default();
+        settings
+            .memory_trim
+            .exclusions
+            .push(new_process_exclusion_rule(ordinary));
+        let mut settings = SettingsEditor::with_settings(settings);
+        editor.update(
+            &mut settings,
+            Message::Path(picked_path_input(literal.into())),
+        );
+        editor.update(&mut settings, Message::Add);
+
+        let saved = toml::to_string(&*settings).unwrap();
+        let reloaded: Settings = toml::from_str(&saved).unwrap();
+        let rules = &reloaded.memory_trim.exclusions;
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].executable_path, ordinary);
+        assert_eq!(rules[1].executable_path, literal);
+    }
+
+    #[test]
+    fn window_exclusion_switches_edit_shared_settings_from_either_power_profile() {
+        let mut editor = Editor::default();
+        let mut saved = Settings::default();
+        saved.battery_profile_mut().cpu_limiter.enabled = true;
+        let mut settings = SettingsEditor::with_settings(saved);
+        settings.select_power_source(PowerSourceProfile::OnBattery);
+
+        editor.update(&mut settings, Message::ExcludeForeground(false));
+        editor.update(&mut settings, Message::ExcludeVisibleWindows(true));
+        assert!(settings.has_unsaved_changes());
+
+        let saved = toml::to_string(settings.global()).unwrap();
+        let reloaded: Settings = toml::from_str(&saved).unwrap();
+        assert!(!reloaded.memory_trim.exclude_foreground);
+        assert!(reloaded.memory_trim.exclude_visible_windows);
+        assert_eq!(reloaded.battery_profile().memory_trim, reloaded.memory_trim);
+        assert!(reloaded.battery_profile().cpu_limiter.enabled);
+
+        settings.cancel();
+        assert!(settings.memory_trim.exclude_foreground);
+        assert!(!settings.memory_trim.exclude_visible_windows);
+        assert!(!settings.has_unsaved_changes());
+    }
+
     #[test]
     fn invalid_thresholds_and_missing_removals_do_not_mutate_settings() {
         let mut e = Editor::default();
-        let mut s = crate::config::Settings::default().memory_trim;
-        let before = s.clone();
-        e.update(&mut s, Message::Load("0".into()));
-        e.update(&mut s, Message::Idle("86401".into()));
-        e.update(&mut s, Message::WorkingSet("-1".into()));
+        let mut s = SettingsEditor::with_settings(Settings::default());
+        s.select_power_source(PowerSourceProfile::OnBattery);
+        let before = s.memory_trim.clone();
+        e.update(&mut s, Message::Threshold(Threshold::Load, "0".into()));
+        e.update(&mut s, Message::Threshold(Threshold::Idle, "86401".into()));
+        e.update(
+            &mut s,
+            Message::Threshold(Threshold::WorkingSet, "-1".into()),
+        );
         e.update(&mut s, Message::Remove(0));
-        assert_eq!(s, before);
+        assert_eq!(s.memory_trim, before);
+        assert!(!s.has_unsaved_changes());
+        assert_eq!(e.invalid_threshold(), Some(Threshold::Load));
+        e.update(
+            &mut s,
+            Message::Threshold(
+                Threshold::Load,
+                format!("0{}", before.system_memory_load_threshold_percent),
+            ),
+        );
+        assert!(!s.has_unsaved_changes());
+        assert_eq!(e.invalid_threshold(), Some(Threshold::WorkingSet));
+        e.update(&mut s, Message::Threshold(Threshold::Load, "100".into()));
+        assert_eq!(s.memory_trim.system_memory_load_threshold_percent, 100);
+        e.update(
+            &mut s,
+            Message::Threshold(Threshold::WorkingSet, "1".into()),
+        );
+        assert_eq!(s.memory_trim.process_working_set_threshold_mb, 1);
+        assert_eq!(e.invalid_threshold(), Some(Threshold::Idle));
+        e.update(&mut s, Message::Threshold(Threshold::Idle, "10".into()));
+        assert_eq!(s.memory_trim.process_idle_seconds, 10);
+        assert_eq!(e.invalid_threshold(), None);
         let path = r"C:\Apps\test.exe";
-        s.exclusions.push(new_process_exclusion_rule(path));
+        s.edit_global(|settings| {
+            settings
+                .memory_trim
+                .exclusions
+                .push(new_process_exclusion_rule(path));
+        });
         e.update(&mut s, Message::Remove(0));
-        assert!(s.exclusions.is_empty());
+        assert!(s.memory_trim.exclusions.is_empty());
     }
 }

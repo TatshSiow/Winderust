@@ -7,9 +7,11 @@ use windows_sys::Win32::System::Threading::{
 };
 
 use super::*;
+use crate::platform::windows::cpu_allocation::{cpu_set_inventory, CpuSetRecord};
 
 const HELPER_ARGUMENT: &str = "--recovery-smoke-helper";
 const PARENT_ARGUMENT: &str = "--recovery-smoke-parent";
+const CPU_SETS_SCENARIO: &str = "cpu-sets-pending-applied";
 
 pub(crate) fn run_if_requested() -> bool {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
@@ -20,7 +22,9 @@ pub(crate) fn run_if_requested() -> bool {
         return false;
     }
     let result = match (mode.as_str(), arguments.as_slice()) {
-        (HELPER_ARGUMENT, [_, target]) => parse_target(target).and_then(run_helper),
+        (HELPER_ARGUMENT, [_, scenario, target]) => {
+            parse_target(target).and_then(|target| run_helper(scenario, target))
+        }
         (PARENT_ARGUMENT, [_, scenario, target]) => {
             parse_target(target).and_then(|target| run_parent(scenario, target))
         }
@@ -51,7 +55,11 @@ fn fixture_process(target: &ProcessIdentity) -> Result<WinHandle, String> {
         .ok_or_else(|| "The exact disposable smoke target has exited.".to_owned())
 }
 
-fn authorize(target: &ProcessIdentity, command: &RecoveryCommand) -> Result<(), String> {
+fn authorize(
+    target: &ProcessIdentity,
+    cpu_set_baseline: Option<u32>,
+    command: &RecoveryCommand,
+) -> Result<(), String> {
     let allowed = match command {
         RecoveryCommand::Begin {
             entry:
@@ -61,17 +69,32 @@ fn authorize(target: &ProcessIdentity, command: &RecoveryCommand) -> Result<(), 
                     expected: ProcessValue::PriorityClass(expected),
                 },
             ..
-        } => identity == target && permitted_priority(*original) && permitted_priority(*expected),
+        } => {
+            cpu_set_baseline.is_none()
+                && identity == target
+                && permitted_priority(*original)
+                && permitted_priority(*expected)
+        }
+        RecoveryCommand::Begin {
+            entry:
+                RecoveryEntry::Process {
+                    identity,
+                    original: ProcessValue::CpuSets(original),
+                    expected: ProcessValue::CpuSets(expected),
+                },
+            ..
+        } => {
+            identity == target
+                && cpu_set_baseline.is_some_and(|id| original.as_slice() == [id])
+                && expected.is_empty()
+        }
         RecoveryCommand::Commit { .. } | RecoveryCommand::Cancel { .. } => true,
         _ => false,
     };
     if allowed {
         Ok(())
     } else {
-        Err(
-            "Smoke scope permits only conservative priority changes for its exact target."
-                .to_owned(),
-        )
+        Err("Smoke scope permits only the scenario's changes for its exact target.".to_owned())
     }
 }
 
@@ -84,12 +107,25 @@ fn permitted_priority(value: u32) -> bool {
     .contains(&value)
 }
 
-fn run_helper(target: ProcessIdentity) -> Result<(), String> {
-    let _process = fixture_process(&target)?;
+fn run_helper(scenario: &str, target: ProcessIdentity) -> Result<(), String> {
+    let process = fixture_process(&target)?;
+    let cpu_set_baseline = if scenario == CPU_SETS_SCENARIO {
+        let ProcessValue::CpuSets(ids) =
+            query_process_value(process.raw(), &ProcessValue::CpuSets(Vec::new()))?
+        else {
+            return Err("Smoke target CPU Sets could not be read.".to_owned());
+        };
+        let [id] = ids.as_slice() else {
+            return Err("Smoke target must have exactly one CPU Set baseline.".to_owned());
+        };
+        Some(*id)
+    } else {
+        None
+    };
     run_watchdog_loop(
         BufReader::new(std::io::stdin()),
         std::io::stdout(),
-        |command| authorize(&target, command),
+        |command| authorize(&target, cpu_set_baseline, command),
         || Ok(()),
     )
 }
@@ -147,7 +183,14 @@ fn report(value: serde_json::Value) -> Result<(), String> {
 }
 
 fn run_parent(scenario: &str, target: ProcessIdentity) -> Result<(), String> {
-    if !["committed", "pending-applied", "pending-unapplied"].contains(&scenario) {
+    if ![
+        "committed",
+        "pending-applied",
+        "pending-unapplied",
+        CPU_SETS_SCENARIO,
+    ]
+    .contains(&scenario)
+    {
         return Err("Unknown recovery-smoke scenario.".to_owned());
     }
     let process = fixture_process(&target)?;
@@ -156,9 +199,30 @@ fn run_parent(scenario: &str, target: ProcessIdentity) -> Result<(), String> {
     {
         return Err("Disposable smoke process must start at Normal priority.".to_owned());
     }
+    let cpu_set_baseline = if scenario == CPU_SETS_SCENARIO {
+        let id = cpu_set_inventory()
+            .map_err(|error| format!("Smoke CPU Set inventory failed: {error:?}."))?
+            .into_iter()
+            .find_map(|record| match record {
+                CpuSetRecord::Unallocated { id, .. } => Some(id),
+                CpuSetRecord::Allocated { .. } => None,
+            })
+            .ok_or_else(|| "Smoke test requires one unallocated CPU Set.".to_owned())?;
+        report(serde_json::json!({"state": "cpu_set_setup", "id": id}))?;
+        let mut byte = [0];
+        std::io::stdin()
+            .read_exact(&mut byte)
+            .map_err(|error| format!("Smoke CPU Set setup was not acknowledged: {error}"))?;
+        if byte != *b"S" {
+            return Err("Invalid smoke CPU Set setup acknowledgment.".to_owned());
+        }
+        Some(id)
+    } else {
+        None
+    };
     let serialized_target = serde_json::to_string(&target).map_err(|error| error.to_string())?;
     let child = Command::new(std::env::current_exe().map_err(|error| error.to_string())?)
-        .args([HELPER_ARGUMENT, &serialized_target])
+        .args([HELPER_ARGUMENT, scenario, &serialized_target])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -190,37 +254,62 @@ fn run_parent(scenario: &str, target: ProcessIdentity) -> Result<(), String> {
         .transport
         .as_mut()
         .ok_or_else(|| "Smoke helper transport is unavailable.".to_owned())?;
-    let rejected = verify_scope_rejections(transport, &target)?;
-    transition(
-        transport,
-        &process,
-        &target,
-        1,
-        (NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS),
-        true,
-        true,
-    )?;
-    transition(
-        transport,
-        &process,
-        &target,
-        2,
-        (BELOW_NORMAL_PRIORITY_CLASS, IDLE_PRIORITY_CLASS),
-        scenario != "pending-unapplied",
-        scenario == "committed",
-    )?;
-    let current = query_process_value(process.raw(), &ProcessValue::PriorityClass(0))?;
-    let expected = if scenario == "pending-unapplied" {
-        BELOW_NORMAL_PRIORITY_CLASS
+    let rejected = verify_scope_rejections(transport, &target, cpu_set_baseline)?;
+    let expected_priority = if let Some(id) = cpu_set_baseline {
+        transition(
+            transport,
+            &process,
+            &target,
+            1,
+            (
+                ProcessValue::CpuSets(vec![id]),
+                ProcessValue::CpuSets(Vec::new()),
+            ),
+            true,
+            false,
+        )?;
+        NORMAL_PRIORITY_CLASS
     } else {
-        IDLE_PRIORITY_CLASS
+        transition(
+            transport,
+            &process,
+            &target,
+            1,
+            (
+                ProcessValue::PriorityClass(NORMAL_PRIORITY_CLASS),
+                ProcessValue::PriorityClass(BELOW_NORMAL_PRIORITY_CLASS),
+            ),
+            true,
+            true,
+        )?;
+        transition(
+            transport,
+            &process,
+            &target,
+            2,
+            (
+                ProcessValue::PriorityClass(BELOW_NORMAL_PRIORITY_CLASS),
+                ProcessValue::PriorityClass(IDLE_PRIORITY_CLASS),
+            ),
+            scenario != "pending-unapplied",
+            scenario == "committed",
+        )?;
+        if scenario == "pending-unapplied" {
+            BELOW_NORMAL_PRIORITY_CLASS
+        } else {
+            IDLE_PRIORITY_CLASS
+        }
     };
-    if current != ProcessValue::PriorityClass(expected) {
+    let current = query_process_value(process.raw(), &ProcessValue::PriorityClass(0))?;
+    if current != ProcessValue::PriorityClass(expected_priority) {
         return Err("Smoke target did not reach its verified pre-recovery state.".to_owned());
     }
-    report(
-        serde_json::json!({"state": "ready", "target": target.id, "priority": expected, "rejected": rejected}),
-    )?;
+    report(serde_json::json!({
+        "state": "ready",
+        "target": target.id,
+        "priority": expected_priority,
+        "rejected": rejected,
+    }))?;
     let mut byte = [0_u8; 1];
     if std::io::stdin()
         .read(&mut byte)
@@ -238,7 +327,7 @@ fn transition(
     process: &WinHandle,
     target: &ProcessIdentity,
     id: u64,
-    values: (u32, u32),
+    values: (ProcessValue, ProcessValue),
     apply: bool,
     commit: bool,
 ) -> Result<(), String> {
@@ -247,16 +336,14 @@ fn transition(
         id,
         entry: RecoveryEntry::Process {
             identity: target.clone(),
-            original: ProcessValue::PriorityClass(original),
-            expected: ProcessValue::PriorityClass(expected),
+            original,
+            expected: expected.clone(),
         },
     })?;
     if apply {
-        apply_process_value(process.raw(), &ProcessValue::PriorityClass(expected))?;
-        if query_process_value(process.raw(), &ProcessValue::PriorityClass(0))?
-            != ProcessValue::PriorityClass(expected)
-        {
-            return Err("Native smoke priority verification failed.".to_owned());
+        apply_process_value(process.raw(), &expected)?;
+        if query_process_value(process.raw(), &expected)? != expected {
+            return Err("Native smoke process value verification failed.".to_owned());
         }
     }
     if commit {
@@ -268,6 +355,7 @@ fn transition(
 fn verify_scope_rejections(
     transport: &mut RecoveryTransport,
     target: &ProcessIdentity,
+    cpu_set_baseline: Option<u32>,
 ) -> Result<usize, String> {
     let mut stale = target.clone();
     stale.creation_time = stale.creation_time.wrapping_add(1);
@@ -293,7 +381,7 @@ fn verify_scope_rejections(
             expected: ProcessValue::Affinity(0),
         },
         RecoveryEntry::Process {
-            identity: stale,
+            identity: stale.clone(),
             original: ProcessValue::PriorityClass(NORMAL_PRIORITY_CLASS),
             expected: ProcessValue::PriorityClass(IDLE_PRIORITY_CLASS),
         },
@@ -303,11 +391,32 @@ fn verify_scope_rejections(
             expected: ProcessValue::PriorityClass(HIGH_PRIORITY_CLASS),
         },
     ];
-    let count = entries.len();
-    for (index, entry) in entries.into_iter().enumerate() {
-        let id = 100 + index as u64;
+    let cpu_set_entries = cpu_set_baseline.into_iter().flat_map(|id| {
+        let singleton = ProcessValue::CpuSets(vec![id]);
+        let cleared = ProcessValue::CpuSets(Vec::new());
+        [
+            RecoveryEntry::Process {
+                identity: stale.clone(),
+                original: singleton.clone(),
+                expected: cleared.clone(),
+            },
+            RecoveryEntry::Process {
+                identity: target.clone(),
+                original: singleton.clone(),
+                expected: singleton,
+            },
+            RecoveryEntry::Process {
+                identity: target.clone(),
+                original: cleared.clone(),
+                expected: cleared,
+            },
+        ]
+    });
+    let mut rejected = 0;
+    for entry in entries.into_iter().chain(cpu_set_entries) {
+        let id = 100 + rejected as u64;
         match transport.send(&RecoveryCommand::Begin { id, entry }) {
-            Err(error) if error.contains("Smoke scope permits only") => {}
+            Err(error) if error.contains("Smoke scope permits only") => rejected += 1,
             other => {
                 let _ = transport.send(&RecoveryCommand::Cancel { id });
                 return Err(format!(
@@ -316,5 +425,5 @@ fn verify_scope_rejections(
             }
         }
     }
-    Ok(count)
+    Ok(rejected)
 }

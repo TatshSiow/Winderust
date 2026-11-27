@@ -1,16 +1,30 @@
-use super::{app_picker, design, widgets};
+use super::{
+    app_picker, design,
+    feature_tabs::{FeatureTab, CONTENT_ID},
+    widgets,
+};
+use crate::application::SettingsEditor;
 use crate::config::{SleepPreventionRule, SleepPreventionSettings};
-use crate::sleep_prevention::SleepPreventionSnapshot;
-use crate::ui::process_rules::{can_add_process_candidate, process_setting_matches};
+use crate::control::instance_limits::validate_path;
+use crate::foreground::process_list::normalize_path_slashes;
+use crate::sleep_prevention::{
+    TemporarySleepPrevention, TemporarySleepPreventionDuration, TemporarySleepPreventionTimers,
+};
+use crate::ui::process_rules::{
+    can_add_exact_process_candidate, exact_path_input, picked_path_input,
+};
 use iced::{
-    widget::{column, text},
+    widget::{column, row, text},
     Element, Fill,
 };
 use rust_i18n::t;
+use std::time::{Instant, SystemTime};
 
 #[derive(Default)]
 pub(super) struct Editor {
     pub(super) path: String,
+    durations: [Option<String>; 2],
+    pub(super) temporary_pending: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -22,178 +36,272 @@ pub(super) enum Message {
     RuleEnabled(usize, bool),
     KeepDisplayOn(usize, bool),
     Remove(usize),
+    TemporaryDuration(TemporarySleepPrevention, String),
+    Temporary(
+        TemporarySleepPrevention,
+        Option<TemporarySleepPreventionDuration>,
+    ),
 }
 
 impl Editor {
-    fn can_add(settings: &SleepPreventionSettings, path: &str) -> bool {
-        can_add_process_candidate(
-            path,
-            |path| settings.contains_rule_for(path),
-            crate::features::power_plan_control::by_running_app::is_builtin_excluded,
-        )
+    pub(super) fn reset_drafts(&mut self) {
+        self.path.clear();
     }
 
-    pub(super) fn update(&mut self, settings: &mut SleepPreventionSettings, message: Message) {
+    fn can_add(settings: &SleepPreventionSettings, path: &str) -> bool {
+        validate_path(path).is_ok()
+            && can_add_exact_process_candidate(
+                path,
+                |path| settings.contains_rule_for(path),
+                crate::features::power_plan_control::by_running_app::is_builtin_excluded,
+            )
+    }
+
+    pub(super) fn update(&mut self, settings: &mut SettingsEditor, message: Message) {
+        let current = &settings.global().sleep_prevention;
         match message {
-            Message::Enabled(value) => settings.enabled = value,
+            Message::Enabled(value) if current.enabled != value => {
+                settings.edit_global(|settings| settings.sleep_prevention.enabled = value);
+            }
             Message::Path(value) => self.path = value,
-            Message::Add if Self::can_add(settings, &self.path) => {
-                settings.rules.push(SleepPreventionRule {
-                    executable_path: crate::foreground::executable_path_key(std::path::Path::new(
-                        self.path.trim(),
-                    )),
-                    enabled: true,
-                    keep_display_on: false,
+            Message::TemporaryDuration(kind, duration) => {
+                self.durations[kind as usize] = Some(duration)
+            }
+            Message::Add => {
+                let path = exact_path_input(&self.path);
+                if Self::can_add(current, path) {
+                    settings.edit_global(|settings| {
+                        settings.sleep_prevention.rules.push(SleepPreventionRule {
+                            executable_path: normalize_path_slashes(path).into_owned(),
+                            enabled: true,
+                            keep_display_on: false,
+                        });
+                    });
+                    self.path.clear();
+                }
+            }
+            Message::RuleEnabled(index, value)
+                if current
+                    .rules
+                    .get(index)
+                    .is_some_and(|rule| rule.enabled != value) =>
+            {
+                settings
+                    .edit_global(|settings| settings.sleep_prevention.rules[index].enabled = value);
+            }
+            Message::KeepDisplayOn(index, value)
+                if current
+                    .rules
+                    .get(index)
+                    .is_some_and(|rule| rule.keep_display_on != value) =>
+            {
+                settings.edit_global(|settings| {
+                    settings.sleep_prevention.rules[index].keep_display_on = value
                 });
-                self.path.clear();
             }
-            Message::RuleEnabled(index, value) => {
-                if let Some(rule) = settings.rules.get_mut(index) {
-                    rule.enabled = value;
-                }
+            Message::Remove(index) if index < current.rules.len() => {
+                settings.edit_global(|settings| settings.sleep_prevention.rules.remove(index));
             }
-            Message::KeepDisplayOn(index, value) => {
-                if let Some(rule) = settings.rules.get_mut(index) {
-                    rule.keep_display_on = value;
-                }
-            }
-            Message::Remove(index) if index < settings.rules.len() => {
-                settings.rules.remove(index);
-            }
-            Message::Add | Message::Browse | Message::Remove(_) => {}
+            Message::Enabled(_)
+            | Message::Browse
+            | Message::Temporary(..)
+            | Message::RuleEnabled(..)
+            | Message::KeepDisplayOn(..)
+            | Message::Remove(_) => {}
         }
     }
 
     pub(super) fn view<'a>(
         &'a self,
         settings: &'a SleepPreventionSettings,
-        status: &SleepPreventionSnapshot,
         candidates: &'a [app_picker::Candidate],
+        temporary: TemporarySleepPreventionTimers,
+        tab: FeatureTab,
     ) -> Element<'a, Message> {
-        let rules = settings
-            .rules
-            .iter()
-            .enumerate()
-            .map(|(index, rule)| {
-                (
-                    widgets::stable_key(&rule.executable_path),
-                    column![
-                        widgets::process_rule_header(
-                            &rule.executable_path,
-                            candidates,
-                            widgets::checkbox(rule.enabled)
-                                .on_toggle(move |value| Message::RuleEnabled(index, value))
-                                .into(),
-                            Some(
-                                text(indicator(status, rule))
-                                    .size(design::typography::SECONDARY)
-                                    .into()
-                            ),
-                            vec![widgets::checkbox(rule.keep_display_on)
-                                .on_toggle(move |value| Message::KeepDisplayOn(index, value))
-                                .into()],
-                            iced::widget::container(widgets::rule_delete_button(Some(
-                                Message::Remove(index)
-                            )))
-                            .center_x(80)
-                            .into(),
-                        ),
-                        widgets::settings_divider(),
-                    ]
-                    .into(),
-                )
-            })
-            .collect();
-        super::scrolling::scrollable(
+        let body = if tab == FeatureTab::Setup {
             column![
                 widgets::toggle_card(
                     "sleep_prevention.enable",
                     settings.enabled,
                     Some(Message::Enabled)
                 ),
-                widgets::setting_title("common.rules"),
-                app_picker::view(
-                    &self.path,
-                    candidates,
-                    true,
-                    Message::Path,
-                    Message::Browse,
-                    Self::can_add(settings, &self.path).then_some(Message::Add),
-                    |path| Self::can_add(settings, path).then_some(true),
-                ),
-                widgets::process_rules_table_with_actions(
-                    [t!("sleep_prevention.keep_display_on").to_string()],
-                    rules,
-                    t!("sleep_prevention.no_rules").to_string(),
-                    80,
-                    true,
+                widgets::settings_section(
+                    "sleep_prevention.temporary_controls",
+                    widgets::settings_card(widgets::settings_rows([
+                        self.temporary_row(TemporarySleepPrevention::KeepAwake, temporary),
+                        self.temporary_row(TemporarySleepPrevention::KeepDisplayOn, temporary),
+                    ])),
                 ),
             ]
-            .spacing(widgets::CARD_GAP),
-        )
-        .height(Fill)
-        .into()
+        } else {
+            self.custom_rules(settings, candidates)
+        };
+        super::scrolling::scrollable(body.spacing(widgets::CARD_GAP))
+            .id(CONTENT_ID)
+            .height(Fill)
+            .into()
     }
-}
 
-fn indicator(status: &SleepPreventionSnapshot, rule: &SleepPreventionRule) -> String {
-    let contains = |paths: &[String]| {
-        paths
+    fn custom_rules<'a>(
+        &'a self,
+        settings: &'a SleepPreventionSettings,
+        candidates: &'a [app_picker::Candidate],
+    ) -> iced::widget::Column<'a, Message> {
+        let rules = settings
+            .rules
             .iter()
-            .any(|path| process_setting_matches(path, &rule.executable_path))
-    };
-    let key = if !status.enabled || !rule.enabled {
-        "common.off"
-    } else if !status.observation_known {
-        "common.unknown"
-    } else if status.system_requested && contains(&status.requesting_apps) {
-        "sleep_prevention.request_accepted"
-    } else if contains(&status.suppressed_apps) {
-        "sleep_prevention.requests_paused"
-    } else if contains(&status.running_apps) {
-        "common.waiting"
-    } else {
-        "sleep_prevention.not_running"
-    };
-    t!(key).to_string()
+            .enumerate()
+            .map(|(index, rule)| {
+                let header = widgets::process_rule_header(
+                    &rule.executable_path,
+                    candidates,
+                    widgets::checkbox(rule.enabled)
+                        .on_toggle(move |value| Message::RuleEnabled(index, value))
+                        .into(),
+                    None,
+                    vec![widgets::checkbox(rule.keep_display_on)
+                        .on_toggle(move |value| Message::KeepDisplayOn(index, value))
+                        .into()],
+                    widgets::rule_actions(None, Some(Message::Remove(index))),
+                );
+                let mut row = column![header];
+                if validate_path(rule.executable_path.trim()).is_err() {
+                    row = row.push(app_picker::path_readd_hint());
+                }
+                (
+                    widgets::stable_key(&rule.executable_path),
+                    row.push(widgets::settings_divider()).into(),
+                )
+            })
+            .collect();
+        let path = exact_path_input(&self.path);
+        let can_add = Self::can_add(settings, path);
+        let mut picker = column![widgets::help_text("sleep_prevention.rules_help")]
+            .spacing(design::space::SMALL);
+        picker = picker.push(app_picker::view_with_path_selection(
+            &self.path,
+            candidates,
+            true,
+            (Message::Path, |path| Message::Path(picked_path_input(path))),
+            Message::Browse,
+            can_add.then_some(Message::Add),
+            |path| Self::can_add(settings, path).then_some(true),
+        ));
+        if !can_add && app_picker::is_path_query(&self.path) && validate_path(path).is_err() {
+            picker = picker.push(app_picker::path_format_hint());
+        }
+        column![
+            widgets::settings_card(picker),
+            widgets::process_rules_table(
+                [t!("sleep_prevention.keep_display_on").to_string()],
+                rules,
+                false,
+            ),
+        ]
+    }
+
+    fn temporary_row(
+        &self,
+        kind: TemporarySleepPrevention,
+        timers: TemporarySleepPreventionTimers,
+    ) -> Element<'_, Message> {
+        let title = match kind {
+            TemporarySleepPrevention::KeepAwake => "sleep_prevention.temporary_keep_awake",
+            TemporarySleepPrevention::KeepDisplayOn => "sleep_prevention.temporary_keep_display_on",
+        };
+        if let Some(until) = timers.until(kind) {
+            let end = SystemTime::now() + until.saturating_duration_since(Instant::now());
+            let local = chrono::DateTime::<chrono::Local>::from(end);
+            let status = t!(
+                "sleep_prevention.temporary_ends_at",
+                time = local.format("%H:%M")
+            );
+            let stop = widgets::action_button(t!("sleep_prevention.temporary_stop"))
+                .on_press_maybe(
+                    (!self.temporary_pending).then_some(Message::Temporary(kind, None)),
+                );
+            return widgets::setting_row(
+                title,
+                row![
+                    text(status.into_owned()).size(design::typography::SECONDARY),
+                    stop
+                ]
+                .spacing(design::space::SMALL)
+                .align_y(iced::Center),
+            )
+            .into();
+        }
+        let duration = self.durations[kind as usize].as_deref().unwrap_or("15");
+        let minutes = t!("sleep_prevention.timer_minutes").into_owned();
+        let start_message = (!self.temporary_pending)
+            .then(|| {
+                duration
+                    .parse()
+                    .ok()
+                    .and_then(TemporarySleepPreventionDuration::from_minutes)
+            })
+            .flatten()
+            .map(|duration| Message::Temporary(kind, Some(duration)));
+        let duration_field = widgets::stepper(
+            duration,
+            1..=u64::from(TemporarySleepPreventionDuration::MAX_MINUTES),
+            1,
+            Some(move |duration| Message::TemporaryDuration(kind, duration)),
+        );
+        let actions = row![
+            duration_field,
+            text(minutes).size(design::typography::SECONDARY),
+            widgets::action_button(t!("sleep_prevention.temporary_start"))
+                .on_press_maybe(start_message),
+        ]
+        .align_y(iced::Center)
+        .spacing(design::space::SMALL);
+        widgets::setting_row(title, actions).into()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{PowerSourceProfile, Settings};
 
     #[test]
-    fn rule_status_distinguishes_accepted_requests_and_sleep_suppression() {
-        let rule = SleepPreventionRule {
-            executable_path: r"C:\Apps\test.exe".into(),
-            enabled: true,
-            keep_display_on: false,
-        };
-        let mut status = SleepPreventionSnapshot {
-            enabled: true,
-            observation_known: true,
-            running_apps: vec![rule.executable_path.clone()],
-            requesting_apps: vec![rule.executable_path.clone()],
-            ..Default::default()
-        };
-        assert_eq!(indicator(&status, &rule), t!("common.waiting"));
-        status.system_requested = true;
+    fn adding_a_rule_requires_a_full_drive_or_network_path() {
+        let mut settings = SettingsEditor::with_settings(Settings::default());
+        settings.select_power_source(PowerSourceProfile::OnBattery);
+        let mut editor = Editor::default();
+        for path in [
+            r"C:\Apps\.\worker.exe",
+            r"C:\Apps\child\..\worker.exe",
+            r"\\?\C:\Apps\worker.exe",
+            r#""C:\Apps\worker.exe ""#,
+        ] {
+            editor.update(&mut settings, Message::Path(path.into()));
+            editor.update(&mut settings, Message::Add);
+        }
+        assert!(!settings.has_unsaved_changes());
+        for path in [
+            r" C:\Apps\worker.exe ",
+            "C:\\Apps\\worker.exe\u{3000}",
+            r" \\server\share\worker.exe ",
+        ] {
+            editor.update(&mut settings, Message::Path(path.into()));
+            editor.update(&mut settings, Message::Add);
+        }
+        let paths: Vec<_> = settings
+            .global()
+            .sleep_prevention
+            .rules
+            .iter()
+            .map(|rule| rule.executable_path.as_str())
+            .collect();
         assert_eq!(
-            indicator(&status, &rule),
-            t!("sleep_prevention.request_accepted")
-        );
-        status.observation_known = false;
-        assert_eq!(indicator(&status, &rule), t!("common.unknown"));
-        status.observation_known = true;
-        status.suppressed_apps.push(rule.executable_path.clone());
-        assert_eq!(
-            indicator(&status, &rule),
-            t!("sleep_prevention.request_accepted")
-        );
-        status.requesting_apps.clear();
-        assert_eq!(
-            indicator(&status, &rule),
-            t!("sleep_prevention.requests_paused")
+            paths,
+            [
+                r"C:\Apps\worker.exe",
+                "C:\\Apps\\worker.exe\u{3000}",
+                r"\\server\share\worker.exe"
+            ]
         );
     }
 }

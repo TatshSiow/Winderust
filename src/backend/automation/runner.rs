@@ -1,6 +1,36 @@
 use super::*;
-use crate::action_log::{ActionLogFeature, ActionLogResult};
-use crate::runtime::observations::CycleObservations;
+use crate::features::watchdog::memory_trim::MemoryTrimStatus;
+use crate::features::watchdog::sleep_prevention::SleepPreventionEnvironment;
+use crate::runtime::observations::{CycleObservations, ForegroundCpuHistory};
+use crate::{
+    action_log::{ActionLogFeature, ActionLogResult},
+    adaptive_engine_process::{focus_and_launch_profile_eligible, focus_process_priority_eligible},
+    config::{AdaptiveEngineSettings, AdaptiveRestraintIoPriority, ProcessIoPriority},
+    control::{
+        io_priority::{
+            IoPriorityApplyOutcome, IoPriorityClaim, IoPriorityPreservation,
+            IoPriorityReleaseSummary,
+        },
+        memory_priority::MemoryPriorityReleaseOwner,
+        power_plan::{AdaptiveProcessorPowerError, PowerPlanOwner, RestraintCoreParking},
+        priority_efficiency::{
+            AdaptiveRestraintProcess, AdaptiveRestraintState, PriorityEfficiencyReleaseSummary,
+            ProcessPropertyApplyOutcome,
+        },
+        process::{ProcessControlError, ProcessControlTarget},
+    },
+    features::cpu_control::cpu_limiter::{
+        has_affinity_rules, has_duty_cycle_limits, AffinityLimiter, AffinityLimiterCycle,
+        DutyLimiterCycle,
+    },
+    foreground::{list_process_ids, process_count_label, process_session_id, ProcessInfo},
+    platform::windows::process::current_process_id,
+    rules::decision_engine::{matching_by_focus_rules, ordinary_power_plan_stop},
+};
+use std::{
+    collections::{btree_map::Entry, BTreeSet},
+    path::PathBuf,
+};
 
 fn app_suspension_lock_failure(error: String) -> AppSuspensionSnapshot {
     AppSuspensionSnapshot {
@@ -11,8 +41,37 @@ fn app_suspension_lock_failure(error: String) -> AppSuspensionSnapshot {
     }
 }
 
+pub(super) fn app_suspension_release_status(
+    mut status: AppSuspensionSnapshot,
+    settings: &Settings,
+) -> AppSuspensionSnapshot {
+    status.status = if !settings.general.enabled {
+        AppSuspensionStatus::AutomationDisabled
+    } else if !settings.app_suspension.enabled {
+        AppSuspensionStatus::Disabled
+    } else {
+        return status;
+    };
+    status.enabled = false;
+    status
+}
+
+fn app_suspension_status_with_retry(
+    mut status: AppSuspensionSnapshot,
+    controller: &SuspensionController,
+) -> AppSuspensionSnapshot {
+    if status.last_error.is_some() {
+        return status;
+    }
+    if let Some(error) = controller.app_suspension_retry_error() {
+        status.failed_actions = status.failed_actions.max(1);
+        status.last_error = Some(error.to_owned());
+    }
+    status
+}
+
 pub(super) fn adaptive_power_plan_required(settings: &Settings) -> bool {
-    settings.adaptive_engine.enabled && settings.adaptive_engine.processor_power_policy_enabled
+    settings.adaptive_engine.adaptive_processor_power_enabled
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
@@ -56,27 +115,41 @@ pub(super) fn adaptive_processor_demand(
     demand
 }
 
+struct ObservedSettings {
+    configured: Arc<Settings>,
+    plugged_in: Option<bool>,
+}
+
+impl ObservedSettings {
+    fn effective(&self) -> &Settings {
+        active_power_source_settings(&self.configured, self.plugged_in)
+    }
+}
+
 #[derive(Default)]
 pub(super) struct RuntimeCore {
+    adaptive_processor_power_error: Option<AdaptiveProcessorPowerError>,
     shutdown_started: bool,
-    last_settings: Option<Settings>,
-    last_power_source: Option<Option<bool>>,
+    last_settings: Option<ObservedSettings>,
     power_plan_controller: PowerPlanController,
+    power_plan_rule_context: Option<PowerPlanRuleContext>,
     cpu_usage: CpuUsageSnapshot,
-    next_cpu_usage_refresh: Option<Instant>,
+    cpu_usage_sampled_at: Option<Instant>,
     cpu_monitor: CpuUsageMonitor,
     bottleneck_classifier: BottleneckClassifier,
     per_processor_cpu_monitor: PerProcessorUsageMonitor,
     io_monitor: IoUsageMonitor,
     adaptive_processor_topology: Vec<LogicalProcessorInfo>,
+    adaptive_class1_core_parking_supported: Option<bool>,
     adaptive_io_usage: IoUsageSnapshot,
     next_adaptive_io_refresh: Option<Instant>,
-    adaptive_foreground_process_id: Option<u32>,
+    adaptive_foreground_identity: Option<(u32, u64)>,
+    adaptive_foreground_cpu_history: ForegroundCpuHistory,
     controller_activity_detector: ControllerActivityDetector,
     controller_observed_since: Option<Instant>,
     pub(super) input_activity: InputActivityTracker,
     by_cpu_load_scheduler: ByCpuLoadScheduler,
-    background_efficiency_manager: BackgroundEfficiencyManager,
+    efficiency_mode_manager: EfficiencyModeManager,
     pub(super) app_suspension_manager: AppSuspensionManager,
     pub(super) app_suspension_controller: Arc<Mutex<SuspensionController>>,
     last_app_suspension_shell_user_intent: Option<Instant>,
@@ -86,14 +159,12 @@ pub(super) struct RuntimeCore {
     pub(super) instance_balancing: instance_balancing::Runtime,
     cpu_limiter_controller: Option<CpuLimiterController>,
     cpu_limiter_manager: CpuLimiterManager,
+    affinity_limiter: AffinityLimiter,
     pub(super) by_running_app_manager: ByRunningAppManager,
     pub(super) action_log: ActionLog,
+    action_log_session: Option<Arc<SharedAutomationState>>,
     adaptive_engine_process_manager: AdaptiveEngineProcessManager,
-    focus_and_launch_profile_active: bool,
-    cpu_pressure_restraint_active: bool,
-    helper_workload: Vec<(u32, u64)>,
-    helper_dependencies_changed: bool,
-    adaptive_engine_process_foreground_cpu_usage_tenths: Option<u16>,
+    adaptive_restraint_processes: Option<Arc<[AdaptiveRestraintProcess]>>,
     process_priority_manager: ProcessPriorityManager,
     priority_efficiency_controller: PriorityEfficiencyController,
     thread_priority_manager: ThreadPriorityManager,
@@ -108,15 +179,17 @@ pub(super) struct RuntimeCore {
     memory_priority_controller: MemoryPriorityController,
     memory_trim_manager: MemoryTrimManager,
     memory_trim_controller: MemoryTrimController,
-    watchdog_manager: WatchdogManager,
+    resource_thresholds_manager: ResourceThresholdsManager,
+    resource_thresholds_restart_cooldowns: Vec<(PathBuf, Instant)>,
+    resource_thresholds_trim_cooldowns: Vec<(PathBuf, Instant)>,
     process_termination_controller: ProcessTerminationController,
     timer_resolution_manager: TimerResolutionManager,
     timer_resolution_controller: TimerResolutionController,
-    sleep_prevention_manager: SleepPreventionManager,
+    pub(super) sleep_prevention_manager: SleepPreventionManager,
     sleep_prevention_controller: SleepPreventionController,
     pub(super) keep_running: keep_running::KeepRunningCoordinator,
     pub(super) instance_limits: InstanceLimitsManager,
-    pub(super) known_process_ids: BTreeSet<u32>,
+    pub(super) known_process_ids: Vec<u32>,
     published_action_log_revision: u64,
 }
 
@@ -124,23 +197,40 @@ pub(super) struct RuntimeCore {
 pub(super) struct ProcessControlCommandStatuses {
     pub(super) memory_trim: Option<MemoryTrimSnapshot>,
     pub(super) app_suspension: Option<AppSuspensionSnapshot>,
+    pub(super) temporary_sleep_prevention: Vec<TemporarySleepPreventionCommand>,
+}
+
+const RESOURCE_THRESHOLDS_RESTART_COOLDOWN: Duration = Duration::from_secs(60);
+const RESOURCE_THRESHOLDS_TRIM_COOLDOWN: Duration = Duration::from_secs(60);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResourceThresholdsRestartOutcome {
+    Applied,
+    AlreadyRestarted,
+    CoolingDown,
+    BlockedByAppSuspension,
 }
 
 #[derive(Default)]
-struct WatchdogActionCycle {
-    stopped: BTreeSet<(u32, u64)>,
-    restarts: std::collections::BTreeMap<Vec<(u32, u64)>, Result<(), String>>,
+struct ResourceThresholdsActionCycle {
+    termination_handled: BTreeSet<(u32, u64)>,
+    restarts: std::collections::BTreeMap<
+        Vec<(u32, u64)>,
+        Result<ResourceThresholdsRestartOutcome, String>,
+    >,
 }
 
-impl WatchdogActionCycle {
+impl ResourceThresholdsActionCycle {
     fn skipped_termination_reason(
         &self,
         targets: &[crate::foreground::ProcessActionTarget],
     ) -> Option<&'static str> {
         if targets.is_empty()
-            || targets
-                .iter()
-                .any(|target| !self.stopped.contains(&(target.id, target.creation_time)))
+            || targets.iter().any(|target| {
+                !self
+                    .termination_handled
+                    .contains(&(target.id, target.creation_time))
+            })
         {
             return None;
         }
@@ -149,137 +239,241 @@ impl WatchdogActionCycle {
             .map(|target| (target.id, target.creation_time))
             .collect();
         key.sort_unstable();
-        Some(if self.restarts.get(&key).is_some_and(Result::is_ok) {
-            "watchdog.already_restarted"
-        } else {
-            "watchdog.already_stopped"
+        Some(match self.restarts.get(&key) {
+            Some(Ok(ResourceThresholdsRestartOutcome::Applied)) => {
+                "resource_thresholds.already_restarted"
+            }
+            _ => "resource_thresholds.termination_already_handled",
         })
     }
 
     fn restart_once(
         &mut self,
         targets: &[crate::foreground::ProcessActionTarget],
+        cooldowns: &mut Vec<(PathBuf, Instant)>,
+        now: Instant,
+        blocked_by_app_suspension: impl FnOnce() -> Result<bool, String>,
         restart: impl FnOnce() -> crate::control::process_restart::RestartResult,
-    ) -> Result<(), String> {
+    ) -> Result<ResourceThresholdsRestartOutcome, String> {
         let mut key: Vec<_> = targets
             .iter()
             .map(|target| (target.id, target.creation_time))
             .collect();
         key.sort_unstable();
-        self.restarts
-            .entry(key)
-            .or_insert_with(|| {
-                let outcome = restart();
-                self.stopped.extend(outcome.stopped);
-                outcome.result
-            })
-            .clone()
+        let entry = match self.restarts.entry(key) {
+            Entry::Occupied(entry) => {
+                return match entry.get() {
+                    Ok(ResourceThresholdsRestartOutcome::Applied) => {
+                        Ok(ResourceThresholdsRestartOutcome::AlreadyRestarted)
+                    }
+                    outcome => outcome.clone(),
+                };
+            }
+            Entry::Vacant(entry) => entry,
+        };
+        let outcome = (|| {
+            cooldowns.retain(|(_, deadline)| now < *deadline);
+            let path = targets.first().map(|target| &target.executable_path);
+            if path.is_some_and(|path| {
+                cooldowns
+                    .iter()
+                    .any(|(active_path, _)| same_executable_path(active_path, path))
+            }) {
+                return Ok(ResourceThresholdsRestartOutcome::CoolingDown);
+            }
+            if blocked_by_app_suspension()? {
+                return Ok(ResourceThresholdsRestartOutcome::BlockedByAppSuspension);
+            }
+            if let Some(path) = path {
+                cooldowns.push((path.clone(), now + RESOURCE_THRESHOLDS_RESTART_COOLDOWN));
+            }
+            let outcome = restart();
+            self.termination_handled.extend(outcome.termination_handled);
+            outcome
+                .result
+                .map(|()| ResourceThresholdsRestartOutcome::Applied)
+        })();
+        entry.insert(outcome).clone()
     }
 }
 
 impl RuntimeCore {
-    pub(super) fn run_watchdog_update(
+    pub(super) fn for_worker(shared: &Arc<SharedAutomationState>) -> Result<Self, String> {
+        let action_log = lock_unpoisoned(&shared.state)
+            .idle_action_log
+            .take()
+            .ok_or_else(|| "Action Log is already owned by an automation worker.".to_owned())?;
+        let mut runner = Self::default();
+        runner.published_action_log_revision = action_log.revision();
+        runner.action_log = action_log;
+        runner.action_log_session = Some(Arc::clone(shared));
+        Ok(runner)
+    }
+
+    pub(super) fn run_resource_thresholds_update(
         &mut self,
+        shared: &SharedAutomationState,
         settings: &Settings,
+        restore_affinity_before_restart: bool,
         observations: &mut CycleObservations,
-    ) -> WatchdogSnapshot {
-        use crate::config::{WatchdogAction, WatchdogMetric};
+    ) -> ResourceThresholdsSnapshot {
+        use crate::config::ResourceThresholdsAction;
         use rust_i18n::t;
-        let (mut snapshot, mut events) = self.watchdog_manager.update(
-            &settings.watchdog,
+        let (mut snapshot, mut events) = self.resource_thresholds_manager.update(
+            &settings.resource_thresholds,
             settings.general.enabled,
             observations,
         );
-        // Prepare replacements before a simultaneous termination can stop the same app.
-        events.sort_by_key(|event| event.response.action != WatchdogAction::Restart);
-        let mut actions = WatchdogActionCycle::default();
+        // Prepare replacements first and skip trimming a process already stopped in this pass.
+        events.sort_by_key(|event| match event.response.action {
+            ResourceThresholdsAction::Restart => 0,
+            ResourceThresholdsAction::TrimMemory => 2,
+            _ => 1,
+        });
+        let mut actions = ResourceThresholdsActionCycle::default();
+        let mut notification_error = None;
         for event in events {
             let level = t!(if event.critical {
-                "watchdog.critical"
+                "resource_thresholds.critical"
             } else {
-                "watchdog.warning"
+                "resource_thresholds.warning"
             });
-            let metric = t!(match event.metric {
-                WatchdogMetric::CpuPercent => "watchdog.cpu",
-                WatchdogMetric::MemoryPercent => "watchdog.memory_percent",
-                WatchdogMetric::MemoryMb => "watchdog.memory_mb",
-            });
+            let metric = t!(event.metric.label_key());
+            let process_id = event.process_id;
+            let value = format!("{:.1}", event.value);
             let detail = t!(
-                "watchdog.trigger_detail",
+                "resource_thresholds.trigger_detail",
                 level = level,
                 app = &event.name,
-                count = event.targets.len(),
+                count = event.process_count,
                 metric = metric,
-                value = format!("{:.1}", event.value),
+                value = value,
+                comparison = "≥",
                 threshold = event.response.threshold
             )
-            .to_string();
-            let process_id = if event.targets.len() == 1 {
-                event.targets.first().map(|target| target.id)
-            } else {
-                None
+            .into_owned();
+            let Some(current) = current_resource_thresholds_settings(shared, settings, None) else {
+                continue;
             };
-            let mut action_detail = t!("watchdog.no_action").to_string();
-            if event.response.action != WatchdogAction::None {
-                self.keep_running
-                    .pause_targets(&event.targets, PauseReason::Watchdog);
-                let targets: Vec<_> = event
-                    .targets
-                    .iter()
-                    .filter(|target| !actions.stopped.contains(&(target.id, target.creation_time)))
-                    .cloned()
-                    .collect();
-                let restarting = event.response.action == WatchdogAction::Restart;
-                let skipped = if restarting {
-                    None
-                } else {
-                    actions.skipped_termination_reason(&event.targets)
-                };
-                let result = if restarting {
-                    actions.restart_once(&event.targets, || {
-                        crate::control::process_restart::restart_app(
-                            event.targets.clone(),
-                            settings.general.allow_cross_session_process_control,
+            let mut action_detail = t!("resource_thresholds.alert").into_owned();
+            if event.response.action.mutates_process() {
+                let restarting = event.response.action == ResourceThresholdsAction::Restart;
+                let result = if event.response.action == ResourceThresholdsAction::TrimMemory {
+                    self.trim_resource_thresholds_targets(
+                        &current,
+                        &event.targets,
+                        &actions,
+                        observations,
+                    )
+                } else if restarting {
+                    actions
+                        .restart_once(
+                            &event.targets,
+                            &mut self.resource_thresholds_restart_cooldowns,
+                            Instant::now(),
+                            || {
+                                self.app_suspension_controller
+                                    .lock()
+                                    .map_err(|_| {
+                                        "Shared suspension state is unavailable.".to_owned()
+                                    })?
+                                    .app_suspension_blocks_restart(
+                                        &event.targets,
+                                        settings.general.allow_cross_session_process_control,
+                                    )
+                            },
+                            || {
+                                self.keep_running
+                                    .pause_targets(&event.targets, PauseReason::ResourceThresholds);
+                                crate::control::process_restart::restart_app(
+                                    event.targets.clone(),
+                                    settings.general.allow_cross_session_process_control,
+                                    |parent| {
+                                        if restore_affinity_before_restart
+                                            && self.cpu_allocation_coordinator.restore_adaptive_affinity_before_restart(
+                                                parent,
+                                                settings.general.allow_cross_session_process_control,
+                                            )?
+                                        {
+                                            self.action_log.record(
+                                                ActionLogFeature::AdaptiveEngine,
+                                                Some(parent.id),
+                                                &parent.name,
+                                                ActionLogResult::Restored,
+                                                "Restored the original processor affinity before restarting the app.",
+                                            );
+                                        }
+                                        Ok(())
+                                    },
+                                )
+                            },
                         )
-                    })
-                } else if targets.is_empty() {
-                    Ok(())
+                        .map(|outcome| match outcome {
+                            ResourceThresholdsRestartOutcome::Applied => (
+                                ActionLogResult::Applied,
+                                t!("resource_thresholds.restarted", count = event.targets.len()),
+                            ),
+                            ResourceThresholdsRestartOutcome::AlreadyRestarted => (
+                                ActionLogResult::Skipped,
+                                t!("resource_thresholds.restart_already_restarted"),
+                            ),
+                            ResourceThresholdsRestartOutcome::CoolingDown => (
+                                ActionLogResult::Skipped,
+                                t!(
+                                    "resource_thresholds.restart_cooldown",
+                                    seconds = RESOURCE_THRESHOLDS_RESTART_COOLDOWN.as_secs()
+                                ),
+                            ),
+                            ResourceThresholdsRestartOutcome::BlockedByAppSuspension => (
+                                ActionLogResult::Skipped,
+                                t!("resource_thresholds.restart_app_suspended"),
+                            ),
+                        })
+                } else if let Some(reason) = actions.skipped_termination_reason(&event.targets) {
+                    Ok((ActionLogResult::Skipped, t!(reason)))
                 } else {
+                    self.keep_running
+                        .pause_targets(&event.targets, PauseReason::ResourceThresholds);
+                    let targets = event
+                        .targets
+                        .iter()
+                        .filter(|target| {
+                            !actions
+                                .termination_handled
+                                .contains(&(target.id, target.creation_time))
+                        })
+                        .cloned()
+                        .collect();
                     let batch = self.process_termination_controller.terminate_batch(
                         targets,
                         settings.general.allow_cross_session_process_control,
                     );
                     for result in &batch.results {
-                        if result.outcome == crate::control::process_termination::ProcessTerminationOutcome::Terminated {
-                            actions.stopped.insert((result.target.id, result.target.creation_time));
+                        if result.outcome == crate::control::process_termination::ProcessTerminationOutcome::Requested {
+                            actions.termination_handled.insert((result.target.id, result.target.creation_time));
                         }
                     }
-                    batch.into_process_list_result()
-                };
-                let outcome = match (result, skipped) {
-                    (Ok(()), Some(reason)) => {
-                        action_detail = t!(reason).to_string();
-                        ActionLogResult::Skipped
-                    }
-                    (Ok(()), None) => {
-                        action_detail = t!(
-                            if restarting {
-                                "watchdog.restarted"
-                            } else {
-                                "watchdog.terminated"
-                            },
-                            count = event.targets.len()
+                    batch.into_termination_result().map(|count| {
+                        (
+                            ActionLogResult::Applied,
+                            t!("resource_thresholds.termination_requested", count = count),
                         )
-                        .to_string();
-                        ActionLogResult::Applied
+                    })
+                };
+                let outcome = match result {
+                    Ok((outcome, message)) => {
+                        action_detail = message.into_owned();
+                        outcome
                     }
-                    (Err(error), _) => {
+                    Err(error) => {
                         snapshot.last_error = Some(error.clone());
                         action_detail = t!(
-                            if restarting {
-                                "watchdog.restart_failed"
-                            } else {
-                                "watchdog.termination_failed"
+                            match event.response.action {
+                                ResourceThresholdsAction::TrimMemory =>
+                                    "resource_thresholds.trim_failed",
+                                ResourceThresholdsAction::Restart =>
+                                    "resource_thresholds.restart_failed",
+                                _ => "resource_thresholds.termination_failed",
                             },
                             error = error
                         )
@@ -288,18 +482,21 @@ impl RuntimeCore {
                     }
                 };
                 self.action_log.record(
-                    ActionLogFeature::Watchdog,
+                    ActionLogFeature::ResourceThresholds,
                     process_id,
                     &event.name,
                     outcome,
                     format!("{detail}. {action_detail}"),
                 );
             }
-            if event.notify {
+            if event.notify
+                && current_resource_thresholds_settings(shared, settings, Some(event.rule_index))
+                    .is_some()
+            {
                 let result = tray::show_notification(
-                    &format!("Winderust Watchdog · {level}"),
+                    &format!("Winderust {} · {level}", t!("nav.resource_thresholds")),
                     &t!(
-                        "watchdog.notification_body",
+                        "resource_thresholds.notification_body",
                         action = action_detail,
                         detail = detail
                     ),
@@ -308,23 +505,124 @@ impl RuntimeCore {
                 let (outcome, reason) = match result {
                     Ok(()) => (
                         ActionLogResult::Applied,
-                        format!("{detail}. {}", t!("watchdog.notification_sent")),
+                        format!("{detail}. {}", t!("resource_thresholds.notification_sent")),
                     ),
                     Err(error) => {
-                        snapshot.last_error = Some(error.clone());
+                        let error = error.localized();
+                        notification_error = Some(error.clone());
                         (ActionLogResult::Failed, format!("{detail}. {error}"))
                     }
                 };
                 self.action_log.record(
-                    ActionLogFeature::Watchdog,
+                    ActionLogFeature::ResourceThresholds,
                     process_id,
                     &event.name,
                     outcome,
                     reason,
                 );
+            } else if event.response.action == ResourceThresholdsAction::Alert {
+                self.action_log.record(
+                    ActionLogFeature::ResourceThresholds,
+                    process_id,
+                    &event.name,
+                    ActionLogResult::Applied,
+                    detail,
+                );
             }
         }
+        snapshot.last_error = snapshot.last_error.or(notification_error);
         snapshot
+    }
+
+    fn trim_resource_thresholds_targets(
+        &mut self,
+        settings: &Settings,
+        targets: &[ProcessActionTarget],
+        actions: &ResourceThresholdsActionCycle,
+        observations: &mut CycleObservations,
+    ) -> Result<(ActionLogResult, std::borrow::Cow<'static, str>), String> {
+        let mut targets = targets.iter().filter(|target| {
+            !actions
+                .termination_handled
+                .contains(&(target.id, target.creation_time))
+        });
+        let Some(first) = targets.next() else {
+            return Ok((
+                ActionLogResult::Skipped,
+                t!("resource_thresholds.trim_no_targets"),
+            ));
+        };
+        let path = &first.executable_path;
+        let excluded = path
+            .to_str()
+            .is_some_and(|path| settings.memory_trim.exclusion_enabled_for(path));
+        if excluded {
+            return Ok((
+                ActionLogResult::Skipped,
+                t!("resource_thresholds.trim_excluded"),
+            ));
+        }
+        let Some(foreground) = observations
+            .foreground_process()
+            .filter(|process| process.executable_path.is_absolute())
+        else {
+            return Ok((
+                ActionLogResult::Skipped,
+                t!("memory_trim.manual_foreground_unknown"),
+            ));
+        };
+        if same_executable_path(path, &foreground.executable_path) {
+            return Ok((
+                ActionLogResult::Skipped,
+                t!("resource_thresholds.trim_foreground"),
+            ));
+        }
+        let now = Instant::now();
+        let cooldowns = &mut self.resource_thresholds_trim_cooldowns;
+        cooldowns.retain(|(_, deadline)| now < *deadline);
+        if cooldowns
+            .iter()
+            .any(|(active_path, _)| same_executable_path(active_path, path))
+        {
+            return Ok((
+                ActionLogResult::Skipped,
+                t!(
+                    "resource_thresholds.trim_cooldown",
+                    seconds = RESOURCE_THRESHOLDS_TRIM_COOLDOWN.as_secs()
+                ),
+            ));
+        }
+        cooldowns.push((path.clone(), now + RESOURCE_THRESHOLDS_TRIM_COOLDOWN));
+        let mut trimmed = 0;
+        let mut failed = 0;
+        let mut first_error = None;
+        for target in std::iter::once(first).chain(targets) {
+            match self.memory_trim_controller.trim(
+                &ProcessControlTarget::from_action_target(target),
+                settings.general.allow_cross_session_process_control,
+                0,
+            ) {
+                Ok(_) => trimmed += 1,
+                Err(error) => {
+                    failed += 1;
+                    first_error.get_or_insert(error);
+                }
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(format!(
+                "{} {error}",
+                t!(
+                    "memory_trim.manual_failed",
+                    trimmed = trimmed,
+                    failed = failed
+                )
+            ));
+        }
+        Ok((
+            ActionLogResult::Applied,
+            t!("resource_thresholds.trimmed", count = trimmed),
+        ))
     }
 
     fn with_app_suspension<R>(
@@ -350,16 +648,21 @@ impl RuntimeCore {
         self.keep_running.shutdown();
 
         let mut errors = Vec::<String>::new();
-        let mut settings = self.last_settings.clone().unwrap_or_default();
+        let mut settings = self
+            .last_settings
+            .as_ref()
+            .map(ObservedSettings::effective)
+            .cloned()
+            .unwrap_or_default();
         settings.general.enabled = false;
         let mut observations = CycleObservations::default();
 
         // Restore in the reverse order used by the automation loop. Several features can touch
         // the same process state, so relying on field drop order can restore an intermediate
         // Winderust-managed value instead of the value that preceded Winderust.
-        // Priority, allocation, and timer controllers retry any state left by the disabled
-        // feature update. Their final shutdown result is authoritative; keeping a transient
-        // update error would report failure even after that retry restored everything.
+        // Priority, allocation, timer, and limiter controllers retry state left by the disabled
+        // feature update. Use the final shutdown result so a transient error does not report
+        // failure after that retry restored everything.
         collect_restore_error(
             &mut errors,
             "Sleep Prevention",
@@ -367,17 +670,12 @@ impl RuntimeCore {
                 .reset(&mut self.sleep_prevention_controller, &mut self.action_log)
                 .last_error,
         );
-        self.run_timer_resolution_update(&settings, &mut observations);
+        self.run_timer_resolution_update(&settings, false, &mut observations);
         if let Err(error) = self.timer_resolution_controller.shutdown() {
             errors.push(format!("Timer Resolution restoration failed: {error}"));
         }
-        self.run_by_running_app_update(&settings, &mut observations);
-        collect_restore_error(
-            &mut errors,
-            "CPU Limiter",
-            self.run_cpu_limiter_update(&settings, &mut observations)
-                .last_error,
-        );
+        let _ = self.run_by_running_app_update(&settings, &mut observations);
+        self.run_cpu_limiter_update(&settings, false, &mut observations);
         if let Some(mut controller) = self.cpu_limiter_controller.take() {
             if let Err(error) = controller.shutdown() {
                 errors.push(format!("CPU Limiter restoration failed: {error}"));
@@ -406,34 +704,34 @@ impl RuntimeCore {
             }
             Err(_) => errors.push("Suspension restoration state is unavailable.".to_owned()),
         }
-        self.run_memory_priority_update(&settings, &mut observations);
+        self.run_memory_priority_update(&settings, false, &mut observations);
         if let Err(error) = self.memory_priority_controller.shutdown() {
             errors.push(format!("Memory Priority restoration failed: {error}"));
         }
-        self.run_gpu_priority_update(&settings, &mut observations);
+        self.run_gpu_priority_update(&settings, false, &mut observations);
         if let Err(error) = self.gpu_priority_controller.shutdown() {
             errors.push(format!("GPU Priority restoration failed: {error}"));
         }
-        self.run_dynamic_priority_boost_update(&settings, &mut observations);
+        self.run_dynamic_priority_boost_update(&settings, false, &mut observations);
         if let Err(error) = self.dynamic_priority_boost_controller.shutdown() {
             errors.push(format!(
                 "Dynamic Priority Boost restoration failed: {error}"
             ));
         }
-        self.run_thread_priority_update(&settings, &mut observations);
+        self.run_thread_priority_update(&settings, false, &mut observations);
         if let Err(error) = self.thread_priority_controller.shutdown() {
             errors.push(format!("Thread Priority restoration failed: {error}"));
         }
-        self.run_process_priority_update(&settings, &mut observations);
-        self.run_io_priority_update(&settings, &mut observations);
+        self.run_process_priority_update(&settings, false, &mut observations);
+        self.run_io_priority_update(&settings, false, &mut observations);
         if let Err(error) = self.io_priority_controller.shutdown() {
             errors.push(format!("I/O Priority restoration failed: {error}"));
         }
-        self.run_adaptive_engine_process_update(&settings, &mut observations);
+        self.run_adaptive_engine_process_update(&settings, false, None, &mut observations);
         if let Err(error) = self.cpu_allocation_coordinator.shutdown() {
             errors.push(format!("CPU allocation restoration failed: {error}"));
         }
-        self.run_background_efficiency_update(&settings, &mut observations);
+        self.run_efficiency_mode_update(&settings, false, &mut observations);
         if let Err(error) = self.priority_efficiency_controller.shutdown() {
             errors.push(format!(
                 "Process Priority and Efficiency restoration failed: {error}"
@@ -450,13 +748,48 @@ impl RuntimeCore {
         }
     }
 
+    pub(super) fn replay_sleep_prevention_settings(&mut self, snapshot: &AutomationSnapshot) {
+        let events = snapshot.wake_events;
+        let Some(previous) = &self.last_settings else {
+            return;
+        };
+        if snapshot.sleep_prevention_settings.is_empty()
+            || !snapshot.windows_event_watcher_active
+            || events.windows_event_watcher_change.is_some()
+            || events.suspend_resume
+            || events.session_changed
+        {
+            return;
+        }
+
+        // A saved configuration can filter these callbacks before the watcher is synced.
+        let covered = std::iter::once(&previous.configured)
+            .chain(&snapshot.sleep_prevention_settings)
+            .chain(std::iter::once(&snapshot.settings))
+            .all(|settings| {
+                windows_event_watcher_required(settings)
+                    && [
+                        WindowsAutomationEvent::SuspendResume,
+                        WindowsAutomationEvent::SessionChanged,
+                    ]
+                    .into_iter()
+                    .all(|event| windows_event_wake_required(settings, event))
+            });
+        if covered {
+            for settings in &snapshot.sleep_prevention_settings {
+                self.sleep_prevention_manager.note_configuration(settings);
+            }
+        }
+    }
+
     pub(super) fn note_settings(
         &mut self,
-        settings: &Settings,
+        configured: &Arc<Settings>,
         events: AutomationWakeEvents,
         plugged_in: Option<bool>,
     ) -> bool {
-        if !settings.general.restore_previous_power_plan {
+        let settings = active_power_source_settings(configured, plugged_in);
+        if events.restore_previous_plan_disabled || !settings.general.restore_previous_power_plan {
             self.power_plan_controller.cancel_temporary_restoration();
         }
         self.action_log.set_mode(settings.advanced.action_log_mode);
@@ -464,46 +797,84 @@ impl RuntimeCore {
             settings.advanced.execution_failure_suppression_threshold(),
         );
 
-        let source_changed = self
-            .last_power_source
-            .replace(plugged_in)
-            .is_some_and(|previous| previous != plugged_in);
-        if events.suspend_resume {
-            self.sleep_prevention_manager
-                .suspend(&mut self.sleep_prevention_controller, &mut self.action_log);
+        if self
+            .power_plan_rule_context
+            .as_ref()
+            .is_some_and(|context| context.source != active_power_source(plugged_in))
+        {
+            self.power_plan_rule_context = None;
         }
-        if source_changed || events.suspend_resume {
+        let source_changed = self
+            .last_settings
+            .as_ref()
+            .is_some_and(|previous| previous.plugged_in != plugged_in);
+        if events.suspend_resume {
+            self.adaptive_engine_process_manager
+                .reset_pressure_observations("Windows resumed from sleep");
+        }
+        if source_changed
+            || events.suspend_resume
+            || events.session_changed
+            || events.windows_event_watcher_change.is_some()
+        {
+            self.reset_adaptive_power_demand();
+        }
+        if events.suspend_resume || events.session_changed {
+            self.adaptive_foreground_identity = None;
+        }
+        // A watcher transition invalidates the coverage behind accepted requests.
+        if events.suspend_resume
+            || (events.windows_event_watcher_change.is_some()
+                && self.sleep_prevention_manager.rule_system_requested())
+        {
+            self.sleep_prevention_manager.suppress_and_release(
+                &mut self.sleep_prevention_controller,
+                configured,
+                &mut self.action_log,
+            );
+        }
+        let previous_settings = self.last_settings.as_ref().map(ObservedSettings::effective);
+        let changed = previous_settings
+            .is_none_or(|previous| !std::ptr::eq(previous, settings) && previous != settings);
+        let cpu_usage_resumed = changed
+            && self.last_settings.as_ref().is_some_and(|previous| {
+                !cpu_usage_required(&previous.configured, previous.plugged_in)
+                    && cpu_usage_required(configured, plugged_in)
+            });
+        if source_changed || events.suspend_resume || cpu_usage_resumed {
             self.cpu_usage = CpuUsageSnapshot::default();
-            self.next_cpu_usage_refresh = None;
+            self.cpu_usage_sampled_at = None;
             self.cpu_monitor = CpuUsageMonitor::default();
         }
         let explicitly_changed = events.settings_changed || events.suspend_resume || source_changed;
-        let changed = self.last_settings.as_ref() != Some(settings);
+        if source_changed
+            || self
+                .last_settings
+                .as_ref()
+                .is_none_or(|previous| !Arc::ptr_eq(&previous.configured, configured))
+        {
+            self.last_settings = Some(ObservedSettings {
+                configured: Arc::clone(configured),
+                plugged_in,
+            });
+        }
         if changed {
-            self.last_settings = Some(settings.clone());
             self.power_plan_controller.clear_failures();
         }
         if changed || explicitly_changed {
             self.by_cpu_load_scheduler.reset();
             self.adaptive_engine_process_manager
                 .invalidate_allocation_selection();
+            if adaptive_power_plan_waits_for_source(configured, plugged_in) {
+                self.power_plan_controller.reset_adaptive_demand();
+            }
         }
         changed || explicitly_changed
     }
 
-    pub(super) fn detect_process_appearance(
-        &mut self,
-        observations: &mut CycleObservations,
-    ) -> bool {
-        let Ok(processes) = observations.processes() else {
-            return false;
-        };
-        let current_ids = processes
-            .iter()
-            .filter_map(|process| (process.id != 0).then_some(process.id))
-            .collect::<BTreeSet<_>>();
-
-        process_ids_have_new_entries(&mut self.known_process_ids, current_ids)
+    pub(super) fn detect_process_appearance(&mut self) -> bool {
+        list_process_ids()
+            .is_ok_and(|ids| process_ids_have_new_entries(&mut self.known_process_ids, ids))
     }
 
     pub(super) fn poll_controller_activity(&mut self, now: Instant) -> bool {
@@ -522,10 +893,13 @@ impl RuntimeCore {
             return;
         }
 
+        let entries = self.action_log.entries_snapshot();
+        let summaries = self.action_log.summaries();
         update_action_log(
             shared,
-            self.action_log.entries(),
-            self.action_log.summaries(),
+            &mut lock_unpoisoned(&shared.state),
+            entries,
+            summaries,
         );
         self.published_action_log_revision = revision;
     }
@@ -548,15 +922,40 @@ impl RuntimeCore {
         activity_snapshot(idle_for, idle_timeout)
     }
 
-    pub(super) fn run_background_efficiency_update(
+    pub(super) fn by_activity_observation(
+        &self,
+        settings: &Settings,
+        source: PowerSourceProfile,
+        now: Instant,
+    ) -> Option<ByActivityObservation> {
+        if !settings.general.enabled || !activity_power_plan_required(settings) {
+            return None;
+        }
+        let idle_for = self.activity_snapshot(settings, now).idle_for?;
+        Some(ByActivityObservation {
+            source,
+            input_detection: settings.by_activity.input_detection.clone(),
+            idle_timeout_seconds: settings.by_activity.idle_timeout_seconds,
+            last_activity: now.checked_sub(idle_for)?,
+        })
+    }
+
+    pub(super) fn run_efficiency_mode_update(
         &mut self,
         settings: &Settings,
+        waiting_for_power_source: bool,
         observations: &mut CycleObservations,
-    ) -> BackgroundEfficiencySnapshot {
+    ) -> EfficiencyModeSnapshot {
+        if waiting_for_power_source {
+            return self.efficiency_mode_manager.pause_for_power_source(
+                &mut self.priority_efficiency_controller,
+                &mut self.action_log,
+            );
+        }
         let foreground_process_id = observations.foreground_process_id();
-        self.background_efficiency_manager.update(
+        self.efficiency_mode_manager.update(
             &mut self.priority_efficiency_controller,
-            &settings.background_efficiency,
+            &settings.efficiency_mode,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
             foreground_process_id,
@@ -573,7 +972,7 @@ impl RuntimeCore {
     ) -> AppSuspensionSnapshot {
         let foreground_process_id = observations.foreground_process_id();
         self.with_app_suspension(|manager, controller, action_log| {
-            manager.update(
+            let status = manager.update(
                 controller,
                 &settings.app_suspension,
                 settings.general.enabled,
@@ -582,9 +981,25 @@ impl RuntimeCore {
                 manual_freeze_processes,
                 observations,
                 action_log,
-            )
+            );
+            app_suspension_status_with_retry(status, controller)
         })
         .unwrap_or_else(app_suspension_lock_failure)
+    }
+
+    fn with_app_suspension_release(
+        &mut self,
+        release: impl FnOnce(
+            &mut AppSuspensionManager,
+            &mut SuspensionController,
+            &mut ActionLog,
+        ) -> Option<AppSuspensionSnapshot>,
+    ) -> Option<AppSuspensionSnapshot> {
+        self.with_app_suspension(|manager, controller, action_log| {
+            release(manager, controller, action_log)
+                .map(|status| app_suspension_status_with_retry(status, controller))
+        })
+        .unwrap_or_else(|error| Some(app_suspension_lock_failure(error)))
     }
 
     pub(super) fn run_app_suspension_foreground_release(
@@ -594,11 +1009,9 @@ impl RuntimeCore {
         let now = Instant::now();
         if shell_window_mouse_pressed() && self.app_suspension_shell_user_intent_due(now) {
             self.last_app_suspension_shell_user_intent = Some(now);
-            let status = self
-                .with_app_suspension(|manager, controller, action_log| {
-                    manager.release_all_suspended_processes_for_user_intent(controller, action_log)
-                })
-                .unwrap_or_else(|error| Some(app_suspension_lock_failure(error)));
+            let status = self.with_app_suspension_release(|manager, controller, action_log| {
+                manager.release_all_suspended_processes_for_user_intent(controller, action_log)
+            });
             if let Some(status) = status {
                 return Some(status);
             }
@@ -607,7 +1020,7 @@ impl RuntimeCore {
         let foreground_process_id = observations.foreground_process_id();
         let foreground_process = observations.foreground_process();
         let status = foreground_process_id.and_then(|process_id| {
-            self.with_app_suspension(|manager, controller, action_log| {
+            self.with_app_suspension_release(|manager, controller, action_log| {
                 manager.release_interactive_process(
                     controller,
                     process_id,
@@ -618,7 +1031,6 @@ impl RuntimeCore {
                     action_log,
                 )
             })
-            .unwrap_or_else(|error| Some(app_suspension_lock_failure(error)))
         });
         if let Some(status) = status {
             return Some(status);
@@ -629,7 +1041,7 @@ impl RuntimeCore {
             return None;
         }
         let cursor_process = cursor_process();
-        self.with_app_suspension(|manager, controller, action_log| {
+        self.with_app_suspension_release(|manager, controller, action_log| {
             manager.release_interactive_process(
                 controller,
                 cursor_process_id,
@@ -640,21 +1052,19 @@ impl RuntimeCore {
                 action_log,
             )
         })
-        .unwrap_or_else(|error| Some(app_suspension_lock_failure(error)))
     }
 
     pub(super) fn run_app_suspension_app_switch_release(
         &mut self,
         observations: &mut CycleObservations,
     ) -> Option<AppSuspensionSnapshot> {
-        self.with_app_suspension(|manager, controller, action_log| {
+        self.with_app_suspension_release(|manager, controller, action_log| {
             manager.release_window_owner_processes_for_user_intent(
                 controller,
                 observations.top_level_window_process_ids().as_ref(),
                 action_log,
             )
         })
-        .unwrap_or_else(|error| Some(app_suspension_lock_failure(error)))
     }
 
     pub(super) fn run_app_suspension_shell_click_release(
@@ -664,10 +1074,9 @@ impl RuntimeCore {
             return None;
         }
 
-        self.with_app_suspension(|manager, controller, action_log| {
+        self.with_app_suspension_release(|manager, controller, action_log| {
             manager.release_all_suspended_processes_for_user_intent(controller, action_log)
         })
-        .unwrap_or_else(|error| Some(app_suspension_lock_failure(error)))
     }
 
     pub(super) fn app_suspension_shell_user_intent_due(&self, now: Instant) -> bool {
@@ -677,12 +1086,29 @@ impl RuntimeCore {
             })
     }
 
+    pub(super) fn pause_cpu_sets_soft_for_power_source(&mut self) -> CpuAllocationSnapshot {
+        self.cpu_sets_soft_manager.pause_for_power_source(
+            &mut self.cpu_allocation_coordinator,
+            ControlOwner::CpuSetsSoft,
+            &mut self.action_log,
+        )
+    }
+
+    pub(super) fn pause_processor_affinity_hard_for_power_source(
+        &mut self,
+    ) -> CpuAllocationSnapshot {
+        self.processor_affinity_hard_manager.pause_for_power_source(
+            &mut self.cpu_allocation_coordinator,
+            ControlOwner::ProcessorAffinityHard,
+            &mut self.action_log,
+        )
+    }
+
     pub(super) fn run_cpu_sets_soft_update(
         &mut self,
         settings: &Settings,
         observations: &mut CycleObservations,
     ) -> CpuAllocationSnapshot {
-        let foreground_process_id = observations.foreground_process_id();
         self.cpu_sets_soft_manager.update(
             &mut self.cpu_allocation_coordinator,
             ControlOwner::CpuSetsSoft,
@@ -693,7 +1119,6 @@ impl RuntimeCore {
             ),
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
-            foreground_process_id,
             observations,
             &mut self.action_log,
         )
@@ -715,7 +1140,6 @@ impl RuntimeCore {
             ),
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
-            observations.foreground_process_id(),
             observations,
             &mut self.action_log,
         )
@@ -724,23 +1148,72 @@ impl RuntimeCore {
     pub(super) fn run_cpu_limiter_update(
         &mut self,
         settings: &Settings,
+        waiting_for_power_source: bool,
         observations: &mut CycleObservations,
     ) -> CpuLimiterSnapshot {
+        let mut snapshot =
+            self.run_cpu_limiter_duty_cycle(settings, waiting_for_power_source, observations);
+        let enabled =
+            settings.general.enabled && settings.cpu_limiter.enabled && !waiting_for_power_source;
+        let duty_targets = if enabled && has_affinity_rules(&settings.cpu_limiter) {
+            self.cpu_limiter_controller
+                .as_ref()
+                .map(CpuLimiterController::managed_target_keys)
+                .transpose()
+        } else {
+            Ok(None)
+        };
+        let empty = BTreeSet::new();
+        self.affinity_limiter.update(
+            AffinityLimiterCycle {
+                settings: &settings.cpu_limiter,
+                enabled,
+                allow_cross_session_process_control: settings
+                    .general
+                    .allow_cross_session_process_control,
+                duty_targets: duty_targets
+                    .as_ref()
+                    .map(|targets| targets.as_ref().unwrap_or(&empty))
+                    .map_err(String::as_str),
+                duty_controller: self.cpu_limiter_controller.as_ref(),
+                observations,
+            },
+            &mut self.cpu_allocation_coordinator,
+            &mut self.action_log,
+            &mut snapshot,
+        );
+        snapshot
+    }
+
+    fn run_cpu_limiter_duty_cycle(
+        &mut self,
+        settings: &Settings,
+        waiting_for_power_source: bool,
+        observations: &mut CycleObservations,
+    ) -> CpuLimiterSnapshot {
+        if waiting_for_power_source {
+            return match self.cpu_limiter_controller.as_mut() {
+                Some(controller) => self
+                    .cpu_limiter_manager
+                    .paused(controller, &mut self.action_log),
+                None => CpuLimiterSnapshot {
+                    enabled: true,
+                    observation_paused: true,
+                    ..Default::default()
+                },
+            };
+        }
         if self.cpu_limiter_controller.is_none()
-            && (!settings.general.enabled || !settings.cpu_limiter.enabled)
+            && !feature_refresh_required(
+                settings,
+                settings.cpu_limiter.enabled && has_duty_cycle_limits(&settings.cpu_limiter),
+            )
         {
             return CpuLimiterSnapshot {
                 enabled: settings.general.enabled && settings.cpu_limiter.enabled,
-                message: if settings.general.enabled {
-                    "CPU Limiter disabled."
-                } else {
-                    "Automation disabled."
-                }
-                .to_owned(),
                 ..Default::default()
             };
         }
-        let foreground_process_id = observations.foreground_process_id();
         let controller = match self.cpu_limiter_controller.as_mut() {
             Some(controller) => controller,
             None => match CpuLimiterController::new(Arc::clone(&self.app_suspension_controller)) {
@@ -748,19 +1221,27 @@ impl RuntimeCore {
                 Err(error) => {
                     return CpuLimiterSnapshot {
                         enabled: settings.general.enabled && settings.cpu_limiter.enabled,
-                        message: "CPU Limiter timing worker is unavailable.".to_owned(),
                         last_error: Some(error),
                         ..Default::default()
                     };
                 }
             },
         };
+        let affinity_targets = self
+            .cpu_allocation_coordinator
+            .policy_managed_processes(ControlOwner::CpuLimiter)
+            .map(|process| process.key())
+            .collect();
         self.cpu_limiter_manager.update(
             controller,
-            &settings.cpu_limiter,
-            settings.general.enabled,
-            settings.general.allow_cross_session_process_control,
-            foreground_process_id,
+            DutyLimiterCycle {
+                settings: &settings.cpu_limiter,
+                automation_enabled: settings.general.enabled,
+                allow_cross_session_process_control: settings
+                    .general
+                    .allow_cross_session_process_control,
+                affinity_targets: &affinity_targets,
+            },
             observations,
             &mut self.action_log,
         )
@@ -768,6 +1249,7 @@ impl RuntimeCore {
 
     pub(super) fn run_cpu_allocation_reconciliation(
         &mut self,
+        shared: &SharedAutomationState,
         settings: &Settings,
         observations: &mut CycleObservations,
         include_release_retries: bool,
@@ -779,6 +1261,21 @@ impl RuntimeCore {
             include_release_retries,
         );
         record_cpu_allocation_reconciliation(summary, &mut self.action_log);
+        if let Some(status) = self.cpu_sets_soft_manager.take_settled_release_status(
+            &self.cpu_allocation_coordinator,
+            ControlOwner::CpuSetsSoft,
+        ) {
+            update_cpu_sets_soft_status(shared, status);
+        }
+        if let Some(status) = self
+            .processor_affinity_hard_manager
+            .take_settled_release_status(
+                &self.cpu_allocation_coordinator,
+                ControlOwner::ProcessorAffinityHard,
+            )
+        {
+            update_processor_affinity_hard_status(shared, status);
+        }
     }
 
     pub(super) fn cpu_allocation_immediate_reconciliation_pending(&self) -> bool {
@@ -794,7 +1291,7 @@ impl RuntimeCore {
         &mut self,
         settings: &Settings,
         observations: &mut CycleObservations,
-    ) -> ByRunningAppSnapshot {
+    ) -> Option<ByRunningAppSnapshot> {
         self.by_running_app_manager.update(
             &settings.by_running_app,
             settings.general.enabled,
@@ -805,71 +1302,360 @@ impl RuntimeCore {
     pub(super) fn run_adaptive_engine_process_update(
         &mut self,
         settings: &Settings,
+        waiting_for_power_source: bool,
+        alternate_cpu_allocation_profile: Option<&Settings>,
         observations: &mut CycleObservations,
     ) -> AdaptiveEngineProcessSnapshot {
-        self.refresh_cpu_usage();
+        if waiting_for_power_source {
+            return self
+                .adaptive_engine_process_manager
+                .pause_for_unknown_power_source(
+                    &mut self.cpu_allocation_coordinator,
+                    &mut self.priority_efficiency_controller,
+                    &mut self.action_log,
+                );
+        }
+        if bottleneck_classifier_required(settings) {
+            self.refresh_cpu_usage();
+        }
         let foreground_process_id = observations.foreground_process_id();
-        let excluded_process_ids = self.by_running_app_manager.active_process_ids();
-        let explicit_cpu_allocation_paths = explicit_cpu_allocation_paths(settings);
-        let snapshot = self.adaptive_engine_process_manager.update(
+        let explicit_cpu_allocation_paths =
+            explicit_cpu_allocation_paths(settings, alternate_cpu_allocation_profile);
+        let policy = &settings.adaptive_engine_process;
+        let automation_enabled = settings.general.enabled && settings.adaptive_engine.enabled;
+        let user_idle_for = (automation_enabled
+            && policy.cpu_pressure_restraint_enabled
+            && policy.pause_restraint_when_idle)
+            .then(crate::platform::windows::input_idle::idle_for)
+            .flatten();
+        self.adaptive_engine_process_manager.update(
             AdaptiveEngineProcessUpdate {
-                settings: &settings.adaptive_engine_process,
-                automation_enabled: settings.general.enabled && settings.adaptive_engine.enabled,
+                settings: policy,
+                automation_enabled,
                 allow_cross_session_process_control: settings
                     .general
                     .allow_cross_session_process_control,
                 foreground_process_id,
                 total_cpu_usage_percent: self.cpu_usage.percent,
-                background_efficiency_managed: settings.background_efficiency.enabled,
-                excluded_process_ids: &excluded_process_ids,
+                user_idle_for,
+                excluded_process_id: self.by_running_app_manager.active_process_id(),
                 explicit_cpu_allocation_paths: &explicit_cpu_allocation_paths,
                 observations,
             },
             &mut self.cpu_allocation_coordinator,
             &mut self.priority_efficiency_controller,
-            &mut self.memory_priority_controller,
             &mut self.action_log,
-        );
-        self.focus_and_launch_profile_active = snapshot.focus_and_launch_profile_active;
-        let workload = if settings.general.enabled && adaptive_engine_process_required(settings) {
-            observations
-                .processes()
-                .ok()
-                .map(|processes| observations.adaptive_workload(&processes))
-                .map(|group| {
-                    group
-                        .iter()
-                        .map(|(&id, &creation)| (id, creation))
-                        .collect()
-                })
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-        self.note_helper_dependencies(snapshot.cpu_pressure_restraint_active, workload);
-        self.adaptive_engine_process_foreground_cpu_usage_tenths =
-            snapshot.foreground_cpu_usage_tenths;
-        snapshot
+        )
     }
 
-    pub(super) fn note_helper_dependencies(&mut self, pressure: bool, workload: Vec<(u32, u64)>) {
-        self.helper_dependencies_changed |=
-            self.cpu_pressure_restraint_active != pressure || self.helper_workload != workload;
-        self.cpu_pressure_restraint_active = pressure;
-        self.helper_workload = workload;
+    pub(super) fn verified_restraint_targets(
+        &self,
+    ) -> impl Iterator<Item = crate::control::process::ProcessTargetKey> + '_ {
+        self.priority_efficiency_controller
+            .adaptive_restraint_processes()
+            .filter(|(_, state)| *state == AdaptiveRestraintState::Verified)
+            .map(|(process, _)| process.key())
     }
 
-    pub(super) fn take_helper_dependency_change(&mut self) -> bool {
-        std::mem::take(&mut self.helper_dependencies_changed)
-    }
-
-    pub(super) fn run_bottleneck_classifier_update(
+    /// Returns whether the restraint audit changed without an Adaptive Engine pass.
+    pub(super) fn publish_adaptive_engine_process_status(
         &mut self,
-        settings: &Settings,
-    ) -> BottleneckSnapshot {
-        if !bottleneck_classifier_required(settings) {
-            return self.bottleneck_classifier.reset();
+        shared: &SharedAutomationState,
+        source: PowerSourceProfile,
+        restraint_settings: Option<&Settings>,
+        status: Option<AdaptiveEngineProcessSnapshot>,
+    ) -> bool {
+        if status.is_none()
+            && self.adaptive_restraint_processes.is_none()
+            && !self
+                .priority_efficiency_controller
+                .has_adaptive_restraint_claims()
+            && self
+                .cpu_allocation_coordinator
+                .adaptive_episode_placement_processes()
+                .next()
+                .is_none()
+        {
+            return false;
         }
+
+        let audit_changed = {
+            let processes = self
+                .priority_efficiency_controller
+                .adaptive_restraint_processes()
+                .chain(
+                    self.cpu_allocation_coordinator
+                        .adaptive_episode_placement_processes()
+                        .map(|process| (process, AdaptiveRestraintState::PlacementVerified)),
+                );
+            let previous = self
+                .adaptive_restraint_processes
+                .as_deref()
+                .unwrap_or_default();
+            let changed = !processes
+                .clone()
+                .eq(previous.iter().map(|row| (&row.process, row.state)));
+            if changed {
+                let mut processes = processes.peekable();
+                self.adaptive_restraint_processes = processes.peek().is_some().then(|| {
+                    processes
+                        .map(|(process, state)| AdaptiveRestraintProcess {
+                            process: process.clone(),
+                            state,
+                        })
+                        .collect::<Arc<[_]>>()
+                });
+            }
+            changed
+        };
+        let restraint_failures = (audit_changed || status.is_some())
+            .then(|| self.reconcile_adaptive_restraint_actions(restraint_settings));
+        let Some(mut status) = status else {
+            if audit_changed {
+                update_feature_status(
+                    shared,
+                    self.adaptive_restraint_processes.clone(),
+                    |features| &features.adaptive_engine_process.restraint_processes,
+                    |features| &mut features.adaptive_engine_process.restraint_processes,
+                );
+            }
+            return audit_changed;
+        };
+        status.restraint_processes = self.adaptive_restraint_processes.clone();
+        status.source = (!status.waiting_for_power_source).then_some(source);
+        if let Some((count, error)) = restraint_failures {
+            status.failed_processes += count;
+            status.last_error = status.last_error.or(error);
+        }
+        if status.enabled && !status.observation_paused {
+            let owner = ControlOwner::AdaptiveEngine;
+            status.adjusted_processes = self
+                .priority_efficiency_controller
+                .policy_managed_processes(owner)
+                .chain(
+                    self.cpu_allocation_coordinator
+                        .policy_managed_processes(owner),
+                )
+                .collect::<BTreeSet<_>>()
+                .len();
+        }
+        update_adaptive_engine_process_status(shared, status);
+        false
+    }
+
+    fn reconcile_adaptive_restraint_actions(
+        &mut self,
+        settings: Option<&Settings>,
+    ) -> (usize, Option<String>) {
+        let settings = settings.filter(|settings| {
+            settings.general.enabled
+                && settings.adaptive_engine.enabled
+                && settings
+                    .adaptive_engine_process
+                    .cpu_pressure_restraint_enabled
+                && !settings
+                    .adaptive_engine_process
+                    .placement_only_restraint_enabled()
+        });
+        let io_priority = settings.and_then(|settings| {
+            match settings.adaptive_engine_process.restraint_io_priority {
+                AdaptiveRestraintIoPriority::Unchanged => None,
+                AdaptiveRestraintIoPriority::Low => Some(ProcessIoPriority::Low),
+                AdaptiveRestraintIoPriority::VeryLow => Some(ProcessIoPriority::VeryLow),
+            }
+        });
+        let energy_efficient_scheduling = settings.is_some_and(|settings| {
+            settings
+                .adaptive_engine_process
+                .restraint_energy_efficient_scheduling
+        });
+        let track_io =
+            io_priority.is_some() || self.io_priority_controller.has_adaptive_restraint_state();
+        let track_power = energy_efficient_scheduling
+            || self
+                .priority_efficiency_controller
+                .has_adaptive_restraint_power_state();
+        if !track_io && !track_power {
+            return (0, None);
+        }
+        let allow_cross_session =
+            settings.is_some_and(|settings| settings.general.allow_cross_session_process_control);
+        let verified = self
+            .adaptive_restraint_processes
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .filter(|row| row.state == AdaptiveRestraintState::Verified);
+        let owner = ControlOwner::AdaptiveEngine;
+        if track_io {
+            let episodes = verified.clone().map(|row| row.process.key()).collect();
+            let empty = BTreeSet::new();
+            let eligible = if io_priority.is_some() {
+                &episodes
+            } else {
+                &empty
+            };
+            let summary = self
+                .io_priority_controller
+                .reconcile_adaptive_restraint_targets(eligible, &episodes);
+            Self::record_adaptive_io_releases(&mut self.action_log, summary);
+        }
+        let mut pending = self.io_priority_controller.policy_release_failures(owner);
+        let mut last_error = pending.next().map(|(_, error)| error.to_string());
+        let mut failed = usize::from(last_error.is_some()) + pending.count();
+        let mut power_targets = BTreeSet::new();
+        if io_priority.is_some() || energy_efficient_scheduling {
+            for row in verified {
+                let process = &row.process;
+                let target = || {
+                    ProcessControlTarget::automatic(
+                        process.id,
+                        process.name.clone(),
+                        process.executable_path.clone(),
+                        process.creation_time,
+                    )
+                };
+                if let Some(priority) = io_priority {
+                    let claim = IoPriorityClaim {
+                        target: target(),
+                        owner,
+                        priority,
+                        preservation: IoPriorityPreservation::PreserveLower,
+                    };
+                    match self
+                        .io_priority_controller
+                        .apply_policy_claim(claim, allow_cross_session)
+                    {
+                        Ok(IoPriorityApplyOutcome::Applied) => self.action_log.record(
+                            ActionLogFeature::AdaptiveEngine,
+                            Some(process.id),
+                            &process.name,
+                            ActionLogResult::Applied,
+                            "Lowered I/O priority during CPU Pressure Restraint.",
+                        ),
+                        Ok(_) | Err(ProcessControlError::ProcessExited) => {}
+                        Err(error) => {
+                            failed += 1;
+                            last_error.get_or_insert_with(|| {
+                                format!(
+                                    "Could not lower I/O priority for {}: {error}",
+                                    process.name
+                                )
+                            });
+                        }
+                    }
+                }
+                if energy_efficient_scheduling {
+                    match self
+                        .priority_efficiency_controller
+                        .apply_adaptive_restraint_power(target(), allow_cross_session)
+                    {
+                        Ok(ProcessPropertyApplyOutcome::Applied) => {
+                            power_targets.insert(process.key());
+                            self.action_log.record(
+                                ActionLogFeature::AdaptiveEngine,
+                                Some(process.id),
+                                &process.name,
+                                ActionLogResult::Applied,
+                                "Enabled energy-efficient scheduling during CPU Pressure Restraint.",
+                            );
+                        }
+                        Ok(
+                            ProcessPropertyApplyOutcome::Unchanged
+                            | ProcessPropertyApplyOutcome::Preserved,
+                        ) => {
+                            power_targets.insert(process.key());
+                        }
+                        Ok(ProcessPropertyApplyOutcome::Shadowed)
+                        | Err(ProcessControlError::ProcessExited) => {}
+                        Err(error) => {
+                            failed += 1;
+                            last_error.get_or_insert_with(|| {
+                                format!(
+                                    "Could not enable energy-efficient scheduling for {}: {error}",
+                                    process.name
+                                )
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        if track_power {
+            let summary = self
+                .priority_efficiency_controller
+                .release_adaptive_restraint_power_except(&power_targets);
+            Self::record_adaptive_power_releases(&mut self.action_log, summary);
+            for failure in self
+                .priority_efficiency_controller
+                .adaptive_restraint_power_release_failures()
+            {
+                failed += 1;
+                last_error.get_or_insert_with(|| failure.error.to_string());
+            }
+        }
+        (failed, last_error)
+    }
+
+    fn record_adaptive_power_releases(
+        action_log: &mut ActionLog,
+        summary: PriorityEfficiencyReleaseSummary,
+    ) {
+        if summary.restored_processes > 0 {
+            action_log.record(
+                ActionLogFeature::AdaptiveEngine,
+                None,
+                "",
+                ActionLogResult::Restored,
+                format!(
+                    "Restored energy-efficient scheduling for {}.",
+                    process_count_label(summary.restored_processes)
+                ),
+            );
+        }
+        for failure in summary.failures {
+            action_log.record(
+                ActionLogFeature::AdaptiveEngine,
+                Some(failure.process_id),
+                failure.process_name,
+                ActionLogResult::Failed,
+                format!(
+                    "Could not restore energy-efficient scheduling: {}",
+                    failure.error
+                ),
+            );
+        }
+    }
+
+    fn record_adaptive_io_releases(action_log: &mut ActionLog, summary: IoPriorityReleaseSummary) {
+        if summary.restored_processes > 0 {
+            action_log.record(
+                ActionLogFeature::AdaptiveEngine,
+                None,
+                "",
+                ActionLogResult::Restored,
+                format!(
+                    "Restored I/O priority for {}.",
+                    process_count_label(summary.restored_processes)
+                ),
+            );
+        }
+        for failure in summary.failures {
+            action_log.record(
+                ActionLogFeature::AdaptiveEngine,
+                Some(failure.process_id),
+                failure.process_name,
+                ActionLogResult::Failed,
+                format!("Could not restore I/O priority: {}", failure.error),
+            );
+        }
+    }
+
+    pub(super) fn reset_bottleneck_classifier(&mut self) -> BottleneckSnapshot {
+        self.bottleneck_classifier.reset()
+    }
+
+    pub(super) fn run_bottleneck_classifier_update(&mut self) -> BottleneckSnapshot {
         self.refresh_cpu_usage();
         self.bottleneck_classifier.sample(self.cpu_usage.percent)
     }
@@ -877,36 +1663,130 @@ impl RuntimeCore {
     pub(super) fn run_adaptive_power_plan_update(
         &mut self,
         settings: &Settings,
+        restraint_source: Option<PowerSourceProfile>,
         observations: &mut CycleObservations,
-    ) -> Result<(), String> {
-        self.refresh_cpu_usage();
-        let foreground_process_id = observations.foreground_process_id();
-        if adaptive_power_plan_required(settings) && settings.general.enabled {
-            let foreground_changed = foreground_process_id.is_some()
-                && self.adaptive_foreground_process_id != foreground_process_id;
-            self.adaptive_foreground_process_id = foreground_process_id;
+    ) {
+        let result = if adaptive_power_plan_required(settings) && settings.general.enabled {
+            self.refresh_cpu_usage();
+            let (focus_or_launch, foreground_cpu_percent) =
+                self.sample_adaptive_power_foreground(observations);
+            let minimum_percent_class0 = settings.adaptive_engine.restraint_core_parking_min;
+            let configured_class1 = settings.adaptive_engine.restraint_core_parking_min_class1;
+            let restraint_core_parking = restraint_source
+                .filter(|_| {
+                    (minimum_percent_class0 > 0 || configured_class1 > 0)
+                        && settings.adaptive_engine.enabled
+                        && settings
+                            .adaptive_engine_process
+                            .cpu_pressure_restraint_enabled
+                        && !settings
+                            .adaptive_engine_process
+                            .placement_only_restraint_enabled()
+                        && self
+                            .priority_efficiency_controller
+                            .adaptive_restraint_processes()
+                            .any(|(_, state)| state == AdaptiveRestraintState::Verified)
+                })
+                .and_then(|source| {
+                    if configured_class1 > 0
+                        && self.adaptive_class1_core_parking_supported.is_none()
+                    {
+                        self.adaptive_class1_core_parking_supported =
+                            observations.cpu_topology().ok().map(|topology| {
+                                topology
+                                    .processors()
+                                    .iter()
+                                    .any(|processor| processor.efficiency_class == 1)
+                            });
+                    }
+                    let minimum_percent_class1 =
+                        if self.adaptive_class1_core_parking_supported == Some(true) {
+                            configured_class1
+                        } else {
+                            0
+                        };
+                    (minimum_percent_class0 > 0 || minimum_percent_class1 > 0).then_some(
+                        RestraintCoreParking {
+                            source,
+                            minimum_percent_class0,
+                            minimum_percent_class1,
+                        },
+                    )
+                });
             self.update_adaptive_power_plan(
-                settings.adaptive_engine.base_processor_policy.normalized(),
-                settings.adaptive_engine.background_pressure_profile,
-                settings.adaptive_engine.focus_and_launch_profile,
-                foreground_changed,
-            )?;
-            Ok(())
+                &settings.adaptive_engine,
+                focus_or_launch,
+                foreground_cpu_percent,
+                restraint_core_parking,
+            )
         } else {
-            self.adaptive_foreground_process_id = None;
-            self.power_plan_controller
-                .release_adaptive(Instant::now())?;
-            Ok(())
-        }
+            self.reset_adaptive_power_demand();
+            self.adaptive_foreground_identity = None;
+            if self.power_plan_controller.has_pending_cleanup() {
+                self.power_plan_controller.release_adaptive(Instant::now())
+            } else {
+                Ok(())
+            }
+        };
+        self.adaptive_processor_power_error =
+            result.err().map(AdaptiveProcessorPowerError::Operation);
     }
 
-    pub(super) fn update_adaptive_power_plan(
+    pub(super) fn wait_for_adaptive_power_plan_source(
         &mut self,
-        baseline: ProcessorPowerValues,
-        background_pressure_profile: AdaptivePowerBoostValues,
-        focus_and_launch_profile: AdaptivePowerBoostValues,
-        foreground_changed: bool,
-    ) -> Result<String, String> {
+    ) -> Result<(), ActivePlanCheckError> {
+        self.power_plan_controller
+            .clear_adaptive_restraint_core_parking(Instant::now())?;
+        self.refresh_active_plan(false)
+    }
+
+    fn reset_adaptive_power_demand(&mut self) {
+        self.adaptive_foreground_cpu_history = ForegroundCpuHistory::default();
+        self.per_processor_cpu_monitor = PerProcessorUsageMonitor::default();
+        self.io_monitor = IoUsageMonitor::default();
+        self.adaptive_io_usage = IoUsageSnapshot::default();
+        self.next_adaptive_io_refresh = None;
+    }
+
+    fn sample_adaptive_power_foreground(
+        &mut self,
+        observations: &mut CycleObservations,
+    ) -> (bool, Option<f32>) {
+        let Some(id) = observations.foreground_process_id() else {
+            self.adaptive_foreground_identity = None;
+            self.adaptive_foreground_cpu_history = ForegroundCpuHistory::default();
+            return (false, None);
+        };
+        let Ok(processes) = observations.foreground_process_ancestry(id) else {
+            self.adaptive_foreground_cpu_history = ForegroundCpuHistory::default();
+            return (false, None);
+        };
+        let workload = observations.adaptive_workload(&processes);
+        let cpu_sample = observations.adaptive_cpu_sample(&workload);
+        let identity = workload.get(&id).map(|&creation| (id, creation));
+        let foreground_cpu_percent = self
+            .adaptive_foreground_cpu_history
+            .update(workload, cpu_sample);
+        let changed = identity.is_some() && identity != self.adaptive_foreground_identity;
+        if identity.is_some() {
+            self.adaptive_foreground_identity = identity;
+        }
+        let launch = identity.is_some_and(|(_, creation)| {
+            processes
+                .iter()
+                .find(|process| process.id == id)
+                .is_some_and(|process| adaptive_power_launch_eligible(process, creation))
+        });
+        (changed || launch, foreground_cpu_percent)
+    }
+
+    fn update_adaptive_power_plan(
+        &mut self,
+        settings: &AdaptiveEngineSettings,
+        focus_or_launch: bool,
+        foreground_cpu_percent: Option<f32>,
+        restraint_core_parking: Option<RestraintCoreParking>,
+    ) -> Result<(), String> {
         let now = Instant::now();
         if self.adaptive_processor_topology.is_empty() {
             self.adaptive_processor_topology = cpu_allocation::logical_processors();
@@ -917,16 +1797,12 @@ impl RuntimeCore {
             .map(|usage| adaptive_processor_demand(&usage, &self.adaptive_processor_topology))
             .unwrap_or_default();
         let demand = AdaptivePowerDemand {
-            focus_and_launch_profile_active: self.focus_and_launch_profile_active
-                || foreground_changed,
-            background_pressure_active: self.cpu_pressure_restraint_active,
+            focus_and_launch_profile_active: focus_or_launch,
             total_cpu_percent: self.cpu_usage.percent,
             peak_cpu_percent: processor_demand.peak_cpu_percent,
             performance_peak_cpu_percent: processor_demand.performance_peak_cpu_percent,
             efficiency_peak_cpu_percent: processor_demand.efficiency_peak_cpu_percent,
-            foreground_cpu_percent: self
-                .adaptive_engine_process_foreground_cpu_usage_tenths
-                .map(|usage| f32::from(usage) / 10.0),
+            foreground_cpu_percent,
             io_bytes_per_second: None,
         };
         let mut desired_profile = AdaptivePowerProfile::for_demand(demand);
@@ -954,31 +1830,35 @@ impl RuntimeCore {
             .iter()
             .any(|processor| processor.kind == LogicalProcessorKind::Efficiency);
 
-        let profile = self.power_plan_controller.reconcile_adaptive(
-            AdaptivePowerPlanRequest {
-                profile: desired_profile,
-                baseline,
-                has_efficiency_cores,
-                background_pressure_profile,
-                focus_and_launch_profile,
-            },
-            now,
-        )?;
-        Ok(profile.label().to_owned())
+        self.power_plan_controller
+            .reconcile_adaptive(
+                AdaptivePowerPlanRequest {
+                    profile: desired_profile,
+                    baseline: settings.base_processor_policy.normalized(),
+                    has_efficiency_cores,
+                    background_pressure_profile: settings.background_pressure_profile,
+                    focus_and_launch_profile: settings.focus_and_launch_profile,
+                    restraint_core_parking,
+                },
+                now,
+            )
+            .map(|_| ())
     }
 
     pub(super) fn run_io_priority_update(
         &mut self,
         settings: &Settings,
+        waiting_for_power_source: bool,
         observations: &mut CycleObservations,
     ) -> IoPrioritySnapshot {
-        let io_priority_settings =
-            effective_io_priority_settings(settings, self.cpu_pressure_restraint_active);
-        let owner = io_priority_control_owner(settings, self.cpu_pressure_restraint_active);
+        if waiting_for_power_source {
+            return self
+                .io_priority_manager
+                .pause_for_power_source(&mut self.io_priority_controller, &mut self.action_log);
+        }
         self.io_priority_manager.update(
             &mut self.io_priority_controller,
-            owner,
-            &io_priority_settings,
+            &settings.io_priority,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
             observations.foreground_process_id(),
@@ -990,22 +1870,21 @@ impl RuntimeCore {
     pub(super) fn run_process_priority_update(
         &mut self,
         settings: &Settings,
+        waiting_for_power_source: bool,
         observations: &mut CycleObservations,
     ) -> ProcessPrioritySnapshot {
-        let excluded_process_ids = self
-            .priority_efficiency_controller
-            .policy_target_process_ids(&[
-                ControlOwner::BackgroundEfficiency,
-                ControlOwner::AdaptiveEngine,
-                ControlOwner::AdaptiveEngineProcessFocusPriority,
-            ]);
+        if waiting_for_power_source {
+            return self.process_priority_manager.pause_for_power_source(
+                &mut self.priority_efficiency_controller,
+                &mut self.action_log,
+            );
+        }
         self.process_priority_manager.update(
             &mut self.priority_efficiency_controller,
             &settings.process_priority,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
             observations.foreground_process_id(),
-            &excluded_process_ids,
             observations,
             &mut self.action_log,
         )
@@ -1014,15 +1893,18 @@ impl RuntimeCore {
     pub(super) fn run_thread_priority_update(
         &mut self,
         settings: &Settings,
+        waiting_for_power_source: bool,
         observations: &mut CycleObservations,
     ) -> ThreadPrioritySnapshot {
-        let thread_priority_settings =
-            effective_thread_priority_settings(settings, self.cpu_pressure_restraint_active);
-        let owner = thread_priority_control_owner(settings, self.cpu_pressure_restraint_active);
+        if waiting_for_power_source {
+            return self.thread_priority_manager.pause_for_power_source(
+                &mut self.thread_priority_controller,
+                &mut self.action_log,
+            );
+        }
         self.thread_priority_manager.update(
             &mut self.thread_priority_controller,
-            owner,
-            &thread_priority_settings,
+            &settings.thread_priority,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
             observations.foreground_process_id(),
@@ -1034,16 +1916,18 @@ impl RuntimeCore {
     pub(super) fn run_dynamic_priority_boost_update(
         &mut self,
         settings: &Settings,
+        waiting_for_power_source: bool,
         observations: &mut CycleObservations,
     ) -> DynamicPriorityBoostSnapshot {
-        let dynamic_priority_boost_settings =
-            effective_dynamic_priority_boost_settings(settings, self.cpu_pressure_restraint_active);
-        let owner =
-            dynamic_priority_boost_control_owner(settings, self.cpu_pressure_restraint_active);
+        if waiting_for_power_source {
+            return self.dynamic_priority_boost_manager.pause_for_power_source(
+                &mut self.dynamic_priority_boost_controller,
+                &mut self.action_log,
+            );
+        }
         self.dynamic_priority_boost_manager.update(
             &mut self.dynamic_priority_boost_controller,
-            owner,
-            &dynamic_priority_boost_settings,
+            &settings.dynamic_priority_boost,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
             observations.foreground_process_id(),
@@ -1265,24 +2149,58 @@ impl RuntimeCore {
                             });
                         (status, reply)
                     } else {
-                        let status = self
-                            .with_app_suspension(|manager, controller, action_log| {
-                                manager.release_suspended_path_for_user_intent(
-                                    controller,
-                                    Path::new(&executable_path),
-                                    action_log,
-                                )
-                            })
-                            .unwrap_or_else(app_suspension_lock_failure);
-                        (status.clone(), Ok(status))
+                        self.with_app_suspension(|manager, controller, action_log| {
+                            let status = manager.release_suspended_path_for_user_intent(
+                                controller,
+                                Path::new(&executable_path),
+                                action_log,
+                            );
+                            let status = app_suspension_release_status(status, settings);
+                            let reply = match &status.last_error {
+                                Some(error) => {
+                                    Err(RuntimeCommandError::CommandFailed(error.clone()))
+                                }
+                                None => Ok(status.clone()),
+                            };
+                            (app_suspension_status_with_retry(status, controller), reply)
+                        })
+                        .unwrap_or_else(|error| {
+                            let status = app_suspension_release_status(
+                                app_suspension_lock_failure(error.clone()),
+                                settings,
+                            );
+                            (status, Err(RuntimeCommandError::CommandFailed(error)))
+                        })
                     };
                     let _ = result.try_send(reply);
                     statuses.app_suspension = Some(status);
                 }
                 ProcessControlCommand::MemoryTrim { result } => {
                     let status = self.run_memory_trim_now(settings, observations);
-                    let _ = result.try_send(Ok(status.clone()));
+                    let reply = match &status.status {
+                        MemoryTrimStatus::Error(error) => {
+                            Err(RuntimeCommandError::CommandFailed(error.clone()))
+                        }
+                        _ => Ok(status.clone()),
+                    };
+                    let _ = result.try_send(reply);
                     statuses.memory_trim = Some(status);
+                }
+                ProcessControlCommand::ProcessMemoryTrim { targets, result } => {
+                    let results = targets
+                        .into_iter()
+                        .map(|target| {
+                            let target = target.map_err(|error| error.to_string())?;
+                            self.run_process_memory_trim(
+                                &target,
+                                settings.general.allow_cross_session_process_control,
+                            )
+                        })
+                        .collect();
+                    let _ = result.try_send(Ok(ProcessControlBatchResult { results }));
+                }
+                ProcessControlCommand::TemporarySleepPrevention(command) => {
+                    statuses.temporary_sleep_prevention.push(command)
                 }
                 ProcessControlCommand::StopProcesses { targets, result } => {
                     self.keep_running
@@ -1293,75 +2211,152 @@ impl RuntimeCore {
                     );
                     let _ = result.try_send(Ok(outcome));
                 }
+                ProcessControlCommand::StopTreeIntent { roots } => {
+                    self.keep_running
+                        .pause_targets(&roots, PauseReason::IntentionalStop);
+                }
                 ProcessControlCommand::KeepRunningResume { executable_path } => {
                     self.keep_running.resume(&executable_path);
+                }
+                ProcessControlCommand::SwitchPowerPlan { guid, result } => {
+                    let _ = result.try_send(self.switch_power_plan(settings, &guid));
                 }
             }
         }
         statuses
     }
 
-    pub(super) fn retry_control_releases(&mut self, now: Instant) -> Option<String> {
+    pub(super) fn retry_control_releases(
+        &mut self,
+        shared: &SharedAutomationState,
+        now: Instant,
+    ) -> Option<String> {
+        fn current_feature_status<T: Clone>(
+            shared: &SharedAutomationState,
+            select: impl FnOnce(&RuntimeFeatureStatus) -> &T,
+        ) -> T {
+            select(&lock_unpoisoned(&shared.state).status.feature_status).clone()
+        }
+
         let process_failure = |property, process_name, process_id, error| {
             format!("{property} restoration failed for {process_name} ({process_id}): {error}")
         };
-        let mut errors = self
+        let retries = self
             .priority_efficiency_controller
-            .retry_pending_releases(now)
+            .retry_pending_releases(now);
+        if retries.process_priority_restored.is_some()
+            || self
+                .process_priority_manager
+                .reported_release_is_resolved(&self.priority_efficiency_controller)
+        {
+            let status = current_feature_status(shared, |features| &features.process_priority);
+            update_process_priority_status(
+                shared,
+                self.process_priority_manager.report_release_retry(
+                    &self.priority_efficiency_controller,
+                    retries.process_priority_restored.unwrap_or_default(),
+                    status,
+                    &mut self.action_log,
+                ),
+            );
+        }
+        let refresh_efficiency_mode = retries.efficiency_mode.is_some()
+            || self
+                .efficiency_mode_manager
+                .reported_release_is_resolved(&self.priority_efficiency_controller);
+        if let Some(summary) = retries.efficiency_mode {
+            EfficiencyModeManager::record_release_summary(
+                summary,
+                &mut self.action_log,
+                "efficiency_mode.release_reason_retry_completed",
+            );
+        }
+        if refresh_efficiency_mode {
+            let status = current_feature_status(shared, |features| &features.efficiency_mode);
+            update_efficiency_mode_status(
+                shared,
+                self.efficiency_mode_manager
+                    .with_release_status(&self.priority_efficiency_controller, status),
+            );
+        }
+        if let Some(summary) = retries.adaptive_restraint_power {
+            Self::record_adaptive_power_releases(&mut self.action_log, summary);
+        }
+        let mut errors = retries
+            .other
             .failures
             .into_iter()
             .map(|failure| {
-                format!(
-                    "{} restoration failed for {} ({}): {}",
-                    failure.property, failure.process_name, failure.process_id, failure.error
+                process_failure(
+                    failure.property,
+                    failure.process_name,
+                    failure.process_id,
+                    failure.error,
                 )
             })
             .collect::<Vec<_>>();
+        if self.thread_priority_controller.release_retry_delay(now) == Some(Duration::ZERO) {
+            let summary = self.thread_priority_controller.retry_pending_releases(now);
+            let status = current_feature_status(shared, |features| &features.thread_priority);
+            update_thread_priority_status(
+                shared,
+                self.thread_priority_manager.report_release_retry(
+                    &self.thread_priority_controller,
+                    summary,
+                    status,
+                    &mut self.action_log,
+                ),
+            );
+        }
+        if self.io_priority_controller.release_retry_delay(now) == Some(Duration::ZERO) {
+            let retries = self.io_priority_controller.retry_pending_releases(now);
+            Self::record_adaptive_io_releases(&mut self.action_log, retries.adaptive_engine);
+            let status = current_feature_status(shared, |features| &features.io_priority);
+            update_io_priority_status(
+                shared,
+                self.io_priority_manager.report_release_retry(
+                    &self.io_priority_controller,
+                    retries.static_policy,
+                    status,
+                    &mut self.action_log,
+                ),
+            );
+        }
+        if self.gpu_priority_controller.release_retry_delay(now) == Some(Duration::ZERO) {
+            let summary = self.gpu_priority_controller.retry_pending_releases(now);
+            let status = current_feature_status(shared, |features| &features.gpu_priority);
+            update_gpu_priority_status(
+                shared,
+                self.gpu_priority_manager.report_release_retry(
+                    &self.gpu_priority_controller,
+                    summary,
+                    status,
+                    &mut self.action_log,
+                ),
+            );
+        }
+        let memory_retry_due =
+            self.memory_priority_controller.release_retry_delay(now) == Some(Duration::ZERO);
+        let memory_retries = self.memory_priority_controller.retry_pending_releases(now);
+        for (owner, count) in memory_retries.restored_by_owner {
+            let feature = match owner {
+                MemoryPriorityReleaseOwner::MemoryPriority => ActionLogFeature::MemoryPriority,
+                MemoryPriorityReleaseOwner::AdaptiveEngine => ActionLogFeature::AdaptiveEngine,
+            };
+            MemoryPriorityManager::record_restoration(
+                &mut self.action_log,
+                feature,
+                count,
+                "restoration retry completed",
+            );
+        }
         errors.extend(
-            self.thread_priority_controller
-                .retry_pending_releases(now)
+            memory_retries
                 .failures
                 .into_iter()
-                .map(|failure| {
-                    format!(
-                        "Thread Priority restoration failed for {} ({}, thread {}): {}",
-                        failure.process_name, failure.process_id, failure.thread_id, failure.error
-                    )
-                }),
-        );
-        errors.extend(
-            self.io_priority_controller
-                .retry_pending_releases(now)
-                .failures
-                .into_iter()
-                .map(|failure| {
-                    process_failure(
-                        "I/O Priority",
-                        failure.process_name,
-                        failure.process_id,
-                        failure.error,
-                    )
-                }),
-        );
-        errors.extend(
-            self.gpu_priority_controller
-                .retry_pending_releases(now)
-                .failures
-                .into_iter()
-                .map(|failure| {
-                    process_failure(
-                        "GPU Priority",
-                        failure.process_name,
-                        failure.process_id,
-                        failure.error,
-                    )
-                }),
-        );
-        errors.extend(
-            self.memory_priority_controller
-                .retry_pending_releases(now)
-                .failures
-                .into_iter()
+                .filter(|failure| {
+                    failure.pending_owner != Some(MemoryPriorityReleaseOwner::MemoryPriority)
+                })
                 .map(|failure| {
                     process_failure(
                         "Memory Priority",
@@ -1371,22 +2366,39 @@ impl RuntimeCore {
                     )
                 }),
         );
-        errors.extend(
-            self.dynamic_priority_boost_controller
-                .retry_pending_releases(now)
-                .failures
-                .into_iter()
-                .map(|failure| {
-                    process_failure(
-                        "Dynamic Priority Boost",
-                        failure.process_name,
-                        failure.process_id,
-                        failure.error,
-                    )
-                }),
-        );
+        if memory_retry_due {
+            let status = current_feature_status(shared, |features| &features.memory_priority);
+            update_feature_status(
+                shared,
+                self.memory_priority_manager
+                    .with_static_release_status(&self.memory_priority_controller, status),
+                |features| &features.memory_priority,
+                |features| &mut features.memory_priority,
+            );
+        }
+        if self
+            .dynamic_priority_boost_controller
+            .release_retry_delay(now)
+            == Some(Duration::ZERO)
+        {
+            let summary = self
+                .dynamic_priority_boost_controller
+                .retry_pending_releases(now);
+            let status =
+                current_feature_status(shared, |features| &features.dynamic_priority_boost);
+            update_dynamic_priority_boost_status(
+                shared,
+                self.dynamic_priority_boost_manager.report_release_retry(
+                    &self.dynamic_priority_boost_controller,
+                    summary,
+                    status,
+                    &mut self.action_log,
+                ),
+            );
+        }
         if let Err(error) = self.power_plan_controller.retry_pending_cleanup(now) {
-            errors.push(format!("Adaptive plan cleanup failed: {error}"));
+            self.adaptive_processor_power_error =
+                Some(AdaptiveProcessorPowerError::CleanupRetry(error));
         }
         (!errors.is_empty()).then(|| errors.join("; "))
     }
@@ -1427,6 +2439,16 @@ impl RuntimeCore {
             || self.keep_running.has_pending()
     }
 
+    pub(super) fn cpu_limiter_release_pending(&self) -> bool {
+        self.cpu_limiter_manager.release_pending() || self.affinity_limiter.release_pending()
+    }
+
+    pub(super) fn cpu_limiter_release_in_progress(&self) -> bool {
+        self.cpu_limiter_controller
+            .as_ref()
+            .is_some_and(CpuLimiterController::release_in_progress)
+    }
+
     pub(super) fn app_suspension_active(&self) -> bool {
         self.app_suspension_controller
             .lock()
@@ -1436,12 +2458,35 @@ impl RuntimeCore {
             })
     }
 
-    pub(super) fn adaptive_power_plan_active(&self) -> bool {
-        self.power_plan_controller.adaptive_active()
+    pub(super) fn adaptive_power_plan_managed(&self) -> bool {
+        self.power_plan_controller.has_pending_cleanup()
+    }
+
+    pub(super) fn adaptive_power_plan_waiting_for_source(&self) -> bool {
+        self.last_settings.as_ref().is_some_and(|observed| {
+            adaptive_power_plan_waits_for_source(&observed.configured, observed.plugged_in)
+        })
     }
 
     pub(super) fn has_temporary_power_plan(&self) -> bool {
         self.power_plan_controller.has_temporary_plan()
+    }
+
+    pub(super) fn paused_cpu_load_readback_delay(
+        &self,
+        settings: &Settings,
+        plugged_in: Option<bool>,
+        now: Instant,
+    ) -> Option<Duration> {
+        if matches!(
+            ordinary_power_plan_stop(settings, plugged_in),
+            Some((DecisionState::PausedWhilePluggedIn, _))
+        ) {
+            self.power_plan_controller
+                .idle_active_plan_refresh_delay(now)
+        } else {
+            None
+        }
     }
 
     pub(super) fn temporary_power_plan_retry_delay(&self) -> Option<Duration> {
@@ -1451,15 +2496,17 @@ impl RuntimeCore {
     pub(super) fn run_gpu_priority_update(
         &mut self,
         settings: &Settings,
+        waiting_for_power_source: bool,
         observations: &mut CycleObservations,
     ) -> GpuPrioritySnapshot {
-        let gpu_priority_settings =
-            effective_gpu_priority_settings(settings, self.cpu_pressure_restraint_active);
-        let owner = gpu_priority_control_owner(settings, self.cpu_pressure_restraint_active);
+        if waiting_for_power_source {
+            return self
+                .gpu_priority_manager
+                .pause_for_power_source(&mut self.gpu_priority_controller, &mut self.action_log);
+        }
         self.gpu_priority_manager.update(
             &mut self.gpu_priority_controller,
-            owner,
-            &gpu_priority_settings,
+            &settings.gpu_priority,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
             observations.foreground_process_id(),
@@ -1471,8 +2518,15 @@ impl RuntimeCore {
     pub(super) fn run_memory_priority_update(
         &mut self,
         settings: &Settings,
+        waiting_for_power_source: bool,
         observations: &mut CycleObservations,
     ) -> MemoryPrioritySnapshot {
+        if waiting_for_power_source {
+            return self.memory_priority_manager.pause_for_power_source(
+                &mut self.memory_priority_controller,
+                &mut self.action_log,
+            );
+        }
         self.memory_priority_manager.update_rules(
             &mut self.memory_priority_controller,
             &settings.memory_priority,
@@ -1494,7 +2548,6 @@ impl RuntimeCore {
             &settings.memory_trim,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
-            observations.foreground_process_id(),
             observations,
             &mut self.action_log,
         )
@@ -1510,10 +2563,55 @@ impl RuntimeCore {
             &settings.memory_trim,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
-            observations.foreground_process_id(),
             observations,
             &mut self.action_log,
         )
+    }
+
+    fn run_process_memory_trim(
+        &mut self,
+        target: &ProcessActionTarget,
+        allow_cross_session_process_control: bool,
+    ) -> Result<(), String> {
+        use crate::control::memory_trim::MemoryTrimOutcome;
+        use crate::memory_trim::size_label;
+
+        let result = self.memory_trim_controller.trim(
+            &ProcessControlTarget::from_action_target(target),
+            allow_cross_session_process_control,
+            1,
+        );
+        let (outcome, reason) = match &result {
+            Ok(MemoryTrimOutcome::Trimmed {
+                working_set_reduction_bytes: Some(bytes),
+            }) => (
+                ActionLogResult::Applied,
+                t!(
+                    "memory_trim.manual_reduction",
+                    reduction = size_label(*bytes)
+                )
+                .into_owned(),
+            ),
+            Ok(MemoryTrimOutcome::Trimmed {
+                working_set_reduction_bytes: None,
+            }) => (
+                ActionLogResult::Applied,
+                t!("memory_trim.manual_reduction_unavailable").into_owned(),
+            ),
+            Ok(MemoryTrimOutcome::BelowMinimumWorkingSet) => (
+                ActionLogResult::Skipped,
+                t!("memory_trim.manual_no_trim").into_owned(),
+            ),
+            Err(error) => (ActionLogResult::Failed, error.to_string()),
+        };
+        self.action_log.record(
+            ActionLogFeature::MemoryTrim,
+            Some(target.id),
+            &target.name,
+            outcome,
+            reason,
+        );
+        result.map(|_| ()).map_err(|error| error.to_string())
     }
 
     pub(super) fn run_sleep_prevention_update(
@@ -1521,59 +2619,146 @@ impl RuntimeCore {
         settings: &Settings,
         observations: &mut CycleObservations,
         windows_event_watcher_active: bool,
-        plugged_in: Option<bool>,
     ) -> SleepPreventionSnapshot {
+        let suspended_instances: Vec<_> = if self.app_suspension_manager.has_tracked_suspensions() {
+            match self.app_suspension_controller.lock() {
+                Ok(controller) => self
+                    .app_suspension_manager
+                    .frozen_instances(&controller)
+                    .collect(),
+                Err(_) => {
+                    return self.sleep_prevention_manager.unavailable(
+                        &mut self.sleep_prevention_controller,
+                        &mut self.action_log,
+                        "Shared suspension state is unavailable.",
+                    );
+                }
+            }
+        } else {
+            Vec::new()
+        };
         self.sleep_prevention_manager.update(
             &mut self.sleep_prevention_controller,
             settings,
-            plugged_in,
-            windows_event_watcher_active,
+            SleepPreventionEnvironment {
+                windows_event_watcher_active,
+                suspended_instances: &suspended_instances,
+            },
             observations,
             &mut self.action_log,
         )
     }
 
-    pub(super) fn sleep_prevention_power_source(&self) -> Option<bool> {
-        self.sleep_prevention_manager.last_known_power_source()
+    pub(super) fn timer_resolution_request_active(&self) -> bool {
+        self.timer_resolution_controller
+            .active_request_100ns()
+            .is_some()
     }
 
     pub(super) fn run_timer_resolution_update(
         &mut self,
         settings: &Settings,
+        waiting_for_power_source: bool,
         observations: &mut CycleObservations,
     ) -> TimerResolutionSnapshot {
-        let foreground_executable_path = timer_resolution_required(settings)
-            .then(|| observations.foreground_process())
-            .flatten()
-            .filter(|process| process_is_critical(process.id) == Some(false))
-            .map(|process| process.executable_path.to_string_lossy().into_owned());
+        if waiting_for_power_source {
+            return self.timer_resolution_manager.pause_for_power_source(
+                &mut self.timer_resolution_controller,
+                &mut self.action_log,
+            );
+        }
+        let foreground_process =
+            feature_refresh_required(settings, timer_resolution_required(settings))
+                .then(|| observations.noncritical_foreground_process())
+                .flatten();
         self.timer_resolution_manager.update(
             &mut self.timer_resolution_controller,
             &settings.timer_resolution,
             settings.general.enabled,
-            foreground_executable_path.as_deref(),
+            foreground_process
+                .as_ref()
+                .and_then(|process| process.executable_path.to_str()),
             &mut self.action_log,
         )
     }
 
     pub(super) fn run_check(
         &mut self,
-        settings: &Settings,
+        configured_settings: &Arc<Settings>,
+        plugged_in: Option<bool>,
+        wall_time: DateTime<Local>,
+        activity_state: ActivityState,
         observations: &mut CycleObservations,
-    ) -> Result<(), String> {
+    ) -> Result<(), ActivePlanCheckError> {
         if self.power_plan_controller.adaptive_active() {
+            self.power_plan_rule_context = None;
             self.by_cpu_load_scheduler.reset();
             return Ok(());
         }
 
-        if let Err(error) = self
+        let active_plan = self
             .power_plan_controller
-            .refresh_active_plan_if_due(Instant::now())
-        {
+            .refresh_active_plan_for_status(Instant::now(), false);
+        if ordinary_power_plan_waits_for_source(configured_settings, plugged_in) {
+            return active_plan;
+        }
+
+        let settings = active_power_source_settings(configured_settings, plugged_in);
+        if let Err(error) = active_plan {
             self.by_cpu_load_scheduler.reset();
-            if let Some(feature) = self
-                .power_plan_controller
-                .status()
+            let status = self.power_plan_controller.status();
+            let activity_conflicts_with_choice = matches!(
+                (status.decision_state, activity_state),
+                (Some(DecisionState::ByActivityIdle), ActivityState::Active)
+                    | (Some(DecisionState::ByActivityActive), ActivityState::Idle)
+            );
+            let schedule_conflicts_with_choice = status.decision_state
+                == Some(DecisionState::ByTime)
+                && !current_by_time_decision(&settings.by_time, wall_time).is_some_and(
+                    |decision| {
+                        status.rule_index == Some(decision.rule_index)
+                            && status.target_guid.as_deref().is_some_and(|target| {
+                                target.eq_ignore_ascii_case(&decision.power_plan_guid)
+                            })
+                    },
+                );
+            if self
+                .power_plan_rule_context
+                .as_ref()
+                .is_some_and(|context| {
+                    let focus_conflicts_with_choice = status.decision_state
+                        == Some(DecisionState::ByFocus)
+                        && observations
+                            .cached_foreground_executable_path()
+                            .is_some_and(|path| {
+                                !settings.by_focus.enabled
+                                    || !matching_by_focus_rules(&settings.by_focus, path)
+                                        .next()
+                                        .is_some_and(|(index, _, plan)| {
+                                            status.rule_index == Some(index)
+                                                && status.target_guid.as_deref().is_some_and(
+                                                    |target| target.eq_ignore_ascii_case(plan),
+                                                )
+                                        })
+                            });
+                    activity_conflicts_with_choice
+                        || focus_conflicts_with_choice
+                        || schedule_conflicts_with_choice
+                        || (status.decision_state == Some(DecisionState::ByRunningApp)
+                            && status.rule_index.is_some_and(|index| {
+                                self.by_running_app_manager.rules_out_selection(index)
+                            }))
+                        || (!Arc::ptr_eq(&context.settings, configured_settings)
+                            && !ordinary_power_plan_choice_matches(
+                                &status,
+                                active_power_source_settings(&context.settings, plugged_in),
+                                settings,
+                            ))
+                })
+            {
+                self.power_plan_rule_context = None;
+            }
+            if let Some(feature) = status
                 .decision_state
                 .and_then(power_plan_action_log_feature)
             {
@@ -1588,27 +2773,37 @@ impl RuntimeCore {
             return Err(error);
         }
         self.by_cpu_load_scheduler
-            .observe_active_plan(self.power_plan_controller.status().current_guid.as_deref());
+            .observe_active_plan(self.power_plan_controller.current_guid());
 
-        let activity = self.activity_snapshot(settings, Instant::now());
-        self.refresh_cpu_usage();
-        let observe_foreground =
-            foreground_lookup_required(settings) || self.power_plan_controller.has_focus_plan();
+        let cpu_sample = if by_cpu_load_sample_required(settings, plugged_in) {
+            self.refresh_cpu_usage();
+            self.cpu_usage
+                .percent
+                .zip(self.cpu_usage_sampled_at)
+                .filter(|(usage, _)| usage.is_finite() && (0.0..=100.0).contains(usage))
+        } else {
+            None
+        };
+        let observe_foreground = ordinary_power_plan_stop(settings, plugged_in).is_none()
+            && (foreground_lookup_required(settings)
+                || self.power_plan_controller.has_focus_plan());
         let foreground_process_id = observe_foreground
             .then(|| observations.foreground_process_id())
             .flatten();
-        let foreground_executable_path = observe_foreground
-            .then(|| observations.foreground_process())
+        let (foreground_executable_path, focus_process_name) = observe_foreground
+            .then(|| observations.noncritical_foreground_process())
             .flatten()
-            .filter(|process| process_is_critical(process.id) == Some(false))
-            .map(|process| process.executable_path.to_string_lossy().into_owned());
-        let by_time_decision = current_by_time_decision(&settings.by_time);
-        let by_cpu_load_decision = self
-            .by_cpu_load_scheduler
-            .current_decision(&settings.by_cpu_load, self.cpu_usage.percent);
+            .map(|process| (process.executable_path, process.name))
+            .unzip();
+        let by_time_decision = current_by_time_decision(&settings.by_time, wall_time);
+        let by_cpu_load_decision = self.by_cpu_load_scheduler.current_decision_for_sample_at(
+            &settings.by_cpu_load,
+            cpu_sample,
+            Instant::now(),
+        );
         let primary_cpu_load_rule_index = by_cpu_load_decision
             .as_ref()
-            .filter(|decision| !decision.is_else)
+            .filter(|decision| !decision.is_else())
             .map(|decision| decision.rule_index);
         let by_running_app = self.by_running_app_manager.active_decision().map(
             |(rule_index, rule_name, process_name, power_plan_guid)| ByRunningAppDecision {
@@ -1618,40 +2813,39 @@ impl RuntimeCore {
                 power_plan_guid,
             },
         );
-        let action_process_name = by_running_app
+        let running_process_name = by_running_app
             .as_ref()
-            .map(|decision| decision.process_name.clone())
-            .unwrap_or_default();
+            .map(|decision| decision.process_name.clone());
         let decision_input = DecisionInput {
-            activity_state: activity.state,
+            activity_state,
             foreground_executable_path,
             foreground_process_id,
             by_running_app_known: self.by_running_app_manager.observation_known(),
-            cpu_load_known: self
-                .cpu_usage
-                .percent
-                .is_some_and(|usage| usage.is_finite() && (0.0..=100.0).contains(&usage)),
-            plugged_in: power_source::is_plugged_in(),
+            cpu_load_known: cpu_sample.is_some(),
+            plugged_in,
             by_running_app,
             by_time: by_time_decision,
             by_cpu_load: by_cpu_load_decision,
         };
         let decision = decide(settings, decision_input);
-        let winning_cpu_load_rule_index = if decision.state == DecisionState::ByCpuLoad {
-            primary_cpu_load_rule_index
-        } else {
-            None
-        };
-        if matches!(
-            decision.state,
-            DecisionState::Disabled | DecisionState::PausedWhilePluggedIn
-        ) {
-            self.by_cpu_load_scheduler.reset();
-        }
+        self.power_plan_rule_context =
+            decision
+                .power_plan_guid
+                .as_ref()
+                .map(|_| PowerPlanRuleContext {
+                    settings: Arc::clone(configured_settings),
+                    source: active_power_source(plugged_in),
+                });
         let result = self
             .power_plan_controller
             .reconcile_ordinary(decision, Instant::now());
         let status = self.power_plan_controller.status();
+        let action_process_name = match (status.decision_state, status.rule_index) {
+            (Some(DecisionState::ByFocus), Some(_)) => focus_process_name,
+            (Some(DecisionState::ByRunningApp), Some(_)) => running_process_name,
+            _ => None,
+        }
+        .unwrap_or_default();
         let feature = status
             .decision_state
             .and_then(power_plan_action_log_feature);
@@ -1659,9 +2853,13 @@ impl RuntimeCore {
         let reason = status.reason.unwrap_or_default();
         match result {
             Ok(applied) => {
+                let selected_cpu_load_rule_index = primary_cpu_load_rule_index.filter(|index| {
+                    status.decision_state == Some(DecisionState::ByCpuLoad)
+                        && status.rule_index == Some(*index)
+                });
                 self.by_cpu_load_scheduler.confirm_applied_rule(
-                    winning_cpu_load_rule_index,
-                    self.power_plan_controller.status().current_guid.as_deref(),
+                    selected_cpu_load_rule_index,
+                    status.current_guid.as_deref(),
                     Instant::now(),
                 );
                 if let (true, Some(feature)) = (applied, feature) {
@@ -1687,28 +2885,196 @@ impl RuntimeCore {
                         format!("{reason} Power plan switch failed: {error}"),
                     );
                 }
-                Err(error)
+                Err(ActivePlanCheckError::Operation(error))
             }
         }
     }
 
-    pub(super) fn refresh_active_plan(&mut self) -> Result<(), String> {
+    fn switch_power_plan(
+        &mut self,
+        settings: &Settings,
+        guid: &str,
+    ) -> Result<(), RuntimeCommandError> {
+        let plans = crate::power::list_plans().map_err(RuntimeCommandError::CommandFailed)?;
+        let Some(plan) = plans
+            .into_iter()
+            .find(|plan| plan.guid.eq_ignore_ascii_case(guid))
+        else {
+            return Err(RuntimeCommandError::PowerPlanUnavailable);
+        };
+        if plan.managed_adaptive {
+            return Err(ManualPowerPlanError::ManagedTarget.into());
+        }
+        let now = Instant::now();
+        // Finish Adaptive Processor Power cleanup when the current policy allows it.
+        if !(settings.general.enabled && adaptive_power_plan_required(settings))
+            && !self.adaptive_power_plan_waiting_for_source()
+            && self.power_plan_controller.has_pending_cleanup()
+        {
+            self.power_plan_controller
+                .release_adaptive(now)
+                .map_err(ManualPowerPlanError::SwitchFailed)?;
+        }
+        let result = self.power_plan_controller.switch_manual(&plan.guid, now);
+        if matches!(
+            result,
+            Ok(true) | Err(ManualPowerPlanError::ActiveRecoveryPending(_))
+        ) {
+            self.by_cpu_load_scheduler
+                .observe_active_plan(Some(&plan.guid));
+        }
+        result.map(|_| ()).map_err(Into::into)
+    }
+
+    pub(super) fn refresh_active_plan(&mut self, force: bool) -> Result<(), ActivePlanCheckError> {
         self.power_plan_controller
-            .refresh_active_plan(Instant::now())
+            .refresh_active_plan_for_status(Instant::now(), force)
     }
 
     pub(super) fn refresh_cpu_usage(&mut self) {
-        if self
-            .next_cpu_usage_refresh
-            .is_none_or(|refresh_at| Instant::now() >= refresh_at)
-        {
-            self.cpu_usage = self.cpu_monitor.sample_usage();
-            self.next_cpu_usage_refresh = Some(Instant::now() + CPU_USAGE_REFRESH_INTERVAL);
+        if self.cpu_usage_sampled_at.is_none_or(|sampled_at| {
+            Instant::now().saturating_duration_since(sampled_at) >= CPU_USAGE_REFRESH_INTERVAL
+        }) {
+            let sample = self.cpu_monitor.sample_usage();
+            self.record_cpu_usage(sample, Instant::now());
         }
     }
 
-    pub(super) fn power_plan_status(&self) -> PowerPlanStatus {
-        self.power_plan_controller.status()
+    fn record_cpu_usage(&mut self, sample: CpuUsageSnapshot, sampled_at: Instant) {
+        if !sample
+            .percent
+            .is_some_and(|usage| usage.is_finite() && (0.0..=100.0).contains(&usage))
+        {
+            self.by_cpu_load_scheduler.reset();
+        }
+        self.cpu_usage = sample;
+        self.cpu_usage_sampled_at = Some(sampled_at);
+    }
+
+    pub(super) fn power_plan_status(&mut self) -> (PowerPlanStatus, Option<&PowerPlanRuleContext>) {
+        let adaptive_waits_for_source = self.adaptive_power_plan_waiting_for_source();
+        // Cleanup can complete between Adaptive Processor Power updates.
+        if self.adaptive_processor_power_error.is_some()
+            && !self.power_plan_controller.has_pending_cleanup()
+            && (adaptive_waits_for_source
+                || self.last_settings.as_ref().is_some_and(|observed| {
+                    let settings = observed.effective();
+                    !feature_refresh_required(settings, adaptive_power_plan_required(settings))
+                }))
+        {
+            self.adaptive_processor_power_error = None;
+        }
+        let mut status = self.power_plan_controller.status();
+        status.adaptive_processor_power_error = self.adaptive_processor_power_error.clone();
+        status.adaptive_processor_power_waiting_for_source = adaptive_waits_for_source;
+        let stop_state = self.last_settings.as_ref().and_then(|settings| {
+            ordinary_power_plan_stop(settings.effective(), settings.plugged_in)
+                .map(|(state, _)| state)
+        });
+        let waits_for_source = self.last_settings.as_ref().is_some_and(|settings| {
+            ordinary_power_plan_waits_for_source(&settings.configured, settings.plugged_in)
+        });
+        if status.owner == Some(PowerPlanOwner::AdaptiveProcessorPower)
+            || (!waits_for_source
+                && (status.owner != Some(PowerPlanOwner::OrdinaryAutomation)
+                    || (status.restoring_previous
+                        && (stop_state.is_none() || self.has_temporary_power_plan()))))
+        {
+            self.power_plan_rule_context = None;
+            return (status, None);
+        }
+        if waits_for_source {
+            self.power_plan_rule_context = None;
+        }
+        let context = self.power_plan_rule_context.as_ref();
+        if let Some(decision_state) = waits_for_source
+            .then_some(DecisionState::WaitingForObservation)
+            .or(stop_state)
+            .or_else(|| {
+                context
+                    .is_none()
+                    .then_some(DecisionState::WaitingForObservation)
+            })
+        {
+            // This is a display projection. The controller still owns any pending restoration.
+            return (
+                PowerPlanStatus {
+                    active_plan_read_error: status.active_plan_read_error,
+                    adaptive_processor_power_error: status.adaptive_processor_power_error,
+                    adaptive_processor_power_waiting_for_source: adaptive_waits_for_source,
+                    current_guid: status.current_guid,
+                    decision_state: Some(decision_state),
+                    ..Default::default()
+                },
+                None,
+            );
+        }
+        let rule_context = context.filter(|_| status.rule_index.is_some());
+        (status, rule_context)
+    }
+
+    pub(super) fn clear_ordinary_power_plan_decision(&mut self) {
+        self.power_plan_controller.clear_ordinary_decision();
+    }
+}
+
+fn adaptive_power_launch_eligible(process: &ProcessInfo, creation: u64) -> bool {
+    let self_id = current_process_id();
+    let Some(session) = process_session_id(self_id) else {
+        return false;
+    };
+    focus_process_priority_eligible(process.id, &process.name, self_id, session)
+        && focus_and_launch_profile_eligible(process.id, creation)
+}
+
+fn ordinary_power_plan_choice_matches(
+    status: &PowerPlanStatus,
+    previous: &Settings,
+    current: &Settings,
+) -> bool {
+    let previous_activity = &previous.by_activity;
+    let activity = &current.by_activity;
+    let same_target = match status.decision_state {
+        Some(DecisionState::ByActivityIdle) => {
+            activity.power_plans.power_save_guid == previous_activity.power_plans.power_save_guid
+        }
+        Some(DecisionState::ByActivityActive) => {
+            activity.switch_to_performance_on_resume
+                && activity.power_plans.performance_guid
+                    == previous_activity.power_plans.performance_guid
+        }
+        _ => return indexed_power_plan_rule_matches(status, previous, current),
+    };
+    same_target
+        && activity.enabled
+        && activity.idle_timeout_seconds == previous_activity.idle_timeout_seconds
+        && activity.input_detection == previous_activity.input_detection
+}
+
+fn indexed_power_plan_rule_matches(
+    status: &PowerPlanStatus,
+    previous: &Settings,
+    current: &Settings,
+) -> bool {
+    let Some(index) = status.rule_index else {
+        return false;
+    };
+    macro_rules! same_rule {
+        ($feature:ident) => {
+            current.$feature.enabled
+                && current
+                    .$feature
+                    .rules
+                    .get(index)
+                    .is_some_and(|rule| previous.$feature.rules.get(index) == Some(rule))
+        };
+    }
+    match status.decision_state {
+        Some(DecisionState::ByFocus) => same_rule!(by_focus),
+        Some(DecisionState::ByRunningApp) => same_rule!(by_running_app),
+        Some(DecisionState::ByCpuLoad) => same_rule!(by_cpu_load),
+        Some(DecisionState::ByTime) => same_rule!(by_time),
+        _ => false,
     }
 }
 
@@ -1723,6 +3089,7 @@ pub(super) fn power_plan_action_log_feature(state: DecisionState) -> Option<Acti
         }
         DecisionState::Disabled
         | DecisionState::PausedWhilePluggedIn
+        | DecisionState::WaitingForObservation
         | DecisionState::NoPowerPlanSelected => None,
     }
 }
@@ -1738,14 +3105,18 @@ pub(super) fn processor_affinity_hard_settings(settings: &Settings) -> CpuAlloca
     processor_affinity_hard.rules.retain(|rule| {
         !settings
             .cpu_sets_soft
-            .contains_rule_for(&rule.executable_path)
+            .contains_rule_for(rule.executable_path.trim_start())
     });
     processor_affinity_hard
 }
 
-pub(super) fn explicit_cpu_allocation_paths(settings: &Settings) -> Vec<String> {
-    [&settings.cpu_sets_soft, &settings.processor_affinity_hard]
-        .into_iter()
+pub(super) fn explicit_cpu_allocation_paths(
+    settings: &Settings,
+    alternate: Option<&Settings>,
+) -> Vec<String> {
+    std::iter::once(settings)
+        .chain(alternate)
+        .flat_map(|profile| [&profile.cpu_sets_soft, &profile.processor_affinity_hard])
         .filter(|feature| feature.enabled)
         .flat_map(|feature| &feature.rules)
         .filter(|rule| {
@@ -1753,13 +3124,23 @@ pub(super) fn explicit_cpu_allocation_paths(settings: &Settings) -> Vec<String> 
                 && rule.has_cpu_selection()
                 && Path::new(rule.executable_path.trim()).is_absolute()
         })
-        .map(|rule| rule.executable_path.clone())
+        .map(|rule| rule.executable_path.trim_start().to_owned())
         .collect()
 }
 
 impl Drop for RuntimeCore {
     fn drop(&mut self) {
         let _ = self.shutdown();
+        if let Some(shared) = self.action_log_session.take() {
+            let mut state = lock_unpoisoned(&shared.state);
+            let mut log = std::mem::take(&mut self.action_log);
+            if std::mem::take(&mut state.action_log_clear_requested) {
+                log.clear();
+            } else if log.revision() != self.published_action_log_revision {
+                update_action_log(&shared, &mut state, log.entries_snapshot(), log.summaries());
+            }
+            state.idle_action_log = Some(log);
+        }
     }
 }
 
@@ -1768,28 +3149,337 @@ mod settings_tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::field_reassign_with_default)] // Keep this status-only fixture free of native shutdown.
+    fn inactive_adaptive_power_clears_errors_after_the_managed_plan_is_released() {
+        const CLEANUP_ERROR: &str = "Access is denied. (0x00000005)";
+        const APPLY_ERROR: &str = "Adaptive plan apply failed";
+        let profiles = |master, ac, battery| {
+            let mut settings = Settings::default();
+            settings.general.enabled = master;
+            settings.adaptive_engine.adaptive_processor_power_enabled = ac;
+            settings
+                .battery_profile_mut()
+                .adaptive_engine
+                .adaptive_processor_power_enabled = battery;
+            Arc::new(settings)
+        };
+        for (plugged_in, master, ac, battery) in [
+            (Some(true), true, false, true),
+            (Some(false), true, true, false),
+            (Some(false), false, true, true),
+            (None, true, false, true),
+        ] {
+            let mut runner = RuntimeCore::default();
+            runner.shutdown_started = true;
+            runner.last_settings = Some(ObservedSettings {
+                configured: profiles(master, ac, battery),
+                plugged_in,
+            });
+            runner.power_plan_controller = PowerPlanController::temporary_adaptive_fixture();
+            runner.adaptive_processor_power_error = Some(
+                AdaptiveProcessorPowerError::CleanupRetry(CLEANUP_ERROR.into()),
+            );
+            assert_eq!(
+                runner.power_plan_status().0.adaptive_processor_power_error,
+                Some(AdaptiveProcessorPowerError::CleanupRetry(
+                    CLEANUP_ERROR.into()
+                ))
+            );
+
+            runner.power_plan_controller = PowerPlanController::default();
+            assert!(runner
+                .power_plan_status()
+                .0
+                .adaptive_processor_power_error
+                .is_none());
+            runner.last_settings = Some(ObservedSettings {
+                configured: profiles(true, true, true),
+                plugged_in,
+            });
+            assert!(runner
+                .power_plan_status()
+                .0
+                .adaptive_processor_power_error
+                .is_none());
+
+            runner.adaptive_processor_power_error =
+                Some(AdaptiveProcessorPowerError::Operation(APPLY_ERROR.into()));
+            assert_eq!(
+                runner.power_plan_status().0.adaptive_processor_power_error,
+                Some(AdaptiveProcessorPowerError::Operation(APPLY_ERROR.into()))
+            );
+        }
+    }
+
+    #[test]
+    fn power_only_samples_foreground_demand_and_reprimes_on_power_source_change() {
+        let mut runner = RuntimeCore::default();
+        runner.shutdown_started = true;
+        let mut settings = Settings::default();
+        settings.adaptive_engine.adaptive_processor_power_enabled = true;
+        let _ = settings.battery_profile_mut();
+        let settings = Arc::new(settings);
+        assert!(!adaptive_engine_process_required(&settings));
+        assert!(adaptive_power_plan_required(&settings));
+        assert!(runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true)));
+
+        let id = u32::MAX;
+        let start = Instant::now();
+        let sample = |second, generation, cpu_time_100ns: Option<u64>| {
+            CycleObservations::with_adaptive_cpu_sample(
+                vec![ProcessInfo {
+                    id,
+                    name: "csrss.exe".into(),
+                    creation_time: Some(generation),
+                    parent_id: None,
+                    session_id: None,
+                    user_name: None,
+                    is_service_account: None,
+                    is_critical: None,
+                    can_set_information: false,
+                    image_path: None,
+                }],
+                Some(id),
+                cpu_time_100ns.map(|cpu_time_100ns| crate::cpu::ProcessCpuSample {
+                    cpu_time_100ns,
+                    sampled_at: start + Duration::from_secs(second),
+                }),
+            )
+        };
+        let work = 1_000_000_000_000;
+        assert_eq!(
+            runner.sample_adaptive_power_foreground(&mut sample(0, 1, Some(0))),
+            (true, None)
+        );
+        assert_eq!(
+            runner.sample_adaptive_power_foreground(&mut sample(1, 1, Some(work))),
+            (false, Some(100.0))
+        );
+        assert!(runner.note_settings(&settings, AutomationWakeEvents::default(), Some(false)));
+        assert_eq!(
+            runner.sample_adaptive_power_foreground(&mut sample(2, 1, Some(work * 2))),
+            (false, None)
+        );
+        assert_eq!(
+            runner.sample_adaptive_power_foreground(&mut sample(3, 1, Some(work * 3))),
+            (false, Some(100.0))
+        );
+        for (second, generation, counter, expected) in [
+            (4, 1, None, (false, None)),
+            (5, 1, Some(work * 5), (false, None)),
+            (6, 2, Some(0), (true, None)),
+        ] {
+            assert_eq!(
+                runner.sample_adaptive_power_foreground(&mut sample(second, generation, counter)),
+                expected
+            );
+        }
+        let mut missing_root = CycleObservations::with_adaptive_cpu_sample(vec![], Some(id), None);
+        assert_eq!(
+            runner.sample_adaptive_power_foreground(&mut missing_root),
+            (false, None)
+        );
+        assert_eq!(
+            runner.sample_adaptive_power_foreground(&mut sample(7, 2, Some(work))),
+            (false, None)
+        );
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)] // RuntimeCore implements Drop.
+    fn equal_settings_replacement_updates_identity_without_invalidation() {
+        let mut runner = RuntimeCore::default();
+        runner.shutdown_started = true;
+        let settings = Arc::new(Settings::default());
+        let replacement = Arc::new(settings.as_ref().clone());
+        let events = AutomationWakeEvents::default();
+        assert!(runner.note_settings(&settings, events, Some(true)));
+        assert!(!runner.note_settings(&replacement, events, Some(true)));
+        assert!(runner
+            .last_settings
+            .as_ref()
+            .is_some_and(|observed| Arc::ptr_eq(&observed.configured, &replacement)));
+    }
+
+    #[test]
     #[allow(clippy::field_reassign_with_default)] // RuntimeCore implements Drop, preventing struct update.
-    fn settings_cancel_restoration_even_while_adaptive_checks_are_paused() {
+    fn coalesced_settings_cancel_restoration_even_while_adaptive_checks_are_paused() {
         let mut runner = RuntimeCore::default();
         // The fixture contains synthetic plan IDs and must never run native shutdown.
         runner.shutdown_started = true;
         runner.power_plan_controller = PowerPlanController::temporary_adaptive_fixture();
-        let mut settings = Settings::default();
-        settings.general.restore_previous_power_plan = true;
-        runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
+        let mut settings = Arc::new(Settings::default());
+        Arc::make_mut(&mut settings)
+            .general
+            .restore_previous_power_plan = true;
+        assert!(!automation_worker_required(&settings));
+        let mut revision = SettingsRevision::initial();
+        let runtime = RuntimeHandle::start(&RuntimeSettingsSnapshot {
+            value: Arc::clone(&settings),
+            runtime_revision: revision,
+            persisted_revision: revision,
+        });
+        let mut save = |value| {
+            revision = revision.next();
+            runtime.replace_settings(&RuntimeSettingsSnapshot {
+                value,
+                runtime_revision: revision,
+                persisted_revision: revision,
+            });
+        };
+        let mut edited = Arc::clone(&settings);
+        Arc::make_mut(&mut edited).general.check_interval_ms += 100;
+        save(edited);
+        save(Arc::clone(&settings));
+        let snapshot = automation_snapshot(&runtime.shared).unwrap();
+        runner.note_settings(&snapshot.settings, snapshot.wake_events, Some(true));
         assert!(runner.has_temporary_power_plan());
-        settings.general.restore_previous_power_plan = false;
-        runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
+
+        let mut disabled = Arc::clone(&settings);
+        Arc::make_mut(&mut disabled)
+            .general
+            .restore_previous_power_plan = false;
+        save(disabled);
+        save(Arc::clone(&settings));
+        let snapshot = automation_snapshot(&runtime.shared).unwrap();
+        assert!(snapshot.settings.general.restore_previous_power_plan);
+        runner.note_settings(&snapshot.settings, snapshot.wake_events, Some(true));
         assert!(!runner.has_temporary_power_plan());
-        settings.general.restore_previous_power_plan = true;
-        runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
+        assert!(
+            !automation_snapshot(&runtime.shared)
+                .unwrap()
+                .wake_events
+                .restore_previous_plan_disabled
+        );
+
+        runner.power_plan_rule_context = Some(PowerPlanRuleContext {
+            settings: Arc::clone(&settings),
+            source: PowerSourceProfile::PluggedIn,
+        });
         assert!(runner
-            .run_check(&settings, &mut CycleObservations::default())
+            .run_check(
+                &settings,
+                Some(true),
+                Local::now(),
+                ActivityState::Unknown,
+                &mut CycleObservations::default(),
+            )
             .is_ok());
+        assert!(runner.power_plan_rule_context.is_none());
         assert!(!runner.has_temporary_power_plan());
         assert!(runner.power_plan_controller.adaptive_active());
-        assert!(runner.next_cpu_usage_refresh.is_none());
+        assert!(runner.cpu_usage_sampled_at.is_none());
         runner.power_plan_controller = PowerPlanController::default();
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)] // Keep this context-only fixture free of native shutdown.
+    fn power_plan_rule_context_tracks_logical_source_and_decision_release() {
+        let mut runner = RuntimeCore::default();
+        runner.shutdown_started = true;
+        let settings = Arc::new(Settings::default());
+        for plugged_in in [None, Some(false)] {
+            runner.power_plan_rule_context = Some(PowerPlanRuleContext {
+                settings: Arc::clone(&settings),
+                source: PowerSourceProfile::PluggedIn,
+            });
+            runner.note_settings(&settings, AutomationWakeEvents::default(), plugged_in);
+            assert_eq!(
+                runner.power_plan_rule_context.is_some(),
+                plugged_in.is_none()
+            );
+        }
+        runner.power_plan_rule_context = Some(PowerPlanRuleContext {
+            settings,
+            source: PowerSourceProfile::OnBattery,
+        });
+        let (_, context) = runner.power_plan_status();
+        assert!(context.is_none());
+        assert!(runner.power_plan_rule_context.is_none());
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)] // Keep this context-only fixture free of native shutdown.
+    fn battery_only_power_plan_rules_wait_for_a_verified_source() {
+        let mut settings = Settings::default();
+        let battery = settings.battery_profile_mut();
+        battery.by_time.enabled = true;
+        battery.by_time.rules.push(crate::config::ByTimeRule {
+            enabled: true,
+            days: vec![crate::config::WeekdaySetting::Mon],
+            power_plan_guid: Some("battery-plan".into()),
+            ..Default::default()
+        });
+        let settings = Arc::new(settings);
+        let mut runner = RuntimeCore::default();
+        runner.shutdown_started = true;
+        runner.note_settings(&settings, AutomationWakeEvents::default(), None);
+        runner.power_plan_rule_context = Some(PowerPlanRuleContext {
+            settings: Arc::clone(&settings),
+            source: PowerSourceProfile::PluggedIn,
+        });
+
+        assert!(!power_plan_checks_required(&settings));
+        assert!(ordinary_power_plan_waits_for_source(&settings, None));
+        let (status, context) = runner.power_plan_status();
+        assert_eq!(
+            status.decision_state,
+            Some(DecisionState::WaitingForObservation)
+        );
+        assert!(context.is_none());
+        assert!(runner.power_plan_rule_context.is_none());
+        for plugged_in in [Some(false), Some(true)] {
+            assert!(!ordinary_power_plan_waits_for_source(&settings, plugged_in));
+        }
+    }
+
+    #[test]
+    fn saved_power_plan_rules_preserve_only_the_matching_index() {
+        let mut previous = Settings::default();
+        previous.by_time.enabled = true;
+        previous.by_time.rules.push(crate::config::ByTimeRule {
+            power_plan_guid: Some("original".to_owned()),
+            ..Default::default()
+        });
+        let status = PowerPlanStatus {
+            decision_state: Some(DecisionState::ByTime),
+            rule_index: Some(1),
+            ..Default::default()
+        };
+        let mut current = previous.clone();
+        current.by_time.rules[0].enabled = false;
+        assert!(indexed_power_plan_rule_matches(
+            &status, &previous, &current
+        ));
+        current.by_time.rules[1].power_plan_guid = Some("replacement".to_owned());
+        assert!(!indexed_power_plan_rule_matches(
+            &status, &previous, &current
+        ));
+        current.by_time.rules = previous.by_time.rules.clone();
+        current.by_time.rules.swap(0, 1);
+        assert!(!indexed_power_plan_rule_matches(
+            &status, &previous, &current
+        ));
+    }
+
+    #[test]
+    fn saved_activity_plan_depends_on_the_selected_slot_and_input_policy() {
+        let mut previous = Settings::default();
+        previous.by_activity.enabled = true;
+        previous.by_activity.power_plans.performance_guid = Some("active".to_owned());
+        let status = PowerPlanStatus {
+            decision_state: Some(DecisionState::ByActivityActive),
+            ..Default::default()
+        };
+        let mut current = previous.clone();
+        current.by_activity.power_plans.power_save_guid = Some("idle".to_owned());
+        assert!(ordinary_power_plan_choice_matches(
+            &status, &previous, &current
+        ));
+        current.by_activity.idle_timeout_seconds += 1;
+        assert!(!ordinary_power_plan_choice_matches(
+            &status, &previous, &current
+        ));
     }
 
     #[test]
@@ -1805,6 +3495,7 @@ mod settings_tests {
             power_plan_guid: Some("target".into()),
             ..Default::default()
         }];
+        let settings = Arc::new(settings);
         let mut power_changed = AutomationWakeEvents::default();
         power_changed.insert_windows_event(WindowsAutomationEvent::PowerChanged);
         let mut suspend_resume = AutomationWakeEvents::default();
@@ -1825,9 +3516,8 @@ mod settings_tests {
             let mut runner = RuntimeCore::default();
             runner.note_settings(&settings, AutomationWakeEvents::default(), previous_source);
             let start = Instant::now();
-            let refresh_at = start + Duration::from_secs(1);
             runner.cpu_usage.percent = Some(80.0);
-            runner.next_cpu_usage_refresh = Some(refresh_at);
+            runner.cpu_usage_sampled_at = Some(start);
 
             runner.note_settings(&settings, events, next_source);
             let decision = runner.by_cpu_load_scheduler.current_decision_at(
@@ -1836,10 +3526,7 @@ mod settings_tests {
                 start,
             );
             assert_eq!(decision.is_none(), discard);
-            assert_eq!(
-                runner.next_cpu_usage_refresh,
-                (!discard).then_some(refresh_at)
-            );
+            assert_eq!(runner.cpu_usage_sampled_at, (!discard).then_some(start));
         }
     }
 
@@ -1869,16 +3556,15 @@ mod settings_tests {
                 else_power_plan_guid: Some("return".into()),
                 ..Default::default()
             }];
+            let settings = Arc::new(settings);
             let mut runner = RuntimeCore::default();
             runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
             let start = Instant::now();
-            assert!(
-                runner
-                    .by_cpu_load_scheduler
-                    .current_decision_at(&settings.by_cpu_load, Some(80.0), start)
-                    .unwrap()
-                    .is_else
-            );
+            assert!(runner
+                .by_cpu_load_scheduler
+                .current_decision_at(&settings.by_cpu_load, Some(80.0), start)
+                .unwrap()
+                .is_else());
             let decision = runner
                 .by_cpu_load_scheduler
                 .current_decision_at(
@@ -1887,7 +3573,7 @@ mod settings_tests {
                     start + Duration::from_secs(2),
                 )
                 .unwrap();
-            assert!(!decision.is_else);
+            assert!(!decision.is_else());
             runner.by_cpu_load_scheduler.confirm_applied_rule(
                 Some(decision.rule_index),
                 Some("target"),
@@ -1898,40 +3584,34 @@ mod settings_tests {
             events.insert_windows_event(WindowsAutomationEvent::PowerChanged);
             assert!(!runner.note_settings(&settings, events, Some(true)));
             let usage = if stability.is_some() { 70.0 } else { 80.0 };
-            assert!(
-                !runner
+            assert!(!runner
+                .by_cpu_load_scheduler
+                .current_decision_at(
+                    &settings.by_cpu_load,
+                    Some(usage),
+                    start + Duration::from_secs(3),
+                )
+                .unwrap()
+                .is_else());
+            if stability.is_some() {
+                assert!(!runner
                     .by_cpu_load_scheduler
                     .current_decision_at(
                         &settings.by_cpu_load,
-                        Some(usage),
-                        start + Duration::from_secs(3),
+                        Some(20.0),
+                        start + Duration::from_secs(4),
                     )
                     .unwrap()
-                    .is_else
-            );
-            if stability.is_some() {
-                assert!(
-                    !runner
-                        .by_cpu_load_scheduler
-                        .current_decision_at(
-                            &settings.by_cpu_load,
-                            Some(20.0),
-                            start + Duration::from_secs(4),
-                        )
-                        .unwrap()
-                        .is_else
-                );
-                assert!(
-                    runner
-                        .by_cpu_load_scheduler
-                        .current_decision_at(
-                            &settings.by_cpu_load,
-                            Some(20.0),
-                            start + Duration::from_secs(32),
-                        )
-                        .unwrap()
-                        .is_else
-                );
+                    .is_else());
+                assert!(runner
+                    .by_cpu_load_scheduler
+                    .current_decision_at(
+                        &settings.by_cpu_load,
+                        Some(20.0),
+                        start + Duration::from_secs(32),
+                    )
+                    .unwrap()
+                    .is_else());
             }
         }
     }
@@ -1964,6 +3644,7 @@ mod settings_tests {
                     power_plan_guid: Some("target".into()),
                     ..Default::default()
                 }];
+                let settings = Arc::new(settings);
                 let mut runner = RuntimeCore::default();
                 runner.note_settings(&settings, AutomationWakeEvents::default(), previous_source);
                 let start = Instant::now();
@@ -2045,6 +3726,7 @@ mod settings_tests {
         assert!(automation_worker_required(&settings));
         assert!(!power_plan_checks_required(settings.battery_profile()));
 
+        let settings = Arc::new(settings);
         let mut runner = RuntimeCore::default();
         let start = Instant::now();
         runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
@@ -2052,11 +3734,7 @@ mod settings_tests {
             .by_cpu_load_scheduler
             .current_decision_at(&settings.by_cpu_load, Some(80.0), start)
             .is_none());
-        runner.note_settings(
-            settings.battery_profile(),
-            AutomationWakeEvents::default(),
-            Some(false),
-        );
+        runner.note_settings(&settings, AutomationWakeEvents::default(), Some(false));
         // The idle Battery profile keeps the worker alive without calling the scheduler.
         runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
         assert!(runner
@@ -2090,11 +3768,7 @@ mod settings_tests {
                 start + Duration::from_secs(91),
             )
             .is_some());
-        runner.note_settings(
-            settings.battery_profile(),
-            AutomationWakeEvents::default(),
-            Some(false),
-        );
+        runner.note_settings(&settings, AutomationWakeEvents::default(), Some(false));
         runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
         assert!(runner
             .by_cpu_load_scheduler
@@ -2107,14 +3781,88 @@ mod settings_tests {
     }
 
     #[test]
+    fn cpu_load_resumes_with_a_fresh_sample_only_after_all_consumers_yield() {
+        for (plugged_in, paused, adaptive_enabled, processor_power_enabled) in [
+            (Some(true), false, false, false),
+            (Some(true), false, true, false),
+            (Some(true), true, false, false),
+            (Some(true), true, true, false),
+            (Some(true), true, false, true),
+            (None, true, false, false),
+        ] {
+            let mut runner = RuntimeCore::default();
+            let mut settings = Settings::default();
+            settings.general.enabled = true;
+            settings.general.pause_power_plan_switching_while_plugged_in = paused;
+            settings.adaptive_engine.enabled = adaptive_enabled;
+            settings.adaptive_engine.adaptive_processor_power_enabled = processor_power_enabled;
+            settings.by_cpu_load.rules = vec![crate::config::ByCpuLoadRule {
+                power_plan_guid: Some("target".into()),
+                ..Default::default()
+            }];
+            settings.by_cpu_load.enabled = paused;
+            let mut settings = Arc::new(settings);
+            runner.note_settings(&settings, AutomationWakeEvents::default(), plugged_in);
+
+            let sampled_at = Instant::now();
+            runner.cpu_usage.percent = Some(90.0);
+            runner.cpu_usage_sampled_at = Some(sampled_at);
+
+            let edited = Arc::make_mut(&mut settings);
+            edited.by_cpu_load.enabled = true;
+            edited.general.pause_power_plan_switching_while_plugged_in = false;
+            runner.note_settings(&settings, AutomationWakeEvents::default(), plugged_in);
+            let shared = adaptive_enabled || processor_power_enabled;
+            assert_eq!(runner.cpu_usage.percent, shared.then_some(90.0));
+            assert_eq!(runner.cpu_usage_sampled_at, shared.then_some(sampled_at));
+        }
+    }
+
+    #[test]
+    fn incidental_cpu_usage_gaps_reset_by_cpu_load_qualification() {
+        use crate::config::{ByCpuLoadRule, CpuLoadPercent, CpuUsageComparison};
+
+        let mut settings = Settings::default().by_cpu_load;
+        settings.enabled = true;
+        settings.rules = vec![ByCpuLoadRule {
+            comparison: CpuUsageComparison::AtOrAbove,
+            threshold_percent: CpuLoadPercent::new(75).unwrap(),
+            duration_seconds: 8,
+            power_plan_guid: Some("target".into()),
+            ..Default::default()
+        }];
+        let mut runner = RuntimeCore::default();
+        let start = Instant::now();
+        let hot = CpuUsageSnapshot {
+            percent: Some(85.0),
+            ..Default::default()
+        };
+        let check = |runner: &mut RuntimeCore, now| {
+            runner.by_cpu_load_scheduler.current_decision_for_sample_at(
+                &settings,
+                runner.cpu_usage.percent.zip(runner.cpu_usage_sampled_at),
+                now,
+            )
+        };
+        runner.record_cpu_usage(hot, start);
+        assert!(check(&mut runner, start).is_none());
+        runner.record_cpu_usage(CpuUsageSnapshot::default(), start + Duration::from_secs(5));
+        let next_check = start + Duration::from_secs(10);
+        runner.record_cpu_usage(hot, next_check);
+        assert!(check(&mut runner, next_check).is_none());
+    }
+
+    #[test]
     fn explicit_settings_events_do_not_skip_bookkeeping() {
         for explicit in [false, true] {
             for changed in [false, true] {
                 let mut runner = RuntimeCore::default();
                 let mut settings = Settings::default();
                 settings.advanced.action_log_mode = crate::config::ActionLogMode::Off;
+                let mut settings = Arc::new(settings);
                 runner.note_settings(&settings, AutomationWakeEvents::default(), Some(true));
                 if changed {
+                    let settings = Arc::make_mut(&mut settings);
                     settings.advanced.action_log_mode = crate::config::ActionLogMode::Full;
                     settings.general.enabled = !settings.general.enabled;
                 }
@@ -2129,7 +3877,13 @@ mod settings_tests {
                     ),
                     changed || explicit
                 );
-                assert_eq!(runner.last_settings.as_ref(), Some(&settings));
+                assert_eq!(
+                    runner
+                        .last_settings
+                        .as_ref()
+                        .map(ObservedSettings::effective),
+                    Some(settings.as_ref())
+                );
                 runner.action_log.record(
                     crate::action_log::ActionLogFeature::ThreadPriority,
                     None,
@@ -2156,7 +3910,7 @@ mod settings_tests {
         settings.by_activity.idle_timeout_seconds = 30;
         settings.by_activity.power_plans.power_save_guid = Some("idle".into());
         settings.by_activity.switch_to_performance_on_resume = false;
-        assert!(input_hook_required(&settings));
+        assert_ne!(input_hook_config(&settings), InputHookConfig::default());
 
         for selected in 1..8 {
             settings.by_activity.input_detection.keyboard = selected & 1 != 0;
@@ -2233,7 +3987,7 @@ mod settings_tests {
 }
 
 #[cfg(test)]
-mod watchdog_action_tests {
+mod resource_thresholds_action_tests {
     use super::*;
     use crate::{control::process_restart::RestartResult, foreground::ProcessActionTarget};
 
@@ -2248,18 +4002,25 @@ mod watchdog_action_tests {
             is_service_account: Some(false),
         };
         let targets = [target(1), target(2)];
+        let now = Instant::now();
         for result in [Ok(()), Err("Replacement could not start.".to_owned())] {
-            let mut cycle = WatchdogActionCycle::default();
+            let mut cycle = ResourceThresholdsActionCycle::default();
             assert_eq!(cycle.skipped_termination_reason(&targets), None);
             let expected = if result.is_ok() {
-                "watchdog.already_restarted"
+                "resource_thresholds.already_restarted"
             } else {
-                "watchdog.already_stopped"
+                "resource_thresholds.termination_already_handled"
             };
-            let _ = cycle.restart_once(&targets, || RestartResult {
-                stopped: vec![(1, 1), (2, 2)],
-                result,
-            });
+            let _ = cycle.restart_once(
+                &targets,
+                &mut Vec::new(),
+                now,
+                || Ok(false),
+                || RestartResult {
+                    termination_handled: vec![(1, 1), (2, 2)],
+                    result,
+                },
+            );
             assert_eq!(cycle.skipped_termination_reason(&targets), Some(expected));
             assert_eq!(
                 cycle.skipped_termination_reason(&[target(2), target(1)]),
@@ -2269,28 +4030,34 @@ mod watchdog_action_tests {
             replacement.creation_time += 1;
             assert_eq!(cycle.skipped_termination_reason(&[replacement]), None);
         }
-        let mut cycle = WatchdogActionCycle::default();
-        let _ = cycle.restart_once(&[target(3)], || RestartResult {
-            stopped: vec![(3, 3)],
-            result: Ok(()),
-        });
-        cycle.stopped.insert((1, 1));
+        let mut cycle = ResourceThresholdsActionCycle::default();
+        let _ = cycle.restart_once(
+            &[target(3)],
+            &mut Vec::new(),
+            now,
+            || Ok(false),
+            || RestartResult {
+                termination_handled: vec![(3, 3)],
+                result: Ok(()),
+            },
+        );
+        cycle.termination_handled.insert((1, 1));
         assert_eq!(cycle.skipped_termination_reason(&targets), None);
-        cycle.stopped.insert((2, 2));
+        cycle.termination_handled.insert((2, 2));
         assert_eq!(
             cycle.skipped_termination_reason(&targets),
-            Some("watchdog.already_stopped")
+            Some("resource_thresholds.termination_already_handled")
         );
         assert_eq!(cycle.skipped_termination_reason(&[]), None);
     }
 
     #[test]
-    fn simultaneous_cpu_memory_restarts_run_once_even_on_partial_failure() {
+    fn restarts_share_an_attempt_across_monitors_and_cool_down_across_replacements() {
         for result in [
             Ok(()),
             Err("Stopped one process; another was denied.".to_owned()),
         ] {
-            let mut cycle = WatchdogActionCycle::default();
+            let mut cycle = ResourceThresholdsActionCycle::default();
             let target = |id| ProcessActionTarget {
                 id,
                 name: "app.exe".into(),
@@ -2300,33 +4067,119 @@ mod watchdog_action_tests {
                 is_service_account: Some(false),
             };
             let targets = [target(1), target(2)];
+            let start = Instant::now();
+            let mut cooldowns = Vec::new();
             let mut launches = 0;
-            for batch in [targets.to_vec(), targets.into_iter().rev().collect()] {
+            for (batch, success) in [
+                (targets.to_vec(), ResourceThresholdsRestartOutcome::Applied),
+                (
+                    targets.into_iter().rev().collect(),
+                    ResourceThresholdsRestartOutcome::AlreadyRestarted,
+                ),
+            ] {
                 assert_eq!(
-                    cycle.restart_once(&batch, || {
-                        launches += 1;
-                        RestartResult {
-                            stopped: vec![(1, 1)],
-                            result: result.clone(),
-                        }
-                    }),
-                    result
+                    cycle.restart_once(
+                        &batch,
+                        &mut cooldowns,
+                        start,
+                        || Ok(false),
+                        || {
+                            launches += 1;
+                            RestartResult {
+                                termination_handled: vec![(1, 1)],
+                                result: result.clone(),
+                            }
+                        },
+                    ),
+                    result.clone().map(|()| success)
                 );
             }
             assert_eq!(launches, 1);
-            assert_eq!(cycle.stopped, BTreeSet::from([(1, 1)]));
-            let mut replacement = target(1);
-            replacement.creation_time += 1;
-            assert!(cycle
-                .restart_once(&[replacement], || {
-                    launches += 1;
-                    RestartResult {
-                        stopped: vec![(1, 2)],
+            assert_eq!(cycle.termination_handled, BTreeSet::from([(1, 1)]));
+            let mut replacement = target(3);
+            replacement.executable_path = "c:/apps/APP.exe".into();
+            let mut next_cycle = ResourceThresholdsActionCycle::default();
+            let just_before_expiry =
+                start + RESOURCE_THRESHOLDS_RESTART_COOLDOWN - Duration::from_millis(1);
+            assert_eq!(
+                next_cycle.restart_once(
+                    std::slice::from_ref(&replacement),
+                    &mut cooldowns,
+                    just_before_expiry,
+                    || panic!("Cooldown must not query App Suspension"),
+                    || panic!("Cooldown must not attempt a restart"),
+                ),
+                Ok(ResourceThresholdsRestartOutcome::CoolingDown)
+            );
+            assert_eq!(
+                next_cycle.skipped_termination_reason(std::slice::from_ref(&replacement)),
+                None
+            );
+
+            let mut independent = target(4);
+            independent.executable_path = r"C:\Other\app.exe".into();
+            assert_eq!(
+                next_cycle.restart_once(
+                    &[independent],
+                    &mut cooldowns,
+                    just_before_expiry,
+                    || Ok(false),
+                    || RestartResult {
+                        termination_handled: Vec::new(),
                         result: Ok(()),
-                    }
-                })
-                .is_ok());
-            assert_eq!(launches, 2);
+                    },
+                ),
+                Ok(ResourceThresholdsRestartOutcome::Applied)
+            );
+            assert_eq!(
+                ResourceThresholdsActionCycle::default().restart_once(
+                    &[replacement],
+                    &mut cooldowns,
+                    start + RESOURCE_THRESHOLDS_RESTART_COOLDOWN,
+                    || Ok(false),
+                    || RestartResult {
+                        termination_handled: vec![(3, 3)],
+                        result: Ok(())
+                    },
+                ),
+                Ok(ResourceThresholdsRestartOutcome::Applied)
+            );
+        }
+    }
+
+    #[test]
+    fn frozen_or_unverified_targets_leave_restart_cooldown_and_termination_untouched() {
+        let targets = [ProcessActionTarget {
+            id: 1,
+            name: "app.exe".into(),
+            executable_path: r"C:\Apps\app.exe".into(),
+            creation_time: 1,
+            session_id: Some(1),
+            is_service_account: Some(false),
+        }];
+        let now = Instant::now();
+        let mut cooldowns = Vec::new();
+        for (blocked, expected) in [
+            (
+                Ok(true),
+                Ok(ResourceThresholdsRestartOutcome::BlockedByAppSuspension),
+            ),
+            (
+                Err("Job membership unavailable".to_owned()),
+                Err("Job membership unavailable".to_owned()),
+            ),
+        ] {
+            let mut cycle = ResourceThresholdsActionCycle::default();
+            let outcome = cycle.restart_once(
+                &targets,
+                &mut cooldowns,
+                now,
+                || blocked,
+                || panic!("Blocked restart must not pause Keep Running or stop the app"),
+            );
+            assert_eq!(outcome, expected);
+            assert!(cooldowns.is_empty());
+            assert_eq!(cycle.skipped_termination_reason(&targets), None);
         }
     }
 }

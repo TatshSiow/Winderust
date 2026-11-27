@@ -4,12 +4,20 @@ use crate::{
     backend::crash_recovery::{
         forget_power_plan_changes, record_power_plan_change, DeferredRecoveryIntent, RecoveryIntent,
     },
+    config::PowerSourceProfile,
+    features::power_plan_control::ByCpuLoadMatch,
     power::{
-        active_plan, adaptive_power_profile_transition, apply_processor_power_values, delete_plan,
-        duplicate_adaptive_plan, initialize_adaptive_plan, set_active, AdaptivePowerBoostValues,
-        AdaptivePowerProfile, ProcessorPowerSourceValues, ProcessorPowerValues,
+        active_plan, adaptive_power_profile_transition, apply_processor_power_values,
+        apply_processor_power_values_staged, delete_plan, duplicate_adaptive_plan,
+        initialize_adaptive_plan,
+        powercfg::{
+            apply_class1_core_parking_values, read_class1_core_parking_values,
+            Class1CoreParkingValues,
+        },
+        set_active, AdaptivePowerBoostValues, AdaptivePowerProfile, ProcessorPowerSourceValues,
+        ProcessorPowerValues,
     },
-    rules::{DecisionOutcome, DecisionState, ExecutionFailureTracker},
+    rules::{DecisionOutcome, DecisionState, ExecutionFailureTracker, QualifiedPowerPlan},
 };
 
 const ACTIVE_PLAN_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
@@ -18,18 +26,60 @@ const SWITCH_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PowerPlanOwner {
     OrdinaryAutomation,
-    AdaptiveEngine,
+    AdaptiveProcessorPower,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum ManualPowerPlanError {
+    #[error("The active power plan is managed by Adaptive Processor Power.")]
+    ManagedByAdaptive,
+    #[error("The managed Adaptive plan cannot be selected manually.")]
+    ManagedTarget,
+    #[error("Windows verified the selected power plan, but recovery is unconfirmed: {0}")]
+    ActiveRecoveryPending(String),
+    #[error("{0}")]
+    SwitchFailed(String),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ActivePlanCheckError {
+    #[error("{0}")]
+    Read(String),
+    #[error("{0}")]
+    Operation(String),
+}
+
+impl From<ActivePlanCheckError> for String {
+    fn from(error: ActivePlanCheckError) -> Self {
+        match error {
+            ActivePlanCheckError::Read(error) | ActivePlanCheckError::Operation(error) => error,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum AdaptiveProcessorPowerError {
+    #[error("{0}")]
+    Operation(String),
+    #[error("Adaptive plan cleanup failed: {0}")]
+    CleanupRetry(String),
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct PowerPlanStatus {
+    pub(crate) active_plan_read_error: Option<String>,
+    pub(crate) adaptive_processor_power_error: Option<AdaptiveProcessorPowerError>,
+    pub(crate) adaptive_processor_power_waiting_for_source: bool,
     pub(crate) apply_failed: bool,
+    pub(crate) restoring_previous: bool,
     pub(crate) rule_index: Option<usize>,
     pub(crate) owner: Option<PowerPlanOwner>,
     pub(crate) current_guid: Option<String>,
     pub(crate) target_guid: Option<String>,
     pub(crate) decision_state: Option<DecisionState>,
     pub(crate) reason: Option<String>,
+    pub(crate) cpu_load_match: Option<ByCpuLoadMatch>,
+    pub(crate) competing_modes: Vec<QualifiedPowerPlan>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -39,15 +89,126 @@ pub(crate) struct AdaptivePowerPlanRequest {
     pub(crate) has_efficiency_cores: bool,
     pub(crate) background_pressure_profile: AdaptivePowerBoostValues,
     pub(crate) focus_and_launch_profile: AdaptivePowerBoostValues,
+    pub(crate) restraint_core_parking: Option<RestraintCoreParking>,
+}
+
+impl AdaptivePowerPlanRequest {
+    fn calibrated_values(
+        self,
+        profile: AdaptivePowerProfile,
+    ) -> (ProcessorPowerSourceValues, ProcessorPowerSourceValues) {
+        let normal = profile.calibrated_power_values(
+            self.baseline,
+            self.has_efficiency_cores,
+            self.background_pressure_profile,
+            self.focus_and_launch_profile,
+        );
+        let mut values = normal;
+        if let Some(restraint) = self.restraint_core_parking {
+            let source = match restraint.source {
+                PowerSourceProfile::PluggedIn => &mut values.ac,
+                PowerSourceProfile::OnBattery => &mut values.battery,
+            };
+            source.core_parking_min = source
+                .core_parking_min
+                .max(u32::from(restraint.minimum_percent_class0.min(100)));
+        }
+        (normal, values)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RestraintCoreParking {
+    pub(crate) source: PowerSourceProfile,
+    pub(crate) minimum_percent_class0: u8,
+    pub(crate) minimum_percent_class1: u8,
+}
+
+struct AdaptiveProcessorValues {
+    normal: ProcessorPowerSourceValues,
+    applied: Option<ProcessorPowerSourceValues>,
+    restraint_core_parking_may_be_applied: bool,
+    normal_write_pending: bool,
+}
+
+impl AdaptiveProcessorValues {
+    fn applied(normal: ProcessorPowerSourceValues, values: ProcessorPowerSourceValues) -> Self {
+        Self {
+            normal,
+            applied: Some(values),
+            restraint_core_parking_may_be_applied: values != normal,
+            normal_write_pending: false,
+        }
+    }
 }
 
 struct ActiveAdaptivePowerPlan {
     original_guid: String,
     plan_guid: String,
     profile: AdaptivePowerProfile,
-    values: Option<ProcessorPowerSourceValues>,
+    values: Option<AdaptiveProcessorValues>,
+    class1_core_parking: Option<AdaptiveClass1CoreParking>,
     lower_demand_since: Option<Instant>,
     active: bool,
+}
+
+struct AdaptiveClass1CoreParking {
+    normal: Class1CoreParkingValues,
+    applied: Option<Class1CoreParkingValues>,
+}
+
+impl ActiveAdaptivePowerPlan {
+    fn has_restraint_core_parking_overlay(&self) -> bool {
+        self.active
+            && (self
+                .values
+                .as_ref()
+                .is_some_and(|values| values.restraint_core_parking_may_be_applied)
+                || self
+                    .class1_core_parking
+                    .as_ref()
+                    .is_some_and(|state| state.applied != Some(state.normal)))
+    }
+
+    fn reconcile_class1_core_parking(
+        &mut self,
+        platform: &mut impl PowerPlanPlatform,
+        restraint: Option<RestraintCoreParking>,
+    ) -> Result<(), String> {
+        let restraint = restraint.filter(|restraint| restraint.minimum_percent_class1 > 0);
+        let state = match (&mut self.class1_core_parking, restraint) {
+            (Some(state), _) => state,
+            (slot, Some(_)) => {
+                let normal = platform.read_class1_core_parking(&self.plan_guid)?;
+                slot.insert(AdaptiveClass1CoreParking {
+                    normal,
+                    applied: Some(normal),
+                })
+            }
+            (None, None) => return Ok(()),
+        };
+        if state.applied.is_none() {
+            // Restore both slots after a partial write or failed reactivation before raising a floor.
+            platform.apply_class1_core_parking(&self.plan_guid, state.normal, None)?;
+            state.applied = Some(state.normal);
+        }
+        let mut values = state.normal;
+        if let Some(restraint) = restraint {
+            let minimum = match restraint.source {
+                PowerSourceProfile::PluggedIn => &mut values.ac,
+                PowerSourceProfile::OnBattery => &mut values.battery,
+            };
+            *minimum = (*minimum).max(u32::from(restraint.minimum_percent_class1.min(100)));
+        }
+        if Some(values) != state.applied {
+            platform.apply_class1_core_parking(&self.plan_guid, values, state.applied.take())?;
+            state.applied = Some(values);
+        }
+        if restraint.is_none() {
+            self.class1_core_parking = None;
+        }
+        Ok(())
+    }
 }
 
 pub(crate) trait PowerPlanRecoveryIntent {
@@ -97,6 +258,14 @@ pub(crate) trait PowerPlanPlatform {
         &mut self,
         guid: &str,
         values: ProcessorPowerSourceValues,
+        previous: Option<ProcessorPowerSourceValues>,
+    ) -> Result<(), String>;
+    fn read_class1_core_parking(&mut self, guid: &str) -> Result<Class1CoreParkingValues, String>;
+    fn apply_class1_core_parking(
+        &mut self,
+        guid: &str,
+        values: Class1CoreParkingValues,
+        previous: Option<Class1CoreParkingValues>,
     ) -> Result<(), String>;
 }
 
@@ -142,13 +311,33 @@ impl PowerPlanPlatform for WindowsPowerPlanPlatform {
         &mut self,
         guid: &str,
         values: ProcessorPowerSourceValues,
+        previous: Option<ProcessorPowerSourceValues>,
     ) -> Result<(), String> {
-        apply_processor_power_values(guid, values)
+        if let Some(previous) = previous {
+            apply_processor_power_values_staged(guid, values.into(), Some(previous.into()))
+                .map_err(|error| error.to_string())
+        } else {
+            apply_processor_power_values(guid, values)
+        }
+    }
+
+    fn read_class1_core_parking(&mut self, guid: &str) -> Result<Class1CoreParkingValues, String> {
+        read_class1_core_parking_values(guid)
+    }
+
+    fn apply_class1_core_parking(
+        &mut self,
+        guid: &str,
+        values: Class1CoreParkingValues,
+        previous: Option<Class1CoreParkingValues>,
+    ) -> Result<(), String> {
+        apply_class1_core_parking_values(guid, values, previous)
     }
 }
 
 pub(crate) struct PowerPlanController<P: PowerPlanPlatform = WindowsPowerPlanPlatform> {
     platform: P,
+    active_plan_read_error: Option<String>,
     current_guid: Option<String>,
     last_verified_application: Option<String>,
     ownership_release_pending: bool,
@@ -160,6 +349,7 @@ pub(crate) struct PowerPlanController<P: PowerPlanPlatform = WindowsPowerPlanPla
     adaptive_plan: Option<ActiveAdaptivePowerPlan>,
     setup_cleanup_due: Option<Instant>,
     last_decision: Option<DecisionOutcome>,
+    restoring_previous: bool,
     next_active_plan_refresh: Option<Instant>,
     last_switch_attempt: Option<(String, Instant)>,
     switch_failures: ExecutionFailureTracker,
@@ -185,6 +375,7 @@ impl PowerPlanController {
                 plan_guid: "fixture-adaptive".into(),
                 profile: AdaptivePowerProfile::Responsive,
                 values: None,
+                class1_core_parking: None,
                 lower_demand_since: None,
                 active: true,
             }),
@@ -197,6 +388,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
     fn with_platform(platform: P) -> Self {
         Self {
             platform,
+            active_plan_read_error: None,
             current_guid: None,
             last_verified_application: None,
             ownership_release_pending: false,
@@ -207,6 +399,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
             adaptive_plan: None,
             setup_cleanup_due: None,
             last_decision: None,
+            restoring_previous: false,
             next_active_plan_refresh: None,
             last_switch_attempt: None,
             switch_failures: ExecutionFailureTracker::default(),
@@ -217,14 +410,20 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         self.adaptive_plan.as_ref().is_some_and(|plan| plan.active)
     }
 
+    fn is_managed_adaptive_plan(&self, guid: &str) -> bool {
+        self.adaptive_plan
+            .as_ref()
+            .is_some_and(|plan| same_guid(&plan.plan_guid, guid))
+    }
+
     pub(crate) fn has_focus_plan(&self) -> bool {
         self.temporary_plan
             .as_ref()
             .is_some_and(|plan| matches!(plan.owner, TemporaryOwner::Focus(_)))
             || self.uncertain_switch.as_ref().is_some_and(|pending| {
                 matches!(
-                    pending.temporary_effect,
-                    TemporaryEffect::Acquire(TemporaryOwner::Focus(_))
+                    pending.effect,
+                    SwitchEffect::Automatic(TemporaryEffect::Acquire(TemporaryOwner::Focus(_)))
                 )
             })
     }
@@ -233,17 +432,21 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         self.temporary_plan.is_some()
             || self.uncertain_switch.as_ref().is_some_and(|pending| {
                 matches!(
-                    pending.temporary_effect,
-                    TemporaryEffect::Acquire(_) | TemporaryEffect::Release
+                    pending.effect,
+                    SwitchEffect::Automatic(TemporaryEffect::Acquire(_) | TemporaryEffect::Release)
                 )
             })
     }
 
     pub(crate) fn cancel_temporary_restoration(&mut self) {
         self.temporary_plan = None;
-        if let Some(pending) = &mut self.uncertain_switch {
+        if let Some(UncertainSwitch {
+            effect: SwitchEffect::Automatic(effect),
+            ..
+        }) = &mut self.uncertain_switch
+        {
             // Cancel the optional return without discarding the recovery acknowledgement.
-            pending.temporary_effect = TemporaryEffect::Release;
+            *effect = TemporaryEffect::Release;
         }
     }
 
@@ -264,6 +467,19 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                             .is_none_or(|(target, current)| !same_guid(target, current))
                 })))
         .then_some(Duration::from_secs(1))
+    }
+
+    pub(crate) fn idle_active_plan_refresh_delay(&self, now: Instant) -> Option<Duration> {
+        if self.has_pending_cleanup()
+            || self.temporary_plan.is_some()
+            || self.ownership_release_pending
+            || self.uncertain_switch.is_some()
+        {
+            return None;
+        }
+        self.next_active_plan_refresh
+            .filter(|&refresh_at| refresh_at > now)
+            .map(|refresh_at| refresh_at - now)
     }
 
     pub(crate) fn cleanup_retry_delay(&self, now: Instant) -> Option<Duration> {
@@ -287,29 +503,52 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         self.switch_failures.clear();
     }
 
+    pub(crate) fn clear_ordinary_decision(&mut self) {
+        self.last_decision = None;
+        self.restoring_previous = false;
+    }
+
+    fn clear_decision_explanations(&mut self) {
+        if let Some(decision) = &mut self.last_decision {
+            decision.cpu_load_match = None;
+            decision.competing_modes.clear();
+        }
+    }
+
+    pub(crate) fn current_guid(&self) -> Option<&str> {
+        self.current_guid.as_deref()
+    }
+
     pub(crate) fn status(&self) -> PowerPlanStatus {
         let adaptive_target = self
-            .adaptive_plan
+            .current_guid
             .as_ref()
-            .filter(|plan| plan.active)
-            .map(|plan| plan.plan_guid.clone());
+            .filter(|guid| self.is_managed_adaptive_plan(guid))
+            .cloned();
         let decision_target = self
             .last_decision
             .as_ref()
             .and_then(|decision| decision.power_plan_guid.clone());
         let owner = if adaptive_target.is_some() {
-            Some(PowerPlanOwner::AdaptiveEngine)
+            Some(PowerPlanOwner::AdaptiveProcessorPower)
         } else if decision_target.is_some() {
             Some(PowerPlanOwner::OrdinaryAutomation)
         } else {
             None
         };
-
+        let ordinary_decision = self
+            .last_decision
+            .as_ref()
+            .filter(|_| owner != Some(PowerPlanOwner::AdaptiveProcessorPower));
         PowerPlanStatus {
+            active_plan_read_error: self.active_plan_read_error.clone(),
+            adaptive_processor_power_error: None,
+            adaptive_processor_power_waiting_for_source: false,
             apply_failed: decision_target.as_deref().is_some_and(|guid| {
                 self.switch_failures
                     .has_key_failure(&switch_failure_key(guid))
             }),
+            restoring_previous: self.restoring_previous,
             rule_index: self
                 .last_decision
                 .as_ref()
@@ -322,22 +561,81 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                 .last_decision
                 .as_ref()
                 .map(|decision| decision.reason.clone()),
+            cpu_load_match: ordinary_decision.and_then(|decision| {
+                decision.cpu_load_match.filter(|selection| {
+                    !matches!(
+                        selection,
+                        ByCpuLoadMatch::MinimumHold | ByCpuLoadMatch::ReleaseThreshold
+                    ) || decision
+                        .power_plan_guid
+                        .as_deref()
+                        .zip(self.current_guid.as_deref())
+                        .is_some_and(|(target, current)| same_guid(target, current))
+                })
+            }),
+            competing_modes: ordinary_decision
+                .map(|decision| decision.competing_modes.clone())
+                .unwrap_or_default(),
         }
     }
 
-    pub(crate) fn refresh_active_plan(&mut self, now: Instant) -> Result<(), String> {
+    fn read_active_guid(&mut self) -> Result<String, String> {
+        let result = self.platform.active_guid();
+        if result.is_ok() {
+            self.active_plan_read_error = None;
+        }
+        let explanations_still_current = result.as_ref().is_ok_and(|actual_guid| {
+            !self.is_managed_adaptive_plan(actual_guid)
+                && self
+                    .current_guid
+                    .as_deref()
+                    .is_none_or(|current| same_guid(current, actual_guid))
+        });
+        if !explanations_still_current {
+            self.clear_decision_explanations();
+        }
+        result
+    }
+
+    pub(crate) fn refresh_active_plan_for_status(
+        &mut self,
+        now: Instant,
+        force: bool,
+    ) -> Result<(), ActivePlanCheckError> {
+        let result = if force {
+            self.refresh_active_plan(now)
+        } else {
+            self.refresh_active_plan_if_due(now)
+        };
+        match &result {
+            Err(ActivePlanCheckError::Read(error))
+                if self.active_plan_read_error.as_ref() != Some(error) =>
+            {
+                crate::backend::diagnostics::error(error);
+                self.active_plan_read_error = Some(error.clone());
+            }
+            _ => {}
+        }
+        result
+    }
+
+    fn refresh_active_plan(&mut self, now: Instant) -> Result<(), ActivePlanCheckError> {
         self.next_active_plan_refresh = None;
-        let actual_guid = self.platform.active_guid()?;
-        self.observe_active_plan(&actual_guid)?;
+        let actual_guid = self
+            .read_active_guid()
+            .map_err(ActivePlanCheckError::Read)?;
+        self.observe_active_plan(&actual_guid)
+            .map_err(ActivePlanCheckError::Operation)?;
         self.next_active_plan_refresh = Some(now + ACTIVE_PLAN_REFRESH_INTERVAL);
         self.cleanup_inactive_adaptive_plan()
+            .map_err(ActivePlanCheckError::Operation)
     }
 
     fn observe_active_plan(&mut self, actual_guid: &str) -> Result<(), String> {
+        // The active scheme is verified even if the recovery journal cannot release ownership.
+        self.current_guid = Some(actual_guid.to_owned());
         if self.ownership_release_pending {
-            self.relinquish_ownership()?;
-            self.current_guid = Some(actual_guid.to_owned());
-            return Ok(());
+            return self.relinquish_ownership();
         }
         if let Some(mut uncertain) = self.uncertain_switch.take() {
             let transition = &uncertain.transition;
@@ -348,9 +646,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                 // Commit was never compensated, so even its previous value now
                 // represents a later external selection.
                 self.uncertain_switch = Some(uncertain);
-                self.relinquish_ownership()?;
-                self.current_guid = Some(actual_guid.to_owned());
-                return Ok(());
+                return self.relinquish_ownership();
             }
             if let Err(error) = uncertain.recovery.resolve(at_target) {
                 self.uncertain_switch = Some(uncertain);
@@ -358,7 +654,11 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                     "Resolving the pending power-plan change failed: {error}"
                 ));
             }
-            if same_guid(actual_guid, &transition.target_guid) {
+            if at_target {
+                let temporary_effect = match uncertain.effect {
+                    SwitchEffect::Manual => return self.finish_manual_switch(actual_guid),
+                    SwitchEffect::Automatic(effect) => effect,
+                };
                 let adaptive_transition = self.adaptive_plan.as_mut().is_some_and(|plan| {
                     if same_guid(&plan.plan_guid, actual_guid) {
                         plan.active = true;
@@ -371,7 +671,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                     }
                 });
                 if !adaptive_transition {
-                    self.record_ordinary_switch(transition, uncertain.temporary_effect);
+                    self.record_ordinary_switch(transition, temporary_effect);
                 }
                 self.last_verified_application = Some(actual_guid.to_owned());
             }
@@ -384,11 +684,11 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         if external_break {
             self.relinquish_ownership()?;
         }
-        self.current_guid = Some(actual_guid.to_owned());
         Ok(())
     }
 
     fn relinquish_ownership(&mut self) -> Result<(), String> {
+        self.clear_decision_explanations();
         // Keep the observed break latched until the helper acknowledges relinquishment.
         self.ownership_release_pending = true;
         self.platform.forget_switches()?;
@@ -404,12 +704,65 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         Ok(())
     }
 
+    pub(crate) fn switch_manual(
+        &mut self,
+        target_guid: &str,
+        now: Instant,
+    ) -> Result<bool, ManualPowerPlanError> {
+        if self.is_managed_adaptive_plan(target_guid) {
+            return Err(ManualPowerPlanError::ManagedTarget);
+        }
+
+        let previous_guid = self
+            .read_active_guid()
+            .map_err(ManualPowerPlanError::SwitchFailed)?;
+        if let Err(error) = self.observe_active_plan(&previous_guid) {
+            let target_is_active = same_guid(&previous_guid, target_guid);
+            return Err(if target_is_active {
+                ManualPowerPlanError::ActiveRecoveryPending(error)
+            } else {
+                ManualPowerPlanError::SwitchFailed(error)
+            });
+        }
+        if self.is_managed_adaptive_plan(&previous_guid) {
+            return Err(ManualPowerPlanError::ManagedByAdaptive);
+        }
+        if same_guid(&previous_guid, target_guid) {
+            return Ok(false);
+        }
+
+        let transition = self
+            .switch_from_current(previous_guid, target_guid, SwitchEffect::Manual)
+            .map_err(|failure| {
+                if failure.verified_target {
+                    self.current_guid = Some(target_guid.to_owned());
+                    ManualPowerPlanError::ActiveRecoveryPending(failure.detail)
+                } else {
+                    ManualPowerPlanError::SwitchFailed(failure.detail)
+                }
+            })?;
+        self.finish_manual_switch(&transition.target_guid)
+            .map_err(ManualPowerPlanError::ActiveRecoveryPending)?;
+        self.clear_ordinary_decision();
+        self.next_active_plan_refresh = Some(now);
+        Ok(true)
+    }
+
+    fn finish_manual_switch(&mut self, target_guid: &str) -> Result<(), String> {
+        self.current_guid = Some(target_guid.to_owned());
+        self.relinquish_ownership().map_err(|error| {
+            format!("Confirming the manual power-plan selection failed: {error}")
+        })?;
+        self.clear_switch_failure(target_guid);
+        Ok(())
+    }
+
     fn switch_active_verified(
         &mut self,
         target_guid: &str,
         temporary_effect: TemporaryEffect,
     ) -> Result<SwitchTransition, String> {
-        let previous_guid = self.platform.active_guid()?;
+        let previous_guid = self.read_active_guid()?;
         self.observe_active_plan(&previous_guid)?;
         if let Some(plan) = self
             .adaptive_plan
@@ -418,35 +771,47 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         {
             plan.original_guid = previous_guid.clone();
         }
-        self.switch_from_current(previous_guid, target_guid, temporary_effect)
+        self.switch_from_current(
+            previous_guid,
+            target_guid,
+            SwitchEffect::Automatic(temporary_effect),
+        )
+        .map_err(|failure| failure.detail)
     }
 
     fn switch_from_current(
         &mut self,
         previous_guid: String,
         target_guid: &str,
-        temporary_effect: TemporaryEffect,
-    ) -> Result<SwitchTransition, String> {
+        effect: SwitchEffect,
+    ) -> Result<SwitchTransition, SwitchAttemptFailure> {
         match switch_from_verified(&mut self.platform, previous_guid.clone(), target_guid) {
             Ok(transition) => Ok(transition),
             Err(failure) => {
                 let mut error = failure.message;
+                let verified_target = matches!(
+                    failure.state,
+                    FailedSwitchState::Pending {
+                        allow_previous: false,
+                        ..
+                    }
+                );
                 match failure.state {
                     FailedSwitchState::Previous => self.current_guid = Some(previous_guid),
                     FailedSwitchState::External(actual_guid) => {
+                        self.current_guid = Some(actual_guid);
                         // The transaction has released its recovery intent (and journal lock).
                         if let Err(forget_error) = self.relinquish_ownership() {
                             error.push_str(&format!(
                                 " Relinquishing power-plan ownership also failed: {forget_error}"
                             ));
-                        } else {
-                            self.current_guid = Some(actual_guid);
                         }
                     }
                     FailedSwitchState::Pending {
                         recovery,
                         allow_previous,
                     } => {
+                        self.clear_decision_explanations();
                         // A later observation must resolve our attempted mutation before it
                         // can be classified as an external change or a new baseline.
                         self.uncertain_switch = Some(UncertainSwitch {
@@ -456,11 +821,14 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                             },
                             recovery,
                             allow_previous,
-                            temporary_effect,
+                            effect,
                         });
                     }
                 }
-                Err(error)
+                Err(SwitchAttemptFailure {
+                    detail: error,
+                    verified_target,
+                })
             }
         }
     }
@@ -471,13 +839,19 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         original_guid: &str,
         temporary_effect: TemporaryEffect,
     ) -> Result<bool, String> {
-        let actual_guid = self.platform.active_guid()?;
+        let actual_guid = self.read_active_guid()?;
         if self.ownership_release_pending || !same_guid(&actual_guid, expected_guid) {
-            self.relinquish_ownership()?;
             self.current_guid = Some(actual_guid);
+            self.relinquish_ownership()?;
             return Ok(false);
         }
-        let transition = self.switch_from_current(actual_guid, original_guid, temporary_effect)?;
+        let transition = self
+            .switch_from_current(
+                actual_guid,
+                original_guid,
+                SwitchEffect::Automatic(temporary_effect),
+            )
+            .map_err(|failure| failure.detail)?;
         if !matches!(temporary_effect, TemporaryEffect::Preserve) {
             self.record_ordinary_switch(&transition, temporary_effect);
         }
@@ -526,12 +900,17 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         if !decision.restore_previous_plan {
             self.cancel_temporary_restoration();
         }
+        let retained_cpu_match = matches!(
+            decision.cpu_load_match,
+            Some(ByCpuLoadMatch::MinimumHold | ByCpuLoadMatch::ReleaseThreshold)
+        );
         self.last_decision = Some(decision);
-        if self.adaptive_active()
-            && !self.ownership_release_pending
-            && self.uncertain_switch.is_none()
-        {
-            return Ok(false);
+        self.restoring_previous = false;
+        if self.adaptive_active() {
+            self.clear_decision_explanations();
+            if !self.ownership_release_pending && self.uncertain_switch.is_none() {
+                return Ok(false);
+            }
         }
         self.refresh_active_plan_if_due(now)?;
 
@@ -549,6 +928,10 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                 .as_ref()
                 .is_some_and(|plan| plan.owner.observation_unavailable(decision))
         {
+            self.last_decision = Some(DecisionOutcome::without_power_plan(
+                DecisionState::WaitingForObservation,
+                "Waiting for required observations.",
+            ));
             return Ok(false);
         }
         let Some(target_guid) = decision.power_plan_guid.clone() else {
@@ -563,7 +946,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         {
             // A cached match cannot establish the plan that preceded this episode.
             // Rebase external changes before deciding whether acquisition needs a switch.
-            self.refresh_active_plan(now)?;
+            self.refresh_active_plan_for_status(now, true)?;
         }
         if self
             .current_guid
@@ -580,6 +963,11 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                 TemporaryEffect::Preserve => {}
             }
             self.clear_switch_failure(&target_guid);
+            return Ok(false);
+        }
+        if retained_cpu_match {
+            // A late read can invalidate the active plan after CPU Load chose to retain it.
+            self.clear_ordinary_decision();
             return Ok(false);
         }
         if self.is_switch_suppressed(&target_guid)
@@ -625,6 +1013,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
             plan.owner.label()
         );
         decision.restore_previous_plan = false;
+        self.restoring_previous = true;
         if !same_guid(&plan.expected_guid, &plan.original_guid)
             && self.last_switch_attempt.as_ref().is_some_and(|(guid, at)| {
                 same_guid(guid, &plan.original_guid)
@@ -644,6 +1033,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                 let applied = restored && !same_guid(&plan.expected_guid, &plan.original_guid);
                 if !applied {
                     self.last_decision = Some(previous_decision);
+                    self.restoring_previous = false;
                 }
                 Ok(applied)
             }
@@ -654,6 +1044,12 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                     plan.owner.label()
                 ))
             }
+        }
+    }
+
+    pub(crate) fn reset_adaptive_demand(&mut self) {
+        if let Some(plan) = &mut self.adaptive_plan {
+            plan.lower_demand_since = None;
         }
     }
 
@@ -673,15 +1069,11 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         self.cleanup_inactive_adaptive_plan()?;
 
         if self.adaptive_plan.is_none() {
-            let original_guid = self.platform.active_guid()?;
+            let original_guid = self.read_active_guid()?;
             self.observe_active_plan(&original_guid)?;
             let plan_guid = self.platform.duplicate_adaptive_plan(&original_guid)?;
-            let values = request.profile.calibrated_power_values(
-                request.baseline,
-                request.has_efficiency_cores,
-                request.background_pressure_profile,
-                request.focus_and_launch_profile,
-            );
+            // Apply the restraint floor only after activation is verified.
+            let (normal, _) = request.calibrated_values(request.profile);
             // Own the duplicate before even metadata or idle-state initialization can fail.
             // Activation failure can be uncertain; cleanup rechecks the actual active plan.
             self.adaptive_plan = Some(ActiveAdaptivePowerPlan {
@@ -689,6 +1081,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
                 plan_guid: plan_guid.clone(),
                 profile: request.profile,
                 values: None,
+                class1_core_parking: None,
                 lower_demand_since: None,
                 active: false,
             });
@@ -696,7 +1089,10 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
             let transition = self
                 .platform
                 .initialize_adaptive_plan(&plan_guid, &original_guid)
-                .and_then(|()| self.platform.apply_processor_values(&plan_guid, values))
+                .and_then(|()| {
+                    self.platform
+                        .apply_processor_values(&plan_guid, normal, None)
+                })
                 .and_then(|()| self.switch_active_verified(&plan_guid, TemporaryEffect::Preserve));
             let transition = match transition {
                 Ok(transition) => transition,
@@ -707,11 +1103,13 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
             self.setup_cleanup_due = None;
             self.current_guid = Some(plan_guid.clone());
             self.last_verified_application = Some(plan_guid.clone());
+            self.clear_decision_explanations();
             self.adaptive_plan = Some(ActiveAdaptivePowerPlan {
                 original_guid: transition.previous_guid,
                 plan_guid,
                 profile: request.profile,
-                values: Some(values),
+                values: Some(AdaptiveProcessorValues::applied(normal, normal)),
+                class1_core_parking: None,
                 lower_demand_since: None,
                 active: true,
             });
@@ -721,6 +1119,8 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
             .adaptive_plan
             .as_mut()
             .ok_or_else(|| "Adaptive power plan was not initialized.".to_owned())?;
+        let class1_result =
+            plan.reconcile_class1_core_parking(&mut self.platform, request.restraint_core_parking);
         let lower_demand_elapsed = if request.profile < plan.profile {
             now.saturating_duration_since(*plan.lower_demand_since.get_or_insert(now))
         } else {
@@ -729,26 +1129,67 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         };
         let next_profile =
             adaptive_power_profile_transition(plan.profile, request.profile, lower_demand_elapsed);
-        let next_values = next_profile.calibrated_power_values(
-            request.baseline,
-            request.has_efficiency_cores,
-            request.background_pressure_profile,
-            request.focus_and_launch_profile,
-        );
-        let values_changed = Some(next_values) != plan.values;
-        if values_changed {
-            // A failed write may already have changed part of the stored plan.
-            plan.values = None;
+        let (next_normal, next_values) = request.calibrated_values(next_profile);
+        let normal_changed = next_profile != plan.profile
+            || plan
+                .values
+                .as_ref()
+                .is_none_or(|values| next_normal != values.normal);
+        let state = plan.values.get_or_insert(AdaptiveProcessorValues {
+            normal: next_normal,
+            applied: None,
+            restraint_core_parking_may_be_applied: false,
+            normal_write_pending: false,
+        });
+        if Some(next_values) != state.applied {
+            // A failed write may change either source slot before reaching activation.
+            let previous = state.applied.take().filter(|_| !normal_changed);
+            state.restraint_core_parking_may_be_applied |= next_values != next_normal;
+            state.normal_write_pending |= normal_changed;
             self.platform
-                .apply_processor_values(&plan.plan_guid, next_values)?;
+                .apply_processor_values(&plan.plan_guid, next_values, previous)?;
         }
-        if next_profile != plan.profile || values_changed {
-            plan.profile = next_profile;
-            plan.values = Some(next_values);
+        if normal_changed || state.normal_write_pending {
             plan.lower_demand_since = None;
         }
+        plan.profile = next_profile;
+        *state = AdaptiveProcessorValues::applied(next_normal, next_values);
 
-        Ok(plan.profile)
+        class1_result.map(|()| plan.profile)
+    }
+
+    pub(crate) fn clear_adaptive_restraint_core_parking(
+        &mut self,
+        now: Instant,
+    ) -> Result<(), ActivePlanCheckError> {
+        if !self
+            .adaptive_plan
+            .as_ref()
+            .is_some_and(ActiveAdaptivePowerPlan::has_restraint_core_parking_overlay)
+        {
+            return Ok(());
+        }
+        self.refresh_active_plan_for_status(now, true)?;
+        let Some(plan) = self.adaptive_plan.as_mut().filter(|plan| plan.active) else {
+            return Ok(());
+        };
+        let class0_result = plan
+            .values
+            .as_mut()
+            .filter(|state| state.restraint_core_parking_may_be_applied)
+            .map_or(Ok(()), |state| {
+                self.platform.apply_processor_values(
+                    &plan.plan_guid,
+                    state.normal,
+                    state.applied.take(),
+                )?;
+                state.applied = Some(state.normal);
+                state.restraint_core_parking_may_be_applied = false;
+                Ok(())
+            });
+        class0_result
+            .and(plan.reconcile_class1_core_parking(&mut self.platform, None))
+            .map_err(ActivePlanCheckError::Operation)
     }
 
     pub(crate) fn release_adaptive(&mut self, now: Instant) -> Result<(), String> {
@@ -861,7 +1302,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
         }
     }
 
-    pub(crate) fn refresh_active_plan_if_due(&mut self, now: Instant) -> Result<(), String> {
+    fn refresh_active_plan_if_due(&mut self, now: Instant) -> Result<(), ActivePlanCheckError> {
         if self.ownership_release_pending
             || self.uncertain_switch.is_some()
             || self
@@ -882,7 +1323,7 @@ impl<P: PowerPlanPlatform> PowerPlanController<P> {
             return Ok(());
         }
         let guid = plan.plan_guid.clone();
-        let actual = self.platform.active_guid()?;
+        let actual = self.read_active_guid()?;
         if same_guid(&actual, &guid) {
             return Err("Inactive Adaptive plan is currently active; cleanup deferred.".to_owned());
         }
@@ -1008,11 +1449,16 @@ enum TemporaryEffect {
     Release,
 }
 
+enum SwitchEffect {
+    Automatic(TemporaryEffect),
+    Manual,
+}
+
 struct UncertainSwitch<D> {
     transition: SwitchTransition,
     recovery: D,
     allow_previous: bool,
-    temporary_effect: TemporaryEffect,
+    effect: SwitchEffect,
 }
 
 #[derive(Debug)]
@@ -1020,6 +1466,11 @@ enum CompensationState {
     Previous,
     External(String),
     Uncertain,
+}
+
+struct SwitchAttemptFailure {
+    detail: String,
+    verified_target: bool,
 }
 
 struct SwitchFailure<D> {
@@ -1202,6 +1653,8 @@ fn adaptive_plan_setup_error(operation_error: String, cleanup: Result<(), String
 
 #[cfg(test)]
 mod tests {
+    mod restraint_core_parking;
+
     use std::{
         cell::RefCell,
         collections::{BTreeSet, VecDeque},
@@ -1327,7 +1780,11 @@ mod tests {
         verify_wrong_guid: bool,
         next_adaptive: u32,
         processor_values: Option<ProcessorPowerSourceValues>,
+        previous_processor_values: Option<ProcessorPowerSourceValues>,
         fail_partial_processor_write: bool,
+        class1_core_parking_values: Class1CoreParkingValues,
+        fail_class1_core_parking_read: bool,
+        fail_partial_class1_core_parking_write: bool,
         fail_duplicate: bool,
         initialization_failure: Option<&'static str>,
     }
@@ -1349,7 +1806,14 @@ mod tests {
                 verify_wrong_guid: false,
                 next_adaptive: 1,
                 processor_values: None,
+                previous_processor_values: None,
                 fail_partial_processor_write: false,
+                class1_core_parking_values: Class1CoreParkingValues {
+                    ac: 30,
+                    battery: 20,
+                },
+                fail_class1_core_parking_read: false,
+                fail_partial_class1_core_parking_write: false,
                 fail_duplicate: false,
                 initialization_failure: None,
             }
@@ -1467,13 +1931,48 @@ mod tests {
             &mut self,
             guid: &str,
             values: ProcessorPowerSourceValues,
+            previous: Option<ProcessorPowerSourceValues>,
         ) -> Result<(), String> {
             self.events.borrow_mut().push(format!("configure:{guid}"));
+            self.previous_processor_values = previous;
             if std::mem::take(&mut self.fail_partial_processor_write) {
                 self.processor_values.get_or_insert(values).ac = values.ac;
                 return Err("injected partial processor write".into());
             }
             self.processor_values = Some(values);
+            Ok(())
+        }
+
+        fn read_class1_core_parking(
+            &mut self,
+            guid: &str,
+        ) -> Result<Class1CoreParkingValues, String> {
+            assert!(guid.starts_with("adaptive-") && self.plans.contains(guid));
+            self.events
+                .borrow_mut()
+                .push(format!("read-class1-parking:{guid}"));
+            if self.fail_class1_core_parking_read {
+                return Err("injected class 1 battery baseline read failure".to_owned());
+            }
+            Ok(self.class1_core_parking_values)
+        }
+
+        fn apply_class1_core_parking(
+            &mut self,
+            guid: &str,
+            values: Class1CoreParkingValues,
+            _previous: Option<Class1CoreParkingValues>,
+        ) -> Result<(), String> {
+            assert!(guid.starts_with("adaptive-") && self.plans.contains(guid));
+            self.events.borrow_mut().push(format!(
+                "configure-class1-parking:{guid}:{}:{}",
+                values.ac, values.battery
+            ));
+            if std::mem::take(&mut self.fail_partial_class1_core_parking_write) {
+                self.class1_core_parking_values.ac = values.ac;
+                return Err("injected partial class 1 parking write".to_owned());
+            }
+            self.class1_core_parking_values = values;
             Ok(())
         }
     }
@@ -1496,6 +1995,15 @@ mod tests {
         assert!(!controller.adaptive_active());
         assert_eq!(controller.platform.active, "original");
         assert!(controller.platform.processor_values.is_none());
+        assert!(controller.switch_manual("ADAPTIVE-1", now).is_err());
+        assert!(!controller.switch_manual("original", now).unwrap());
+        controller.platform.active = "ADAPTIVE-1".to_owned();
+        assert!(controller.switch_manual("manual", now).is_err());
+        assert_eq!(
+            controller.status().owner,
+            Some(PowerPlanOwner::AdaptiveProcessorPower)
+        );
+        controller.platform.active = "original".to_owned();
         assert!(!controller
             .platform
             .events
@@ -1678,6 +2186,8 @@ mod tests {
             running_app_known: true,
             cpu_load_known: true,
             activity_known: true,
+            cpu_load_match: None,
+            competing_modes: Vec::new(),
         }
     }
 
@@ -1694,6 +2204,17 @@ mod tests {
         decision.focus.known = true;
         decision.focus.process_id = Some(process_id);
         decision.restore_previous_plan = true;
+        decision
+    }
+
+    fn competing_focus_decision(target: &str) -> DecisionOutcome {
+        let mut decision = focus_decision(target, 10);
+        decision.competing_modes.push(QualifiedPowerPlan {
+            state: DecisionState::ByTime,
+            rule_index: Some(0),
+            target_guid: "schedule".into(),
+            cpu_load_match: None,
+        });
         decision
     }
 
@@ -1790,6 +2311,7 @@ mod tests {
             )
             .unwrap());
         assert_eq!(controller.platform.active, "next window");
+        assert!(!controller.status().restoring_previous);
         assert_eq!(
             controller.temporary_plan.as_ref().unwrap().original_guid,
             "original"
@@ -1798,6 +2320,7 @@ mod tests {
             .reconcile_ordinary(restoration_observation(), now)
             .unwrap());
         assert_eq!(controller.platform.active, "original");
+        assert!(controller.status().restoring_previous);
         assert_eq!(
             controller.status().decision_state,
             Some(DecisionState::ByTime)
@@ -2108,6 +2631,12 @@ mod tests {
         unknown.state = DecisionState::ByTime;
         assert!(!controller.reconcile_ordinary(unknown, now).unwrap());
         assert_eq!(controller.platform.active, "focused");
+        let status = controller.status();
+        assert_eq!(
+            status.decision_state,
+            Some(DecisionState::WaitingForObservation)
+        );
+        assert!(status.target_guid.is_none());
         assert_eq!(
             controller.temporary_release_retry_delay(),
             Some(Duration::from_secs(1))
@@ -2378,6 +2907,38 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_ownership_discards_competing_ordinary_plans_until_next_decision() {
+        let now = Instant::now();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        let mut focused = focus_decision("focused", 10);
+        focused.competing_modes.push(QualifiedPowerPlan {
+            state: DecisionState::ByCpuLoad,
+            rule_index: Some(0),
+            target_guid: "original".into(),
+            cpu_load_match: Some(ByCpuLoadMatch::MinimumHold),
+        });
+        controller.reconcile_ordinary(focused.clone(), now).unwrap();
+        assert_eq!(controller.status().current_guid.as_deref(), Some("focused"));
+        assert_eq!(controller.status().cpu_load_match, None);
+        assert_eq!(controller.status().competing_modes, focused.competing_modes);
+
+        controller
+            .reconcile_adaptive(adaptive_request(), now)
+            .unwrap();
+        assert_eq!(
+            controller.status().owner,
+            Some(PowerPlanOwner::AdaptiveProcessorPower)
+        );
+        assert!(controller.status().competing_modes.is_empty());
+
+        controller.release_adaptive(now).unwrap();
+        assert_eq!(controller.status().current_guid.as_deref(), Some("focused"));
+        assert!(controller.status().competing_modes.is_empty());
+        controller.reconcile_ordinary(focused.clone(), now).unwrap();
+        assert_eq!(controller.status().competing_modes, focused.competing_modes);
+    }
+
+    #[test]
     fn disabling_restoration_during_adaptive_ownership_abandons_the_old_episode() {
         let now = Instant::now();
         let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
@@ -2432,6 +2993,8 @@ mod tests {
             running_app_known: true,
             cpu_load_known: true,
             activity_known: true,
+            cpu_load_match: Some(candidate.selection),
+            competing_modes: Vec::new(),
         }
     }
 
@@ -2444,6 +3007,7 @@ mod tests {
             has_efficiency_cores: false,
             background_pressure_profile: AdaptivePowerBoostValues::BACKGROUND_PRESSURE,
             focus_and_launch_profile: AdaptivePowerBoostValues::FOCUS_AND_LAUNCH,
+            restraint_core_parking: None,
         }
     }
 
@@ -2771,6 +3335,7 @@ mod tests {
         controller.platform.failure = Some(FailurePoint::Forget);
         assert!(controller.refresh_active_plan(now).is_err());
         assert!(controller.ownership_release_pending);
+        assert_eq!(controller.current_guid(), Some("external"));
         assert_eq!(controller.platform.journal.borrow().len(), 1);
         assert_eq!(controller.platform.pending.borrow().len(), 1);
         controller.platform.active = "second".to_owned();
@@ -2819,6 +3384,10 @@ mod tests {
                 .is_err());
             assert!(controller.shutdown(now).is_err());
             assert_eq!(controller.platform.active, "second");
+            assert_eq!(
+                controller.current_guid(),
+                Some(if failed_query { "first" } else { "second" })
+            );
             assert!(controller.uncertain_switch.is_some());
             assert_eq!(controller.platform.journal.borrow().len(), 1);
             assert_eq!(controller.platform.pending.borrow().len(), 1);
@@ -2865,6 +3434,195 @@ mod tests {
     }
 
     #[test]
+    fn manual_switch_rebases_restoration_after_a_same_plan_no_op() {
+        let now = Instant::now();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        let automatic = || temporary_decision("automatic", DecisionState::ByTime);
+        controller.reconcile_ordinary(automatic(), now).unwrap();
+
+        controller.platform.events.borrow_mut().clear();
+        assert!(!controller.switch_manual("AUTOMATIC", now).unwrap());
+        assert!(controller.has_temporary_plan());
+        assert_eq!(controller.platform.events.borrow().as_slice(), ["query"]);
+
+        controller.platform.events.borrow_mut().clear();
+        assert!(controller.switch_manual("manual", now).unwrap());
+        assert!(!controller.has_temporary_plan());
+        assert_eq!(controller.status().current_guid.as_deref(), Some("manual"));
+        assert_eq!(controller.status().owner, None);
+        assert_eq!(
+            controller.platform.events.borrow().as_slice(),
+            [
+                "query",
+                "begin:automatic->manual",
+                "apply:manual",
+                "query",
+                "commit",
+                "forget"
+            ]
+        );
+        assert!(controller.platform.journal.borrow().is_empty());
+
+        assert!(controller.reconcile_ordinary(automatic(), now).unwrap());
+        controller.shutdown(now).unwrap();
+        assert_eq!(controller.platform.active, "manual");
+    }
+
+    #[test]
+    fn failed_manual_switch_keeps_automatic_restoration() {
+        for fail_readback in [false, true] {
+            let now = Instant::now();
+            let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+            controller
+                .reconcile_ordinary(temporary_decision("automatic", DecisionState::ByTime), now)
+                .unwrap();
+            if fail_readback {
+                controller
+                    .platform
+                    .query_failures
+                    .insert(controller.platform.query_count + 2);
+            } else {
+                controller.platform.failure = Some(FailurePoint::Apply);
+            }
+
+            assert!(controller.switch_manual("manual", now).is_err());
+            assert_eq!(
+                controller.status().current_guid.as_deref(),
+                Some("automatic")
+            );
+            assert!(controller.has_temporary_plan());
+            assert_eq!(controller.platform.journal.borrow().len(), 1);
+            controller.shutdown(now).unwrap();
+            assert_eq!(controller.platform.active, "original");
+        }
+    }
+
+    #[test]
+    fn manual_switch_yields_to_adaptive_until_the_active_plan_changes() {
+        for release_adaptive in [false, true] {
+            let now = Instant::now();
+            let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+            controller
+                .reconcile_adaptive(adaptive_request(), now)
+                .unwrap();
+            assert!(matches!(
+                controller.switch_manual("ADAPTIVE-1", now),
+                Err(ManualPowerPlanError::ManagedTarget)
+            ));
+            controller.platform.events.borrow_mut().clear();
+            assert!(matches!(
+                controller.switch_manual("manual", now),
+                Err(ManualPowerPlanError::ManagedByAdaptive)
+            ));
+            assert_eq!(controller.platform.events.borrow().as_slice(), ["query"]);
+            assert!(controller.adaptive_active());
+            if release_adaptive {
+                controller.release_adaptive(now).unwrap();
+            } else {
+                controller.platform.active = "external".to_owned();
+            }
+
+            assert!(controller.switch_manual("manual", now).unwrap());
+            assert_eq!(controller.status().owner, None);
+            controller.shutdown(now).unwrap();
+            assert_eq!(controller.platform.active, "manual");
+            assert!(!controller.platform.plans.contains("adaptive-1"));
+        }
+    }
+
+    #[test]
+    fn failed_adaptive_release_keeps_manual_switch_locked_until_verified_restore() {
+        let now = Instant::now();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        controller
+            .reconcile_ordinary(decision(Some("ordinary")), now)
+            .unwrap();
+        controller
+            .reconcile_adaptive(adaptive_request(), now)
+            .unwrap();
+        controller.platform.failure = Some(FailurePoint::Begin);
+
+        assert!(controller.release_adaptive(now).is_err());
+        assert_eq!(controller.platform.active, "adaptive-1");
+        assert_eq!(
+            controller.status().owner,
+            Some(PowerPlanOwner::AdaptiveProcessorPower)
+        );
+        assert!(matches!(
+            controller.switch_manual("manual", now),
+            Err(ManualPowerPlanError::ManagedByAdaptive)
+        ));
+
+        controller.platform.failure = None;
+        controller.release_adaptive(now).unwrap();
+        assert_eq!(controller.platform.active, "ordinary");
+        assert!(!controller.platform.plans.contains("adaptive-1"));
+        assert!(controller.switch_manual("manual", now).unwrap());
+        controller.shutdown(now).unwrap();
+        assert_eq!(controller.platform.active, "manual");
+    }
+
+    #[test]
+    fn manual_switch_keeps_the_verified_plan_after_a_deferred_commit() {
+        for retry in [false, true] {
+            let now = Instant::now();
+            let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+            controller
+                .reconcile_ordinary(competing_focus_decision("automatic"), now)
+                .unwrap();
+            assert_eq!(controller.status().competing_modes.len(), 1);
+            controller.platform.failure = Some(FailurePoint::Commit);
+
+            assert!(matches!(
+                controller.switch_manual("manual", now),
+                Err(ManualPowerPlanError::ActiveRecoveryPending(_))
+            ));
+            assert_eq!(controller.platform.active, "manual");
+            assert_eq!(controller.status().current_guid.as_deref(), Some("manual"));
+            assert_eq!(controller.platform.pending.borrow().len(), 1);
+
+            controller.platform.failure = None;
+            if retry {
+                controller.cancel_temporary_restoration();
+                assert!(!controller.switch_manual("manual", now).unwrap());
+                assert!(controller.ordinary_original_guid.is_none());
+                let status = controller.status();
+                assert_eq!(status.decision_state, Some(DecisionState::ByFocus));
+                assert!(status.competing_modes.is_empty());
+            }
+            controller.shutdown(now).unwrap();
+            assert_eq!(controller.platform.active, "manual");
+            assert!(controller.platform.journal.borrow().is_empty());
+            assert!(controller.platform.pending.borrow().is_empty());
+        }
+    }
+
+    #[test]
+    fn manual_switch_requires_acknowledged_recovery_release() {
+        let now = Instant::now();
+        let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+        controller.platform.failure = Some(FailurePoint::Forget);
+
+        assert!(matches!(
+            controller.switch_manual("manual", now),
+            Err(ManualPowerPlanError::ActiveRecoveryPending(_))
+        ));
+        assert!(controller.ownership_release_pending);
+        assert_eq!(controller.status().current_guid.as_deref(), Some("manual"));
+        assert_eq!(controller.platform.journal.borrow().len(), 1);
+        assert!(matches!(
+            controller.switch_manual("other", now),
+            Err(ManualPowerPlanError::SwitchFailed(_))
+        ));
+        assert_eq!(controller.platform.active, "manual");
+
+        controller.platform.failure = None;
+        controller.shutdown(now).unwrap();
+        assert_eq!(controller.platform.active, "manual");
+        assert!(controller.platform.journal.borrow().is_empty());
+    }
+
+    #[test]
     fn ordinary_owner_captures_first_baseline_and_releases_it() {
         let now = Instant::now();
         let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
@@ -2906,7 +3664,16 @@ mod tests {
     fn failed_active_plan_query_is_retried_before_using_the_cached_plan() {
         let start = Instant::now();
         let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
-        controller.refresh_active_plan_if_due(start).unwrap();
+        let mut qualified = competing_focus_decision("original");
+        qualified.state = DecisionState::ByCpuLoad;
+        qualified.cpu_load_match = Some(ByCpuLoadMatch::MinimumHold);
+        qualified.restore_previous_plan = false;
+        controller.reconcile_ordinary(qualified, start).unwrap();
+        assert_eq!(controller.status().competing_modes.len(), 1);
+        assert_eq!(
+            controller.status().cpu_load_match,
+            Some(ByCpuLoadMatch::MinimumHold)
+        );
         controller.platform.active = "external".into();
         controller
             .platform
@@ -2914,16 +3681,62 @@ mod tests {
             .insert(controller.platform.query_count + 1);
         let failed_at = start + ACTIVE_PLAN_REFRESH_INTERVAL;
 
-        assert!(controller.refresh_active_plan_if_due(failed_at).is_err());
+        assert!(matches!(
+            controller.refresh_active_plan_for_status(failed_at, false),
+            Err(ActivePlanCheckError::Read(_))
+        ));
+        let status = controller.status();
+        assert_eq!(
+            status.active_plan_read_error.as_deref(),
+            Some("injected active query failure")
+        );
+        assert_eq!(status.target_guid.as_deref(), Some("original"));
+        assert!(status.competing_modes.is_empty());
+        assert_eq!(status.cpu_load_match, None);
         controller
-            .refresh_active_plan_if_due(failed_at + Duration::from_secs(1))
+            .refresh_active_plan_for_status(failed_at + Duration::from_secs(1), false)
             .unwrap();
 
-        assert_eq!(
-            controller.status().current_guid.as_deref(),
-            Some("external")
-        );
+        let status = controller.status();
+        assert_eq!(status.current_guid.as_deref(), Some("external"));
+        assert!(status.active_plan_read_error.is_none());
         assert_eq!(controller.platform.query_count, 3);
+    }
+
+    #[test]
+    fn failed_restore_baseline_query_is_visible_for_same_and_different_targets() {
+        for target in ["original", "target"] {
+            let now = Instant::now();
+            let mut controller = PowerPlanController::with_platform(FakePlatform::new("original"));
+            controller
+                .refresh_active_plan_for_status(now, false)
+                .unwrap();
+            controller.platform.query_failures.insert(2);
+
+            assert!(controller
+                .reconcile_ordinary(focus_decision(target, 10), now)
+                .is_err());
+            let status = controller.status();
+            assert_eq!(status.current_guid.as_deref(), Some("original"));
+            assert_eq!(status.target_guid.as_deref(), Some(target));
+            assert!(!status.apply_failed);
+            assert_eq!(
+                status.active_plan_read_error.as_deref(),
+                Some("injected active query failure")
+            );
+            assert!(controller.temporary_plan.is_none());
+            assert!(controller.ordinary_original_guid.is_none());
+
+            controller
+                .refresh_active_plan_for_status(now, false)
+                .unwrap();
+            assert_eq!(controller.current_guid(), Some("original"));
+            assert!(controller.status().active_plan_read_error.is_none());
+            assert_eq!(
+                *controller.platform.events.borrow(),
+                ["query", "query", "query"]
+            );
+        }
     }
 
     #[test]
@@ -2958,6 +3771,56 @@ mod tests {
             .borrow()
             .iter()
             .any(|event| event.starts_with("apply:")));
+    }
+
+    #[test]
+    fn late_external_plan_read_cancels_cpu_load_retention() {
+        for (usage, selection) in [
+            (20.0, ByCpuLoadMatch::MinimumHold),
+            (70.0, ByCpuLoadMatch::ReleaseThreshold),
+        ] {
+            for restore_previous_plan in [true, false] {
+                let start = Instant::now();
+                let settings = cpu_load_settings();
+                let mut scheduler = ByCpuLoadScheduler::default();
+                let mut controller =
+                    PowerPlanController::with_platform(FakePlatform::new("managed"));
+                let primary = scheduler
+                    .current_decision_at(&settings, Some(80.0), start)
+                    .unwrap();
+                let mut request = cpu_load_decision(&primary);
+                request.restore_previous_plan = restore_previous_plan;
+                assert!(!controller.reconcile_ordinary(request, start).unwrap());
+                scheduler.confirm_applied_rule(
+                    Some(primary.rule_index),
+                    controller.current_guid(),
+                    start,
+                );
+
+                controller.platform.active = "external".into();
+                let (evaluated_at, applied_at) = if restore_previous_plan {
+                    let now = start + Duration::from_secs(1);
+                    (now, now)
+                } else {
+                    let deadline = start + ACTIVE_PLAN_REFRESH_INTERVAL;
+                    (deadline - Duration::from_millis(1), deadline)
+                };
+                controller.refresh_active_plan_if_due(evaluated_at).unwrap();
+                scheduler.observe_active_plan(controller.current_guid());
+                let retained = scheduler
+                    .current_decision_at(&settings, Some(usage), evaluated_at)
+                    .unwrap();
+                assert_eq!(retained.selection, selection);
+                let mut request = cpu_load_decision(&retained);
+                request.restore_previous_plan = restore_previous_plan;
+                controller.platform.events.borrow_mut().clear();
+
+                assert!(!controller.reconcile_ordinary(request, applied_at).unwrap());
+                assert_eq!(controller.current_guid(), Some("external"));
+                assert_eq!(controller.status().cpu_load_match, None);
+                assert_eq!(controller.platform.events.borrow().as_slice(), ["query"]);
+            }
+        }
     }
 
     #[test]
@@ -3080,11 +3943,27 @@ mod tests {
         controller
             .reconcile_ordinary(cpu_load_decision(&candidate), start)
             .unwrap();
+        assert_eq!(
+            controller.status().cpu_load_match,
+            Some(ByCpuLoadMatch::Condition)
+        );
         scheduler.confirm_applied_rule(Some(0), controller.status().current_guid.as_deref(), start);
+        let retained_at = start + Duration::from_secs(1);
+        let retained = scheduler
+            .current_decision_at(&settings, Some(70.0), retained_at)
+            .unwrap();
+        controller
+            .reconcile_ordinary(cpu_load_decision(&retained), retained_at)
+            .unwrap();
+        assert_eq!(
+            controller.status().cpu_load_match,
+            Some(ByCpuLoadMatch::ReleaseThreshold)
+        );
         controller.platform.active = "external".into();
         let observed_at = start + ACTIVE_PLAN_REFRESH_INTERVAL;
 
         controller.refresh_active_plan_if_due(observed_at).unwrap();
+        assert_eq!(controller.status().cpu_load_match, None);
         scheduler.observe_active_plan(controller.status().current_guid.as_deref());
         assert!(scheduler
             .current_decision_at(&settings, Some(20.0), observed_at)
@@ -3182,6 +4061,7 @@ mod tests {
             .reconcile_ordinary(decision(Some("replacement")), now)
             .is_err());
         assert!(controller.ownership_release_pending);
+        assert_eq!(controller.current_guid(), Some("external"));
         assert_eq!(
             controller.ordinary_original_guid.as_deref(),
             Some("original")
@@ -3294,7 +4174,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             controller.status().owner,
-            Some(PowerPlanOwner::AdaptiveEngine)
+            Some(PowerPlanOwner::AdaptiveProcessorPower)
         );
 
         controller

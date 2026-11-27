@@ -1,207 +1,56 @@
-use super::design;
+use super::{assets, design, widgets};
 use crate::config::Settings;
 use crate::ui::{self, Page};
-use iced::{Element, Theme};
+use iced::{advanced::widget::Id, Element, Fill};
 use rust_i18n::t;
 use std::collections::HashSet;
-use std::time::{Duration, Instant};
 
-const OPEN_DELAY: Duration = Duration::from_millis(250);
-const CLOSE_DELAY: Duration = Duration::from_millis(300);
+pub(super) const PAGE_LIST_ID: &str = "navigation-page-list";
+pub(super) const SIDE_PANEL_TOGGLE: &str = "side-panel-toggle";
 
 #[derive(Debug, Clone)]
 pub(super) enum Event {
-    Hover(Page),
-    Leave(Page),
-    OpenKeyboard(Page),
-    Enter,
-    Exit,
-    Dismiss,
-    Blur,
-    Tick(Instant),
     Select(Page),
-    Search,
-    FocusMove(Option<Page>, bool),
-    Tab(Option<Page>, bool),
-    Key(iced::keyboard::Key, bool),
+    ToggleSidePanel,
 }
 
-#[derive(Default)]
-pub(super) struct Flyout {
-    pub section: Option<Page>,
-    pub selected: Option<usize>,
-    hovered: Option<Page>,
-    inside: bool,
-    pending_open: Option<(Page, Instant)>,
-    close_at: Option<Instant>,
+pub(super) fn workspace_id(page: Page) -> Id {
+    format!("navigation-workspace-{page:?}").into()
 }
 
-impl Flyout {
-    pub fn timer(&self) -> Option<(Instant, Duration)> {
-        self.pending_open
-            .map(|(_, due)| (due, OPEN_DELAY))
-            .or_else(|| self.close_at.map(|due| (due, CLOSE_DELAY)))
-    }
-
-    pub fn dismiss(&mut self) {
-        *self = Self::default();
-    }
-
-    pub fn update(&mut self, event: &Event, now: Instant) {
-        match *event {
-            Event::OpenKeyboard(page) => {
-                self.section = Some(page);
-                self.pending_open = None;
-                self.close_at = None;
-                self.selected = Some(0);
-            }
-            Event::Hover(page) => {
-                self.hovered = Some(page);
-                self.close_at = None;
-                self.pending_open =
-                    (self.section != Some(page)).then_some((page, now + OPEN_DELAY));
-            }
-            Event::Leave(page) if self.hovered == Some(page) => {
-                self.hovered = None;
-                self.pending_open = None;
-                if !self.inside && self.section.is_some() {
-                    self.close_at = Some(now + CLOSE_DELAY);
-                }
-            }
-            Event::Enter => {
-                self.inside = true;
-                self.pending_open = None;
-                self.close_at = None;
-            }
-            Event::Exit => {
-                self.inside = false;
-                if self.hovered.is_none() {
-                    self.close_at = Some(now + CLOSE_DELAY);
-                }
-            }
-            Event::Tick(_) => {
-                if let Some((page, due)) = self.pending_open {
-                    if now >= due {
-                        self.section = Some(page);
-                        self.selected = None;
-                        self.pending_open = None;
-                    }
-                }
-                if self.close_at.is_some_and(|due| now >= due) {
-                    self.dismiss();
-                }
-            }
-            Event::Dismiss => self.dismiss(),
-            _ => {}
-        }
-    }
-}
-
-#[cfg(test)]
-mod flyout_tests {
-    use super::*;
-
-    #[test]
-    fn hover_delays_cancel_stale_opens_and_allow_crossing_into_the_panel() {
-        let start = Instant::now();
-        let mut state = Flyout::default();
-        let mut send = |event, millis| {
-            let now = start + Duration::from_millis(millis);
-            state.update(&event, now);
-            state.section
-        };
-        assert_eq!(send(Event::Hover(Page::SettingsHome), 0), None);
-        assert_eq!(send(Event::Tick(start), 249), None);
-        assert_eq!(send(Event::Hover(Page::PowerPlanControl), 249), None);
-        assert_eq!(send(Event::Leave(Page::SettingsHome), 250), None);
-        assert_eq!(send(Event::Tick(start), 498), None);
-        assert_eq!(send(Event::Tick(start), 499), Some(Page::PowerPlanControl));
-        send(Event::Leave(Page::PowerPlanControl), 500);
-        send(Event::Enter, 650);
-        assert_eq!(send(Event::Tick(start), 900), Some(Page::PowerPlanControl));
-        send(Event::Exit, 1000);
-        send(Event::Hover(Page::PowerPlanControl), 1299);
-        assert_eq!(send(Event::Tick(start), 1400), Some(Page::PowerPlanControl));
-        send(Event::Leave(Page::PowerPlanControl), 1500);
-        assert_eq!(send(Event::Tick(start), 1799), Some(Page::PowerPlanControl));
-        assert_eq!(send(Event::Tick(start), 1800), None);
-        assert!(state.timer().is_none());
-    }
-
-    #[test]
-    fn keyboard_open_and_dismissal_cancel_pending_timers() {
-        let now = Instant::now();
-        let mut state = Flyout::default();
-        state.update(&Event::Hover(Page::SettingsHome), now);
-        state.update(&Event::Leave(Page::SettingsHome), now);
-        assert!(state.timer().is_none());
-        state.update(&Event::Hover(Page::SettingsHome), now);
-        state.update(&Event::OpenKeyboard(Page::PowerPlanControl), now);
-        assert_eq!(state.section, Some(Page::PowerPlanControl));
-        assert!(state.timer().is_none());
-        state.update(&Event::Tick(now), now + Duration::from_secs(1));
-        assert_eq!(state.section, Some(Page::PowerPlanControl));
-        state.update(&Event::Hover(Page::SettingsHome), now);
-        state.update(&Event::Dismiss, now);
-        state.update(&Event::Tick(now), now + Duration::from_secs(1));
-        assert_eq!(state.section, None);
-        state.update(&Event::OpenKeyboard(Page::SettingsHome), now);
-        assert_eq!(state.selected, Some(0));
-        state.dismiss();
-        assert_eq!(state.section, None);
-        assert!(state.timer().is_none());
-    }
-}
-
-pub(super) fn rail_id(page: Option<Page>) -> iced::advanced::widget::Id {
-    format!("navigation-{page:?}").into()
-}
-
-pub(super) fn item_style(
-    theme: &Theme,
-    status: iced::widget::button::Status,
-    active: bool,
-    focused: bool,
-) -> iced::widget::button::Style {
-    let mut style = if active {
-        super::widgets::selected(theme, status)
-    } else {
-        super::widgets::quiet(theme, status)
-    };
-    if focused {
-        style.border.color = theme.palette().primary;
-        style.border.width = 2.0;
-    }
-    style
+pub(super) fn page_id(page: Page) -> Id {
+    format!("navigation-page-{page:?}").into()
 }
 
 pub(super) fn children(section: Page) -> Vec<Page> {
-    Page::sections()
-        .iter()
-        .find(|group| group.landing_page == section)
-        .map(|group| {
-            group
-                .pages
-                .iter()
-                .copied()
-                .filter(|p| *p != section)
-                .collect()
-        })
+    section
+        .child_pages()
         .unwrap_or_default()
+        .iter()
+        .copied()
+        .filter(|page| *page != section)
+        .collect()
 }
 
-pub(super) fn is_utility(page: Page) -> bool {
+fn is_utility(page: Page) -> bool {
     matches!(page, Page::ActionLog | Page::SettingsHome | Page::About)
 }
 
-pub(super) fn rail_pages(show_advanced: bool) -> Vec<Page> {
-    let (mut primary, utilities): (Vec<_>, Vec<_>) = Page::sections()
-        .iter()
-        .map(|section| section.landing_page)
-        .filter(|page| *page != Page::AdvancedControls || show_advanced)
-        .partition(|page| !is_utility(*page));
-    primary.extend(utilities);
-    primary
+pub(super) fn workspace_sections(
+    show_advanced: bool,
+) -> impl Iterator<Item = &'static ui::PageSection> {
+    let sections = Page::sections().iter();
+    sections
+        .clone()
+        .filter(move |section| {
+            !is_utility(section.landing_page)
+                && (show_advanced || section.landing_page != Page::AdvancedControls)
+        })
+        .chain(sections.filter(|section| is_utility(section.landing_page)))
+}
+
+pub(super) fn workspace_pages(show_advanced: bool) -> impl Iterator<Item = Page> {
+    workspace_sections(show_advanced).map(|section| section.landing_page)
 }
 
 pub(super) struct History {
@@ -212,7 +61,7 @@ pub(super) struct History {
 impl Default for History {
     fn default() -> Self {
         Self {
-            pages: vec![Page::Home],
+            pages: vec![Page::Dashboard],
             cursor: 0,
         }
     }
@@ -239,210 +88,199 @@ impl History {
     }
 }
 
-pub(super) fn breadcrumb_path(page: Page) -> Vec<Page> {
-    let mut path = vec![Page::Home];
-    let parent = page.section_landing_page();
-    if parent != Page::Home && parent != page {
-        path.push(parent);
-    }
-    if page != Page::Home {
-        path.push(page);
-    }
-    path
-}
-
 pub(super) fn has_children(page: Page) -> bool {
-    Page::sections().iter().any(|section| {
-        section.landing_page == page && section.pages.iter().any(|child| *child != page)
-    })
+    page.child_pages()
+        .is_some_and(|pages| pages.iter().any(|child| *child != page))
 }
 
-pub(super) fn rail<'a, Message: 'a>(
-    search: Element<'a, Message>,
-    primary: Element<'a, Message>,
-    utilities: Element<'a, Message>,
-) -> Element<'a, Message> {
-    use iced::widget::{column, container, rule};
-    let inset = design::space::CONTROL as u16;
+pub(super) fn top_bar(
+    current: Page,
+    settings: &Settings,
+    side_panel: Option<bool>,
+    width: f32,
+) -> Element<'static, Event> {
+    use iced::widget::{container, row, text, tooltip};
+
+    let active = current.section_landing_page();
+    let workspace_inset = if width < 960.0 {
+        design::space::TIGHT
+    } else {
+        design::space::CONTROL
+    } as u16;
+    let mut workspaces = row![].spacing(design::space::TINY).align_y(iced::Center);
+    for page in workspace_pages(settings.advanced.show_advanced_controls) {
+        let label = text(page.label())
+            .size(design::typography::SECONDARY)
+            .wrapping(text::Wrapping::None);
+        let mut entry = row![label]
+            .spacing(design::space::TIGHT)
+            .align_y(iced::Center);
+        let count = settings
+            .general
+            .show_enabled_feature_counts
+            .then(|| section_enabled_feature_count(settings, page))
+            .flatten()
+            .filter(|count| *count > 0);
+        if let Some(count) = count {
+            entry = entry.push(widgets::tooltip(
+                container(text(count.to_string()).size(design::typography::BADGE))
+                    .padding([2, 6])
+                    .style(|theme| widgets::indicator_chip(theme, true)),
+                text(t!("dashboard.enabled_features").into_owned()),
+                tooltip::Position::Bottom,
+            ));
+        }
+        workspaces = workspaces.push(
+            widgets::button(container(entry).center_y(Fill))
+                .height(design::BUTTON_HEIGHT)
+                .padding([0, workspace_inset])
+                .focus_id(workspace_id(page))
+                .selected(active == page, widgets::selected)
+                .on_press(Event::Select(page)),
+        );
+    }
+
+    let panel_entry = row![
+        glyph_with_opacity(
+            "icons/panel-right-open.svg",
+            if side_panel.is_some() { 1.0 } else { 0.45 },
+        ),
+        text(t!("nav.side_panel").into_owned())
+            .size(design::typography::SECONDARY)
+            .wrapping(text::Wrapping::None),
+    ]
+    .spacing(design::space::TIGHT)
+    .align_y(iced::Center);
+    let panel_button = widgets::button(container(panel_entry).center_y(Fill))
+        .height(design::BUTTON_HEIGHT)
+        .padding([0, design::space::CONTROL as u16])
+        .focus_id(SIDE_PANEL_TOGGLE)
+        .style(widgets::quiet)
+        .selected(side_panel == Some(true), widgets::selected)
+        .on_press_maybe(side_panel.map(|_| Event::ToggleSidePanel));
+    let panel_button = widgets::tooltip(
+        panel_button,
+        text(
+            t!(match side_panel {
+                Some(true) => "nav.hide_side_panel",
+                Some(false) => "nav.show_side_panel",
+                None => "nav.side_panel",
+            })
+            .into_owned(),
+        ),
+        tooltip::Position::Bottom,
+    );
     container(
-        column![
-            container(search).padding([0, inset]),
-            super::scrolling::navigation_scrollable(primary)
-                .id("primary-navigation")
-                .height(iced::Fill),
-            container(rule::horizontal(1)).padding([0, inset]),
-            container(utilities).padding([0, inset]),
-        ]
-        .spacing(design::space::TIGHT)
-        .height(iced::Fill),
+        row![workspaces.width(Fill), panel_button]
+            .height(Fill)
+            .spacing(design::space::TIGHT)
+            .align_y(iced::Center),
     )
-    .padding([inset, 0])
-    .width(design::NAVIGATION_RAIL_WIDTH)
-    .height(iced::Fill)
-    .style(super::widgets::navigation_surface)
+    .padding([0, design::space::SMALL as u16])
+    .width(Fill)
+    .height(design::NAVIGATION_ROW_HEIGHT)
     .into()
 }
 
-pub(super) fn rail_item<'a, Message: Clone + 'a>(
-    page: Page,
-    selected: bool,
-    message: Message,
-) -> Element<'a, Message> {
-    use iced::widget::{column, container, stack, text};
-    let mut icon_row = stack![container(icon(page, selected))
-        .center_x(iced::Fill)
-        .height(design::ICON_SIZE)];
-    if has_children(page) {
-        icon_row = icon_row.push(
-            container(
-                iced::widget::svg(
-                    crate::ui::assets::iced_icon("icons/chevron-right.svg")
-                        .expect("Navigation chevron is bundled"),
-                )
-                .width(12)
-                .height(12)
-                .style(|theme: &Theme, _| iced::widget::svg::Style {
-                    color: Some(super::widgets::muted_color(theme)),
-                }),
-            )
-            .align_right(iced::Fill)
-            .center_y(design::ICON_SIZE),
+pub(super) fn page_list(current: Page, settings: &Settings) -> Option<Element<'static, Event>> {
+    use iced::widget::{column, container, row, text, Space};
+
+    let section = current.section_landing_page();
+    if !has_children(section) {
+        return None;
+    }
+
+    let mut entries = column![].spacing(design::space::TINY).width(Fill);
+    for page in std::iter::once(section).chain(children(section)) {
+        let active = current == page;
+        let mut entry = row![
+            icon(page, active),
+            text(page.label())
+                .size(design::typography::SECONDARY)
+                .wrapping(text::Wrapping::WordOrGlyph)
+                .width(Fill),
+        ]
+        .spacing(design::space::SMALL)
+        .align_y(iced::Center);
+
+        if let Some(enabled) = feature_page_enabled(settings, page) {
+            entry = entry.push(container(Space::new()).width(6).height(6).style(
+                move |theme: &iced::Theme| container::Style {
+                    background: enabled.then(|| theme.palette().success.into()),
+                    border: iced::border::rounded(3),
+                    ..Default::default()
+                },
+            ));
+        }
+
+        entries = entries.push(
+            widgets::button(entry)
+                .focus_id(page_id(page))
+                .width(Fill)
+                .padding(design::space::SMALL as u16)
+                .selected(active, widgets::selected)
+                .on_press(Event::Select(page)),
         );
     }
-    let content = column![
-        icon_row,
-        container(
-            text(page.label())
-                .size(design::typography::BADGE)
-                .width(iced::Fill)
-                .align_x(iced::Center),
-        )
-        .width(iced::Fill)
-        .max_height(30)
-        .clip(true),
-    ]
-    .spacing(design::space::TIGHT)
-    .align_x(iced::Center);
-    super::widgets::button(container(content).center_x(iced::Fill).center_y(iced::Fill))
-        .width(iced::Fill)
-        .height(design::NAVIGATION_ITEM_HEIGHT)
-        .padding([design::space::CONTROL as u16, design::space::TIGHT as u16])
-        .selected(selected, super::widgets::selected)
-        .on_press(message)
-        .into()
-}
 
-pub(super) fn page_feature_info(page: Page) -> String {
-    let (prefix, paragraphs) = match page {
-        Page::AdaptiveEngine => ("adaptive_engine", 3),
-        Page::BackgroundEfficiency => ("background_efficiency", 3),
-        Page::MemoryTrim => ("memory_trim", 3),
-        Page::Watchdog => ("watchdog", 3),
-        Page::AppSuspension => ("app_suspension", 3),
-        Page::SleepPrevention => ("sleep_prevention", 4),
-        Page::KeepRunning => ("keep_running", 3),
-        Page::InstanceLimits => ("instance_limits", 3),
-        Page::InstanceBalancing => ("instance_balancing", 3),
-        Page::CpuLimiter => ("cpu_limiter", 5),
-        Page::ByActivity => ("by_activity", 2),
-        Page::ByCpuLoad => ("by_cpu_load", 2),
-        Page::ByFocus => ("by_focus", 2),
-        Page::ByRunningApp => ("by_running_app", 3),
-        Page::ByTime => ("by_time", 2),
-        Page::ProcessPriority => ("process_priority", 2),
-        Page::ThreadPriority => ("thread_priority", 2),
-        Page::DynamicPriorityBoost => ("dynamic_priority_boost", 2),
-        Page::IoPriority => ("io_priority", 2),
-        Page::GpuPriority => ("gpu_priority", 3),
-        Page::MemoryPriority => ("memory_priority", 2),
-        Page::CpuSetsSoft => ("cpu_sets_soft", 2),
-        Page::ProcessorAffinityHard => ("processor_affinity_hard", 2),
-        Page::TimerResolution => ("timer_resolution", 3),
-        Page::AdvancedPowerPlanTuning | Page::Win32PrioritySeparation => ("", 0),
-        _ => return String::new(),
-    };
-    let mut help = (1..=paragraphs)
-        .map(|index| {
-            let key = format!("{prefix}.intro_{index}");
-            t!(&key).to_string()
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    if matches!(
-        page,
-        Page::ByActivity | Page::ByCpuLoad | Page::ByFocus | Page::ByRunningApp | Page::ByTime
-    ) {
-        for key in [
-            "common.power_plan_priority",
-            "common.power_plan_pause_priority",
-        ] {
-            help.push_str("\n\n");
-            help.push_str(&t!(key));
-        }
-    }
-    let extra: &[&str] = match page {
-        Page::CpuSetsSoft => &["cpu_sets_soft.warning"],
-        Page::ProcessorAffinityHard => &["processor_affinity_hard.warning"],
-        Page::AppSuspension => &["app_suspension.suspendable_help"],
-        Page::TimerResolution => &["timer_resolution.warning"],
-        Page::Win32PrioritySeparation => &["settings.win32_priority_separation_warning"],
-        Page::AdvancedPowerPlanTuning => &["processor_power.help"],
-        _ => &[],
-    };
-    for key in extra {
-        if !help.is_empty() {
-            help.push_str("\n\n");
-        }
-        help.push_str(&t!(*key));
-    }
-    help
+    let scroll = super::scrolling::navigation_scrollable(
+        entries.padding([design::space::CONTROL as u16, 0]),
+    )
+    .id(PAGE_LIST_ID)
+    .width(Fill)
+    .height(Fill);
+    Some(super::motion::wrap(
+        scroll,
+        false,
+        super::motion::Effect::Content(section as u64),
+    ))
 }
 
 pub(super) fn icon<'a, Message: 'a>(page: Page, selected: bool) -> Element<'a, Message> {
-    iced::widget::svg(
-        crate::ui::assets::iced_icon(icon_path(page)).expect("Every UI icon is bundled"),
-    )
-    .width(design::ICON_SIZE)
-    .height(design::ICON_SIZE)
-    .style(move |theme: &Theme, _| iced::widget::svg::Style {
-        color: Some(if selected {
-            theme.palette().primary
+    assets::icon(icon_path(page), design::ICON_SIZE, move |theme| {
+        if selected {
+            super::widgets::accent_text(
+                theme,
+                Some(theme.palette().primary.scale_alpha(0.22).into()),
+            )
         } else {
             super::widgets::muted_color(theme)
-        }),
+        }
     })
-    .into()
 }
 
 pub(super) fn glyph<'a, Message: 'a>(path: &'static str) -> Element<'a, Message> {
-    iced::widget::svg(crate::ui::assets::iced_icon(path).expect("Every UI icon is bundled"))
-        .width(design::ICON_SIZE)
-        .height(design::ICON_SIZE)
-        .style(|theme: &Theme, _| iced::widget::svg::Style {
-            color: Some(super::widgets::muted_color(theme)),
-        })
-        .into()
+    glyph_with_opacity(path, 1.0)
+}
+
+pub(super) fn glyph_with_opacity<'a, Message: 'a>(
+    path: &'static str,
+    opacity: f32,
+) -> Element<'a, Message> {
+    assets::icon(path, design::ICON_SIZE, move |theme| {
+        super::widgets::muted_color(theme).scale_alpha(opacity)
+    })
 }
 pub(super) fn icon_path(page: Page) -> &'static str {
     match page {
-        Page::Home => "icons/house.svg",
+        Page::Dashboard => "icons/house.svg",
         Page::PowerPlanControl => "icons/zap.svg",
-        Page::WinderustFeatures => "icons/computer.svg",
+        Page::Watchdog => "icons/shield.svg",
         Page::CpuControl => "icons/cpu.svg",
         Page::PriorityControl => "icons/circle-fading-arrow-up.svg",
         Page::SettingsHome => "icons/settings.svg",
         Page::AdvancedControls => "icons/cog.svg",
         Page::ByActivity => "icons/square-activity.svg",
         Page::ByCpuLoad => "icons/chart-column.svg",
+        Page::AdaptiveProcessorPower => "icons/zap.svg",
         Page::AdvancedPowerPlanTuning => "icons/drill.svg",
         Page::ProcessPriority => "icons/panels-top-left.svg",
         Page::ThreadPriority => "icons/spline.svg",
         Page::DynamicPriorityBoost => "icons/trending-up-down.svg",
         Page::CpuLimiter => "icons/octagon-minus.svg",
         Page::CpuSetsSoft => "icons/life-buoy.svg",
-        Page::ProcessList => "icons/list.svg",
         Page::AdaptiveEngine => "icons/brain-circuit.svg",
-        Page::BackgroundEfficiency => "icons/leaf.svg",
+        Page::EfficiencyMode => "icons/leaf.svg",
         Page::AppSuspension => "icons/monitor-pause.svg",
         Page::SleepPrevention => "icons/coffee.svg",
         Page::KeepRunning => "icons/rotate-ccw.svg",
@@ -453,7 +291,7 @@ pub(super) fn icon_path(page: Page) -> &'static str {
         Page::GpuPriority => "icons/gpu.svg",
         Page::MemoryPriority => "icons/memory-stick.svg",
         Page::MemoryTrim => "icons/scissors.svg",
-        Page::Watchdog => "icons/square-activity.svg",
+        Page::ResourceThresholds => "icons/square-activity.svg",
         Page::ProcessorAffinityHard => "icons/monitor-x.svg",
         Page::ByFocus => "icons/bring-to-front.svg",
         Page::ByTime => "icons/calendar-days.svg",
@@ -469,9 +307,10 @@ pub(super) fn icon_path(page: Page) -> &'static str {
 pub(super) fn feature_page_enabled(settings: &Settings, page: Page) -> Option<bool> {
     Some(match page {
         Page::AdaptiveEngine => settings.adaptive_engine.enabled,
-        Page::BackgroundEfficiency => settings.background_efficiency.enabled,
+        Page::AdaptiveProcessorPower => settings.adaptive_engine.adaptive_processor_power_enabled,
+        Page::EfficiencyMode => settings.efficiency_mode.enabled,
         Page::MemoryTrim => settings.memory_trim.enabled,
-        Page::Watchdog => settings.watchdog.enabled,
+        Page::ResourceThresholds => settings.resource_thresholds.enabled,
         Page::KeepRunning => settings.keep_running.enabled,
         Page::InstanceLimits => settings.instance_limits.enabled,
         Page::InstanceBalancing => settings.instance_balancing.enabled,
@@ -499,9 +338,12 @@ pub(super) fn feature_page_enabled(settings: &Settings, page: Page) -> Option<bo
 pub(super) fn feature_toggle(page: Page) -> Option<fn(&mut Settings) -> &mut bool> {
     Some(match page {
         Page::AdaptiveEngine => |settings| &mut settings.adaptive_engine.enabled,
-        Page::BackgroundEfficiency => |settings| &mut settings.background_efficiency.enabled,
+        Page::AdaptiveProcessorPower => {
+            |settings| &mut settings.adaptive_engine.adaptive_processor_power_enabled
+        }
+        Page::EfficiencyMode => |settings| &mut settings.efficiency_mode.enabled,
         Page::MemoryTrim => |settings| &mut settings.memory_trim.enabled,
-        Page::Watchdog => |settings| &mut settings.watchdog.enabled,
+        Page::ResourceThresholds => |settings| &mut settings.resource_thresholds.enabled,
         Page::KeepRunning => |settings| &mut settings.keep_running.enabled,
         Page::InstanceLimits => |settings| &mut settings.instance_limits.enabled,
         Page::InstanceBalancing => |settings| &mut settings.instance_balancing.enabled,
@@ -529,7 +371,7 @@ pub(super) fn feature_toggle(page: Page) -> Option<fn(&mut Settings) -> &mut boo
 pub(super) fn section_enabled_feature_count(settings: &Settings, page: Page) -> Option<usize> {
     if !matches!(
         page,
-        Page::WinderustFeatures | Page::PowerPlanControl | Page::PriorityControl | Page::CpuControl
+        Page::Watchdog | Page::PowerPlanControl | Page::PriorityControl | Page::CpuControl
     ) {
         return None;
     }
@@ -541,24 +383,7 @@ pub(super) fn section_enabled_feature_count(settings: &Settings, page: Page) -> 
     })
 }
 
-pub(super) fn dashboard_sections_in_nav_order(
-    show_advanced_controls: bool,
-) -> Vec<&'static ui::PageSection> {
-    Page::sections()
-        .iter()
-        .filter(|section| {
-            section.landing_page != Page::Home && !nav_section_in_footer(section.landing_page)
-        })
-        .filter(|section| show_advanced_controls || section.landing_page != Page::AdvancedControls)
-        .chain(
-            Page::sections()
-                .iter()
-                .filter(|section| nav_section_in_footer(section.landing_page)),
-        )
-        .collect()
-}
-
-pub(super) fn dashboard_search_pages(query: &str, show_advanced_controls: bool) -> Vec<Page> {
+pub(super) fn search_pages(query: &str, show_advanced_controls: bool) -> Vec<Page> {
     let query = query.trim().to_lowercase();
     if query.is_empty() {
         return Vec::new();
@@ -567,15 +392,18 @@ pub(super) fn dashboard_search_pages(query: &str, show_advanced_controls: bool) 
     let mut pages = Vec::new();
     let mut seen = HashSet::new();
 
-    for section in dashboard_sections_in_nav_order(show_advanced_controls) {
-        let section_matches = dashboard_page_matches_query(section.landing_page, &query);
+    for section in workspace_sections(show_advanced_controls) {
+        let section_matches = page_matches_query(section.landing_page, &query);
+        if section_matches && seen.insert(section.landing_page) {
+            pages.push(section.landing_page);
+        }
 
         for page in section.pages.iter().copied() {
-            if page == Page::Home || !seen.insert(page) {
+            if !seen.insert(page) {
                 continue;
             }
 
-            if section_matches || dashboard_page_matches_query(page, &query) {
+            if section_matches || page_matches_query(page, &query) {
                 pages.push(page);
             }
         }
@@ -584,206 +412,191 @@ pub(super) fn dashboard_search_pages(query: &str, show_advanced_controls: bool) 
     pages
 }
 
-fn dashboard_page_matches_query(page: Page, query: &str) -> bool {
-    let text = dashboard_page_search_text(page).to_lowercase();
+fn page_matches_query(page: Page, query: &str) -> bool {
+    let mut text = page_search_text(page);
+    if text.is_ascii() {
+        text.make_ascii_lowercase();
+    } else {
+        text = text.to_lowercase();
+    }
     query.split_whitespace().all(|term| text.contains(term))
 }
 
-pub(super) fn dashboard_page_search_text(page: Page) -> String {
+fn page_search_text(page: Page) -> String {
     let label = page.label();
     let section = page.section_label();
-    match page {
-        Page::Home => format!(
-            "{label} {section} {} {} overview summary current automation decision power plan cpu enabled rules",
-            t!("home.intro_1"),
-            t!("home.intro_2"),
+    let mut search = match page {
+        Page::Dashboard => format!(
+            "{label} {section} {} {} {} {} {} process list running processes pid process rules priority gpu cpu affinity efficiency policy overview summary current automation decision power plan enabled features telemetry history",
+            t!("process_list.title"),
+            t!("dashboard.by_cpu_load"),
+            t!("dashboard.memory_usage"),
+            t!("dashboard.io_usage"),
+            t!("dashboard.network_usage"),
         ),
         Page::PowerPlanControl => format!(
             "{label} {section} {} {} power plan automation foreground focused app running app performance mode cpu load activity idle schedule time battery plugged ac dc",
             t!("power_plan_control.restore_previous_plan"),
             t!("power_plan_control.restore_previous_plan_help"),
         ),
-        Page::WinderustFeatures => format!(
-            "{label} {section} winderust features background efficiency background_efficiency Adaptive Engine foreground interactivity memory trim working set memory ram background restraint",
-        ),
+        Page::Watchdog => format!("{label} {section} app automation"),
         Page::CpuControl => format!(
-            "{label} {section} processor cpu controls core parking limiter background restriction affinity steering power boost ac dc battery e cores p cores",
+            "{label} {section} processor cpu controls limiter background restriction affinity steering e cores p cores",
         ),
         Page::PriorityControl => format!(
             "{label} {section} priority control process thread dynamic boost io gpu memory launch registry ifeo scheduler base priority",
         ),
         Page::ActionLog => format!(
-            "{label} {section} {} {} log action history details csv export skipped failed applied restored reason",
+            "{label} {section} {} {} {} {} log action history details csv export skipped failed applied restored reason log level",
             t!("action_log.intro_1"),
             t!("action_log.intro_2"),
+            t!("settings.action_log_mode"),
+            t!("action_log.level_filter"),
         ),
         Page::SettingsHome => format!(
-            "{label} {section} settings winderust behaviour startup tray toggles action log detail fail suppression appearance language theme accent color palette",
+            "{label} {section} settings winderust behaviour startup tray toggles fail suppression appearance language theme accent color palette",
         ),
         Page::AdvancedControls => format!(
-            "{label} {section} advanced sleep prevention awake display app suspension windows scheduler win32 priority separation quantum foreground boost registry",
+            "{label} {section} advanced windows scheduler win32 priority separation quantum foreground boost registry",
         ),
         Page::ByActivity => format!(
-            "{label} {section} {} {} {} idle active input keyboard mouse controller gamepad activity power plan battery plugged",
-            t!("by_activity.intro_1"),
-            t!("by_activity.intro_2"),
-            t!("by_activity.enable"),
+            "{label} {section} {} idle active input keyboard mouse controller gamepad activity power plan battery plugged",
+            t!("by_activity.enable_help"),
         ),
         Page::ByFocus => format!(
-            "{label} {section} {} {} {} focus focused app process window power plan priority rule",
-            t!("by_focus.intro_1"),
-            t!("by_focus.intro_2"),
-            t!("by_focus.enable"),
+            "{label} {section} {} focus focused app process window power plan priority rule",
+            t!("by_focus.enable_help"),
         ),
         Page::ByTime => format!(
-            "{label} {section} {} {} {} time schedule clock date weekday overnight power plan",
-            t!("by_time.intro_1"),
-            t!("by_time.intro_2"),
-            t!("by_time.enable"),
+            "{label} {section} {} time schedule clock date weekday overnight power plan",
+            t!("by_time.enable_help"),
         ),
         Page::ByCpuLoad => format!(
-            "{label} {section} {} {} {} cpu load usage threshold sustained power plan percent samples",
-            t!("by_cpu_load.intro_1"),
-            t!("by_cpu_load.intro_2"),
-            t!("by_cpu_load.enable"),
+            "{label} {section} {} cpu load usage threshold sustained power plan percent samples",
+            t!("by_cpu_load.enable_help"),
+        ),
+        Page::AdaptiveProcessorPower => format!(
+            "{label} {section} {} adaptive processor power core parking boost processor min max ac dc battery temporary power plan background pressure focus launch",
+            t!("adaptive_processor_power.enable_help"),
         ),
         Page::AdvancedPowerPlanTuning => format!(
             "{label} {section} {} {} {} {} core parking processor power boost min max ac dc battery plugged performance saver balanced scheduling hybrid long short thread policy schedpolicy shortschedpolicy",
-            t!("processor_power.help"),
+            t!("processor_power.target_plan_help"),
             t!("processor_power.performance_help"),
             t!("processor_power.balanced_help"),
             t!("processor_power.saver_help"),
         ),
         Page::CpuLimiter => format!(
-            "{label} {section} {} {} {} {} {} {} cpu limiter allowed time duty cycle freeze resume background process audio video network stutter child job group",
-            t!("cpu_limiter.intro_1"),
-            t!("cpu_limiter.intro_2"),
-            t!("cpu_limiter.intro_3"),
-            t!("cpu_limiter.intro_4"),
-            t!("cpu_limiter.intro_5"),
+            "{label} {section} {} {} {} {} cpu limiter allowed time duty cycle freeze resume background process audio video network stutter child job group",
+            t!("cpu_limiter.limit_method_help"),
+            t!("cpu_limiter.cpu_time_defaults_help"),
+            t!("cpu_limiter.cpu_time_scope_help"),
             t!("cpu_limiter.rules_help"),
         ),
         Page::ProcessPriority => format!(
-            "{label} {section} {} {} {} process priority base priority normal below normal idle above normal high background foreground exclusion",
-            t!("process_priority.intro_1"),
-            t!("process_priority.intro_2"),
-            t!("process_priority.exclusions_help"),
+            "{label} {section} {} {} process priority base priority normal below normal idle above normal high background foreground exclusion",
+            t!("process_priority.enable_help"),
+            t!("priority_control.custom_rules_help"),
         ),
         Page::ThreadPriority => format!(
-            "{label} {section} {} {} {} thread priority time critical highest above normal normal below normal lowest idle background foreground exclusion",
-            t!("thread_priority.intro_1"),
-            t!("thread_priority.intro_2"),
-            t!("thread_priority.exclusions_help"),
+            "{label} {section} {} {} thread priority time critical highest above normal normal below normal lowest idle background foreground exclusion",
+            t!("thread_priority.enable_help"),
+            t!("priority_control.custom_rules_help"),
         ),
         Page::DynamicPriorityBoost => format!(
-            "{label} {section} {} {} {} dynamic priority boost process scheduler enabled disabled background foreground exclusion",
-            t!("dynamic_priority_boost.intro_1"),
-            t!("dynamic_priority_boost.intro_2"),
-            t!("dynamic_priority_boost.exclusions_help"),
+            "{label} {section} {} {} dynamic priority boost process scheduler enabled disabled background foreground exclusion",
+            t!("dynamic_priority_boost.enable_help"),
+            t!("priority_control.custom_rules_help"),
         ),
         Page::CpuSetsSoft => format!(
-            "{label} {section} {} {} {} cpu sets soft preferred processors per app foreground",
-            t!("cpu_sets_soft.intro_1"),
-            t!("cpu_sets_soft.intro_2"),
+            "{label} {section} {} {} cpu sets soft preferred processors per app foreground",
+            t!("cpu_sets_soft.enable_help"),
             t!("cpu_allocation.rules_help"),
         ),
-        Page::ProcessList => format!(
-            "{label} {section} {} running processes pid process rules priority gpu cpu affinity efficiency policy overview",
-            t!("process_list.title"),
-        ),
         Page::AdaptiveEngine => format!(
-            "{label} {section} {} {} {} adaptive engine power saving background_efficiency Adaptive Engine cpu scheduling uperf powersave balanced performance speed foreground boost background priority cpu spike stutter battery background",
-            t!("adaptive_engine.intro_1"),
-            t!("adaptive_engine.intro_2"),
-            t!("adaptive_engine.intro_3"),
+            "{label} {section} {} adaptive engine cpu scheduling foreground background priority cpu spike stutter restraint processor placement",
+            t!("adaptive_engine.enable_help"),
         ),
-        Page::BackgroundEfficiency => format!(
-            "{label} {section} {} {} {} {} {} {} efficiency mode background_efficiency qos throttle background priority exclusion custom_rules",
-            t!("background_efficiency.intro_1"),
-            t!("background_efficiency.intro_2"),
-            t!("background_efficiency.intro_3"),
-            t!("background_efficiency.foreground_detection_help"),
+        Page::EfficiencyMode => format!(
+            "{label} {section} {} {} {} {} efficiency mode efficiency_mode qos throttle background priority exclusion custom_rules",
+            t!("efficiency_mode.enable_help"),
+            t!("common.foreground_detection_help"),
             t!("common.visible_window_detection_help"),
-            t!("background_efficiency.custom_rules_help"),
+            t!("efficiency_mode.custom_rules_help"),
         ),
         Page::AppSuspension => format!(
-            "{label} {section} {} {} {} {} suspend freeze thaw resume background app process job object delay network audio",
-            t!("app_suspension.intro_1"),
-            t!("app_suspension.intro_2"),
-            t!("app_suspension.intro_3"),
+            "{label} {section} {} {} {} {} {} {} {} {} {} suspend freeze thaw resume background app process job object delay network audio",
+            t!("app_suspension.enable_help"),
             t!("app_suspension.suspendable_help"),
+            t!("app_suspension.auto_resume_when_focused"),
+            t!("app_suspension.tcp_detection_section"),
+            t!("app_suspension.network_detection"),
+            t!("app_suspension.audio_detection_section"),
+            t!("app_suspension.audio_detection"),
+            t!("app_suspension.temporary_resume_section"),
+            t!("app_suspension.temporary_resume"),
         ),
         Page::SleepPrevention => format!(
-            "{label} {section} {} {} sleep prevention awake system idle display monitor running app power request",
-            t!("sleep_prevention.intro_1"),
-            t!("sleep_prevention.intro_2"),
+            "{label} {section} {} {} {} sleep prevention awake system idle display monitor running app power request",
+            t!("sleep_prevention.enable_help"),
+            t!("sleep_prevention.temporary_keep_awake"),
+            t!("sleep_prevention.temporary_keep_display_on"),
         ),
         Page::ByRunningApp => format!(
-            "{label} {section} {} {} {} {} running app performance mode power plan process game gaming active restore",
-            t!("by_running_app.intro_1"),
-            t!("by_running_app.intro_2"),
-            t!("by_running_app.intro_3"),
+            "{label} {section} {} {} running app performance mode power plan process game gaming active restore",
+            t!("by_running_app.enable_help"),
             t!("by_running_app.rules_help"),
         ),
         Page::IoPriority => format!(
-            "{label} {section} {} {} {} {} {} io i/o disk storage priority low very low background foreground detection default exclusion",
-            t!("io_priority.intro_1"),
-            t!("io_priority.intro_2"),
-            t!("io_priority.enable"),
-            t!("io_priority.foreground_detection"),
-            t!("io_priority.exclusions_help"),
+            "{label} {section} {} {} {} io i/o disk storage priority low very low background foreground detection default exclusion",
+            t!("io_priority.enable_help"),
+            t!("common.foreground_detection"),
+            t!("priority_control.custom_rules_help"),
         ),
         Page::GpuPriority => format!(
-            "{label} {section} {} {} {} {} {} gpu graphics scheduling priority d3dkmt idle below normal above normal foreground detection background default exclusion",
-            t!("gpu_priority.intro_1"),
-            t!("gpu_priority.intro_2"),
-            t!("gpu_priority.enable"),
-            t!("gpu_priority.foreground_detection"),
-            t!("gpu_priority.exclusions_help"),
+            "{label} {section} {} {} {} gpu graphics scheduling priority d3dkmt idle below normal above normal foreground detection background default exclusion",
+            t!("gpu_priority.enable_help"),
+            t!("common.foreground_detection"),
+            t!("priority_control.custom_rules_help"),
         ),
         Page::MemoryPriority => format!(
-            "{label} {section} {} {} {} {} {} memory priority page priority ram paging working set very low low medium background foreground detection default exclusion",
-            t!("memory_priority.intro_1"),
-            t!("memory_priority.intro_2"),
-            t!("memory_priority.enable"),
-            t!("memory_priority.foreground_detection"),
-            t!("memory_priority.exclusions_help"),
+            "{label} {section} {} {} {} memory priority page priority ram paging working set very low low medium background foreground detection default exclusion",
+            t!("memory_priority.enable_help"),
+            t!("common.foreground_detection"),
+            t!("priority_control.custom_rules_help"),
         ),
-        Page::Watchdog => format!(
-            "{label} {section} {} watchdog monitor cpu memory ram threshold warning critical toast notification terminate kill process",
-            t!("watchdog.intro_1"),
+        Page::ResourceThresholds => format!(
+            "{label} {section} {} monitor cpu memory ram threshold warning critical toast notification terminate kill process",
+            t!("resource_thresholds.enable_help"),
         ),
         Page::InstanceLimits => format!(
             "{label} {section} {} instance limits count maximum processes monitor notifications full path",
-            t!("instance_limits.intro_1"),
+            t!("instance_limits.enable_help"),
         ),
         Page::InstanceBalancing => format!(
-            "{label} {section} {} {} instance balancing instances processes executable full path whole cores scheduling preferences CPU Sets",
-            t!("instance_balancing.intro_1"),
-            t!("instance_balancing.intro_2"),
+            "{label} {section} {} instance balancing instances processes executable full path whole cores scheduling preferences CPU Sets",
+            t!("instance_balancing.enable_help"),
         ),
         Page::KeepRunning => format!(
-            "{label} {section} {} keep running relaunch restart app process exit arguments working directory retry resume",
-            t!("keep_running.intro_1"),
+            "{label} {section} {} keep running relaunch restart app process exit arguments retry resume",
+            t!("keep_running.enable_help"),
         ),
         Page::MemoryTrim => format!(
-            "{label} {section} {} {} {} memory ram trim working set idle background exclusion",
-            t!("memory_trim.intro_1"),
-            t!("memory_trim.intro_2"),
-            t!("memory_trim.intro_3"),
+            "{label} {section} {} {} {} {} memory ram trim working set idle background exclusion",
+            t!("memory_trim.enable_help"),
+            t!("memory_trim.rules_help"),
+            t!("memory_trim.exclude_foreground"),
+            t!("memory_trim.exclude_visible_windows"),
         ),
         Page::ProcessorAffinityHard => format!(
-            "{label} {section} {} {} {} {} processor affinity hard allowed processors per app foreground",
-            t!("processor_affinity_hard.intro_1"),
-            t!("processor_affinity_hard.intro_2"),
-            t!("processor_affinity_hard.warning"),
+            "{label} {section} {} {} processor affinity hard allowed processors per app foreground",
+            t!("processor_affinity_hard.enable_help"),
             t!("cpu_allocation.rules_help"),
         ),
         Page::WinderustBehaviour => format!(
-            "{label} {section} {} {} {} {} winderust behaviour startup tray automation toggle action log detail fail failure suppression export import",
+            "{label} {section} {} {} {} winderust behaviour startup tray automation toggle fail failure suppression export import",
             t!("settings.intro_1"),
             t!("settings.intro_2"),
-            t!("settings.action_log_mode_full_help"),
             t!("settings.failure_suppression_threshold_help"),
         ),
         Page::LanguageAndAppearance => format!(
@@ -795,10 +608,9 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             t!("settings.expose_all_priority_values_help"),
         ),
         Page::TimerResolution => format!(
-            "{label} {section} {} {} {} timer resolution ntsettimerresolution scheduler latency wakeups battery high resolution timer foreground process rule",
-            t!("timer_resolution.intro_1"),
-            t!("timer_resolution.intro_2"),
-            t!("timer_resolution.warning"),
+            "{label} {section} {} {} timer resolution ntsettimerresolution scheduler latency wakeups battery high resolution timer foreground process rule",
+            t!("timer_resolution.enable_help"),
+            t!("timer_resolution.rules_help"),
         ),
         Page::Win32PrioritySeparation => format!(
             "{label} {section} {} {} {} win32 priority separation windows scheduler quantum foreground boost games gaming registry",
@@ -811,15 +623,49 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
             t!("about.intro_1"),
             t!("about.intro_2"),
         ),
+    };
+    if page != Page::PriorityControl && page.section_landing_page() == Page::PriorityControl {
+        search.push(' ');
+        search.push_str(&t!("priority_control.protect_child_processes"));
+        search.push_str(" child processes descendants");
     }
-}
-
-pub(super) fn nav_section_in_footer(page: Page) -> bool {
-    matches!(page, Page::ActionLog | Page::SettingsHome | Page::About)
+    search
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn process_list_search_finds_dashboard() {
+        assert_eq!(
+            search_pages("process list", false).first(),
+            Some(&Page::Dashboard)
+        );
+    }
+
+    #[test]
+    fn watchdog_pages_are_discoverable_with_advanced_controls_hidden() {
+        assert_eq!(
+            workspace_pages(false).take(3).collect::<Vec<_>>(),
+            [Page::Dashboard, Page::Watchdog, Page::PowerPlanControl],
+        );
+        assert_eq!(
+            search_pages("watchdog", false),
+            [
+                Page::Watchdog,
+                Page::ResourceThresholds,
+                Page::MemoryTrim,
+                Page::KeepRunning,
+                Page::SleepPrevention,
+                Page::InstanceLimits,
+                Page::AppSuspension,
+            ]
+        );
+        assert!(feature_toggle(Page::Watchdog).is_none());
+        assert!(search_pages("memory trim", false).contains(&Page::MemoryTrim));
+    }
+
     #[test]
     fn feature_toggle_fields_match_navigation_indicators() {
         for page in Page::sections().iter().flat_map(|section| section.pages) {
@@ -840,216 +686,67 @@ mod tests {
     fn page_history_supports_back_forward_and_new_branches() {
         let mut history = History::default();
         assert_eq!(history.travel(false), None);
-        history.visit(Page::ProcessList);
+        history.visit(Page::Watchdog);
         history.visit(Page::ActionLog);
-        assert_eq!(history.travel(false), Some(Page::ProcessList));
-        history.visit(Page::ProcessList);
+        assert_eq!(history.travel(false), Some(Page::Watchdog));
+        history.visit(Page::Watchdog);
         assert_eq!(history.travel(true), Some(Page::ActionLog));
         assert_eq!(history.travel(true), None);
-        assert_eq!(history.travel(false), Some(Page::ProcessList));
+        assert_eq!(history.travel(false), Some(Page::Watchdog));
         history.visit(Page::About);
         assert_eq!(history.travel(true), None);
-        assert_eq!(history.travel(false), Some(Page::ProcessList));
-        assert_eq!(history.travel(false), Some(Page::Home));
+        assert_eq!(history.travel(false), Some(Page::Watchdog));
+        assert_eq!(history.travel(false), Some(Page::Dashboard));
     }
 
     #[test]
-    fn breadcrumb_path_keeps_ancestors_in_order() {
-        assert_eq!(breadcrumb_path(Page::Home), vec![Page::Home]);
-        assert_eq!(
-            breadcrumb_path(Page::AdaptiveEngine),
-            vec![Page::Home, Page::WinderustFeatures, Page::AdaptiveEngine]
-        );
-    }
-
-    #[test]
-    fn feature_info_includes_warnings_and_timer_release_behavior() {
-        let help = super::page_feature_info(crate::ui::Page::CpuLimiter);
-        assert!(help.contains(&rust_i18n::t!("cpu_limiter.intro_1").to_string()));
-        assert!(help.contains(&rust_i18n::t!("cpu_limiter.intro_4").to_string()));
-        assert!(help.contains(&rust_i18n::t!("cpu_limiter.intro_5").to_string()));
-        let help = super::page_feature_info(crate::ui::Page::TimerResolution);
-        assert!(help.contains(&rust_i18n::t!("timer_resolution.intro_3").to_string()));
-        assert!(help.contains(&rust_i18n::t!("timer_resolution.warning").to_string()));
-        let help = super::page_feature_info(Page::InstanceBalancing);
-        assert!(help.contains(&t!("instance_balancing.intro_3").to_string()));
-        assert!(
-            dashboard_search_pages("instance balancing", false).contains(&Page::InstanceBalancing)
-        );
-    }
-
-    use super::*;
-    #[test]
-    fn rail_keeps_search_primary_and_utilities_aligned_at_both_heights() {
-        use iced::advanced::{layout, widget::Tree, Layout};
-        use iced::widget::{column, container, text};
-        use iced::{Fill, Rectangle, Size};
-        for height in [480.0, 1080.0] {
-            let mut primary = column![].spacing(design::space::TIGHT).width(Fill);
-            let mut utilities = column![].spacing(design::space::TIGHT).width(Fill);
-            for page in rail_pages(true) {
-                let item = rail_item(page, page == Page::WinderustFeatures, ());
-                if is_utility(page) {
-                    utilities = utilities.push(item);
-                } else {
-                    primary = primary.push(item);
-                }
-            }
-            let search = super::super::widgets::button(
-                container(
-                    column![
-                        glyph("icons/search.svg"),
-                        text(t!("home.search").to_string()).size(design::typography::BADGE),
-                    ]
-                    .spacing(design::space::TIGHT)
-                    .align_x(iced::Center),
-                )
-                .center_x(Fill)
-                .center_y(Fill),
-            )
-            .width(Fill)
-            .height(design::NAVIGATION_ITEM_HEIGHT)
-            .padding([design::space::CONTROL as u16, design::space::TIGHT as u16])
-            .style(super::super::widgets::quiet)
-            .on_press(());
-            let mut view = rail(search.into(), primary.into(), utilities.into());
-            let renderer = iced::Renderer::new(
-                iced::Font {
-                    weight: iced::font::Weight::Normal,
-                    ..design::typography::FONT
-                },
-                iced::Pixels(14.0),
-            );
-            let mut tree = Tree::new(&view);
-            let bounds = Rectangle::with_size(Size::new(design::NAVIGATION_RAIL_WIDTH, height));
-            let node = view.as_widget_mut().layout(
-                &mut tree,
-                &renderer,
-                &layout::Limits::new(Size::ZERO, bounds.size()),
-            );
-            let column = Layout::new(&node).children().next().unwrap();
-            let children: Vec<_> = column.children().collect();
-            let check_item = |item: Layout<'_>| {
-                assert_eq!(item.bounds().width, design::NAVIGATION_RAIL_WIDTH - 12.0);
-                assert_eq!(
-                    item.bounds().center_x(),
-                    design::NAVIGATION_RAIL_WIDTH / 2.0
-                );
-                assert_eq!(item.bounds().height, design::NAVIGATION_ITEM_HEIGHT as f32);
-            };
-            check_item(children[0].children().next().unwrap());
-            let primary = children[1]
-                .children()
-                .next()
-                .unwrap()
-                .children()
-                .next()
-                .unwrap();
-            assert_eq!(
-                primary.bounds().height > children[1].bounds().height,
-                height == 480.0
-            );
-            for item in primary.children() {
-                check_item(item);
-            }
-            for item in children[3].children().next().unwrap().children() {
-                check_item(item);
-            }
-            let mut messages = Vec::new();
-            view.as_widget_mut().update(
-                &mut tree,
-                &iced::Event::Window(iced::window::Event::RedrawRequested(Instant::now())),
-                Layout::new(&node),
-                iced::mouse::Cursor::Unavailable,
-                &renderer,
-                &mut iced::advanced::clipboard::Null,
-                &mut iced::advanced::Shell::new(&mut messages),
-                &bounds,
-            );
-        }
-    }
-
-    #[test]
-    fn rail_items_fit_their_width_and_keep_geometry_when_selected() {
-        fn leaves(
-            node: &iced::advanced::layout::Node,
-            offset: iced::Point,
-            bounds: &mut Vec<iced::Rectangle>,
-        ) {
-            let local = node.bounds();
-            let origin = iced::Point::new(offset.x + local.x, offset.y + local.y);
-            if node.children().is_empty() {
-                bounds.push(iced::Rectangle::new(origin, local.size()));
-            } else {
-                for child in node.children() {
-                    leaves(child, origin, bounds);
-                }
-            }
-        }
-        let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
+    fn page_list_is_only_present_for_workspaces_with_children() {
+        let settings = Settings::default();
         for section in Page::sections() {
-            let mut sizes = Vec::new();
-            for selected in [false, true] {
-                let mut view = rail_item(section.landing_page, selected, ());
-                let mut tree = iced::advanced::widget::Tree::new(&view);
-                let layout = view.as_widget_mut().layout(
-                    &mut tree,
-                    &renderer,
-                    &iced::advanced::layout::Limits::new(
-                        iced::Size::ZERO,
-                        iced::Size::new(design::NAVIGATION_RAIL_WIDTH - 12.0, 900.0),
-                    ),
+            for page in std::iter::once(section.landing_page).chain(section.pages.iter().copied()) {
+                assert_eq!(
+                    page_list(page, &settings).is_some(),
+                    section.pages != [section.landing_page],
+                    "{page:?}",
                 );
-                assert!(layout.size().width <= design::NAVIGATION_RAIL_WIDTH - 12.0);
-                assert_eq!(layout.size().height, design::NAVIGATION_ITEM_HEIGHT as f32);
-                let mut bounds = Vec::new();
-                leaves(&layout, iced::Point::ORIGIN, &mut bounds);
-                let icon = bounds
-                    .iter()
-                    .find(|bounds| bounds.size() == iced::Size::new(18.0, 18.0))
-                    .expect("Rail item contains its icon");
-                assert_eq!(icon.x + icon.width / 2.0, layout.size().width / 2.0);
-                let label = bounds
-                    .iter()
-                    .find(|bounds| bounds.width > 18.0 && bounds.height > 12.0)
-                    .expect("Rail item contains its label");
-                let top = icon.y;
-                let bottom = layout.size().height - (label.y + label.height);
-                assert!(
-                    (top - bottom).abs() < 0.01,
-                    "Unequal rail insets: {top} / {bottom}"
-                );
-                assert!(
-                    (label.y - (icon.y + icon.height) - design::space::TIGHT as f32).abs() < 0.01
-                );
-                if has_children(section.landing_page) {
-                    let chevron = bounds
-                        .iter()
-                        .find(|bounds| bounds.size() == iced::Size::new(12.0, 12.0))
-                        .expect("Group contains a chevron");
-                    assert_eq!(chevron.y + chevron.height / 2.0, icon.y + icon.height / 2.0);
-                    assert!(chevron.x > icon.x + icon.width);
-                }
-                sizes.push(layout.size());
             }
-            assert_eq!(sizes[0], sizes[1]);
         }
-        assert!(!has_children(Page::Home));
-        assert!(!has_children(Page::ProcessList));
-        assert!(has_children(Page::PowerPlanControl));
-        assert!(has_children(Page::SettingsHome));
     }
+
+    #[test]
+    fn advanced_workspace_is_optional_and_utilities_keep_their_order() {
+        let standard: Vec<_> = workspace_pages(false).collect();
+        let extended: Vec<_> = workspace_pages(true).collect();
+        assert_eq!(
+            &standard[standard.len() - 3..],
+            &[Page::ActionLog, Page::SettingsHome, Page::About],
+        );
+        assert_eq!(extended[standard.len() - 3], Page::AdvancedControls);
+        assert_eq!(
+            extended
+                .into_iter()
+                .filter(|page| *page != Page::AdvancedControls)
+                .collect::<Vec<_>>(),
+            standard,
+        );
+    }
+
     #[test]
     fn every_page_has_a_bundled_icon_and_sidebar_counts_follow_feature_settings() {
         for section in Page::sections() {
-            assert!(crate::ui::assets::iced_icon(icon_path(section.landing_page)).is_some());
+            assert!(assets::has_icon(icon_path(section.landing_page)));
             for page in section.pages {
-                assert!(crate::ui::assets::iced_icon(icon_path(*page)).is_some());
+                assert!(assets::has_icon(icon_path(*page)));
             }
         }
         let mut settings = Settings::default();
+        assert_eq!(
+            &Page::PriorityControl.child_pages().unwrap()[..2],
+            &[Page::ProcessPriority, Page::EfficiencyMode]
+        );
         for page in [
             Page::ProcessPriority,
+            Page::EfficiencyMode,
             Page::ThreadPriority,
             Page::DynamicPriorityBoost,
             Page::IoPriority,
@@ -1063,7 +760,32 @@ mod tests {
             section_enabled_feature_count(&settings, Page::PriorityControl),
             Some(1)
         );
-        assert!(!dashboard_search_pages("suspension", false).contains(&Page::AppSuspension));
-        assert!(dashboard_search_pages("suspension", true).contains(&Page::AppSuspension));
+        settings.efficiency_mode.enabled = true;
+        assert_eq!(
+            section_enabled_feature_count(&settings, Page::PriorityControl),
+            Some(2)
+        );
+        let watchdog_count = section_enabled_feature_count(&settings, Page::Watchdog).unwrap();
+        settings.memory_trim.enabled = true;
+        assert_eq!(
+            section_enabled_feature_count(&settings, Page::Watchdog),
+            Some(watchdog_count + 1)
+        );
+        settings.adaptive_engine.enabled = false;
+        let cpu_count = section_enabled_feature_count(&settings, Page::CpuControl).unwrap();
+        settings.adaptive_engine.enabled = true;
+        assert_eq!(
+            Page::CpuControl.child_pages().unwrap().first(),
+            Some(&Page::AdaptiveEngine)
+        );
+        assert_eq!(
+            section_enabled_feature_count(&settings, Page::CpuControl),
+            Some(cpu_count + 1)
+        );
+        assert!(search_pages("adaptive engine", false).contains(&Page::AdaptiveEngine));
+        assert!(search_pages("efficiency mode", false).contains(&Page::EfficiencyMode));
+        assert!(search_pages("suspension", false).contains(&Page::AppSuspension));
+        assert!(!search_pages("timer resolution", false).contains(&Page::TimerResolution));
+        assert!(search_pages("timer resolution", true).contains(&Page::TimerResolution));
     }
 }

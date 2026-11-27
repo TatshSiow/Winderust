@@ -1,16 +1,28 @@
-use super::super::design;
-use super::super::priority_control::{self, Kind, Tier, Value};
-use super::super::widgets::{
-    self, action_button, icon_button, pick_list, setting_row, settings_card, slider, switch,
+use super::super::cpu_allocation::{
+    self,
+    Kind::{Hard, Soft},
+    Tier as AllocationTier,
 };
-use super::super::{cpu_allocation, cpu_limiter};
+use super::super::cpu_limiter;
+use super::super::design;
+use super::super::priority_control::{Kind, Tier, Value};
+use super::super::widgets::{self, action_button, pick_list, setting_row, settings_card, switch};
 use super::PlanCatalog;
+use crate::application::SettingsEditor;
 use crate::config::*;
-use crate::foreground::executable_path_key;
-use crate::ui::process_rules::{new_cpu_limiter_rule, process_setting_matches};
+use crate::features::power_plan_control::by_running_app;
+use crate::foreground::process_list::normalize_path_slashes;
+use crate::ui::process_rules::{
+    can_add_exact_process_candidate, new_by_focus_rule, new_by_running_app_rule,
+    new_cpu_limiter_rule, new_process_exclusion_rule, selector_path_matches,
+};
 use iced::widget::{column, container, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
+use std::rc::Rc;
+
+const PRIORITY_RULE_ROW_HEIGHT: u32 = 34;
+
 #[derive(Debug, Clone)]
 pub(in crate::ui) enum Message {
     ReloadPlans,
@@ -24,6 +36,7 @@ pub(in crate::ui) enum Message {
     Limiter(bool),
     LimiterMode(Tier, ProcessRuleMode),
     LimiterLimit(Tier, u8),
+    LimiterNumber(Tier, String),
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Plan(Option<String>, String);
@@ -32,23 +45,27 @@ impl std::fmt::Display for Plan {
         self.1.fmt(f)
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Mode(ProcessRuleMode);
-impl std::fmt::Display for Mode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        t!(match self.0 {
-            ProcessRuleMode::Default => "common.default",
-            ProcessRuleMode::Enabled => "common.custom",
-            ProcessRuleMode::Disabled => "cpu_limiter.unlimited",
+
+fn adaptive_name_excluded(settings: &Settings, path: &str) -> bool {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            settings
+                .adaptive_engine_process
+                .excludes_executable_name(name)
         })
-        .fmt(f)
-    }
 }
-pub(super) fn update(s: &mut Settings, path: &str, m: Message) -> Option<String> {
-    if !std::path::Path::new(path).is_absolute() {
+
+pub(super) fn update(
+    s: &mut SettingsEditor,
+    image_path: &str,
+    m: Message,
+    limiter: &mut cpu_limiter::CpuLimiter,
+) -> Option<String> {
+    if !std::path::Path::new(image_path).is_absolute() {
         return None;
     }
-    let path = executable_path_key(std::path::Path::new(path));
     match m {
         Message::ReloadPlans => unreachable!("The application owns power-plan loading"),
         Message::Priority(kind, tier, value) => {
@@ -58,208 +75,234 @@ pub(super) fn update(s: &mut Settings, path: &str, m: Message) -> Option<String>
             {
                 return None;
             }
-            let rules = kind.rules_mut(s);
-            let i = rules
+            let existing = kind
+                .rules(s)
                 .iter()
-                .position(|r| process_setting_matches(&r.executable_path, &path))
-                .unwrap_or_else(|| {
-                    rules.push(ProcessExclusionRule {
-                        executable_path: path.clone(),
-                        ..Default::default()
-                    });
-                    rules.len() - 1
-                });
-            rules[i].enabled = true;
-            priority_control::Editor::default().update(
-                s,
-                kind,
-                priority_control::Message::RuleValue(i, tier, value),
+                .enumerate()
+                .find(|(_, rule)| same_rule_executable_path(&rule.executable_path, image_path));
+            let mut rule = existing.map_or_else(
+                || new_process_exclusion_rule(image_path),
+                |(_, rule)| rule.clone(),
             );
+            rule.enabled = true;
+            value.set_rule(&mut rule, tier);
+            match existing {
+                Some((index, original)) if rule != *original => kind.rules_mut(s)[index] = rule,
+                None => kind.rules_mut(s).push(rule),
+                Some(_) => {}
+            }
         }
-        Message::ResetPriority(kind) => kind
-            .rules_mut(s)
-            .retain(|r| !process_setting_matches(&r.executable_path, &path)),
+        Message::ResetPriority(kind) => {
+            let matches_path = |rule: &ProcessExclusionRule| {
+                same_rule_executable_path(&rule.executable_path, image_path)
+            };
+            if kind.rules(s).iter().any(matches_path) {
+                kind.rules_mut(s).retain(|rule| !matches_path(rule));
+            }
+        }
         Message::Adaptive(included) => {
-            let rules = &mut s.adaptive_engine_process.custom_rules;
-            if included {
-                rules.retain(|r| !process_setting_matches(&r.executable_path, &path));
-            } else if let Some(r) = rules
-                .iter_mut()
-                .find(|r| process_setting_matches(&r.executable_path, &path))
-            {
-                r.enabled = true;
-            } else {
-                rules.push(ProcessExclusionRule {
-                    executable_path: path,
-                    ..Default::default()
-                });
+            if adaptive_name_excluded(s, image_path) {
+                return None;
+            }
+            let matches_path = |rule: &AdaptiveEngineExclusionRule| {
+                rule.selector
+                    .exact()
+                    .is_some_and(|selector| selector_path_matches(selector, image_path))
+            };
+            let rules = &s.adaptive_engine_process.custom_rules;
+            match (included, rules.iter().position(matches_path)) {
+                (true, Some(_)) => s
+                    .adaptive_engine_process
+                    .custom_rules
+                    .retain(|rule| !matches_path(rule)),
+                (false, Some(index)) if !rules[index].enabled => {
+                    s.adaptive_engine_process.custom_rules[index].enabled = true;
+                }
+                (false, None) => s.adaptive_engine_process.custom_rules.push(
+                    AdaptiveEngineExclusionRule::exact_path(
+                        normalize_path_slashes(image_path).into_owned(),
+                    ),
+                ),
+                _ => {}
             }
         }
         Message::Efficiency(included) => {
-            s.background_efficiency
+            let matches_path = |rule: &EfficiencyModeRule| {
+                same_rule_executable_path(&rule.executable_path, image_path)
+            };
+            let mut matching = s
+                .efficiency_mode
                 .custom_rules
-                .retain(|r| !process_setting_matches(&r.executable_path, &path));
+                .iter()
+                .filter(|rule| matches_path(rule));
+            match (included, matching.next()) {
+                (true, None) => return None,
+                (false, Some(rule))
+                    if rule.enabled
+                        && rule.focus_efficiency_mode == ProcessRuleMode::Disabled
+                        && rule.visible_window_efficiency_mode == ProcessRuleMode::Disabled
+                        && rule.background_efficiency_mode == ProcessRuleMode::Disabled
+                        && matching.next().is_none() =>
+                {
+                    return None;
+                }
+                _ => {}
+            }
+            let rules = &mut s.efficiency_mode.custom_rules;
+            rules.retain(|rule| !matches_path(rule));
             if !included {
-                s.background_efficiency
-                    .custom_rules
-                    .push(BackgroundEfficiencyRule {
-                        enabled: true,
-                        executable_path: path,
-                        focus_efficiency_mode: ProcessRuleMode::Disabled,
-                        visible_window_efficiency_mode: ProcessRuleMode::Disabled,
-                        background_efficiency_mode: ProcessRuleMode::Disabled,
-                    });
+                rules.push(EfficiencyModeRule {
+                    enabled: true,
+                    executable_path: normalize_path_slashes(image_path).into_owned(),
+                    focus_efficiency_mode: ProcessRuleMode::Disabled,
+                    visible_window_efficiency_mode: ProcessRuleMode::Disabled,
+                    background_efficiency_mode: ProcessRuleMode::Disabled,
+                });
             }
         }
         Message::Power(focus, guid) => {
+            if !focus && guid.is_some() && !can_set_running_app_plan(image_path) {
+                return None;
+            }
+            macro_rules! update_path_plan {
+                ($field:ident, $new_rule:ident) => {{
+                    let index = s
+                        .$field
+                        .rules
+                        .iter()
+                        .position(|rule| selector_path_matches(&rule.selector, image_path));
+                    match (index, guid) {
+                        (None, None) => {}
+                        (Some(_), None) => s
+                            .$field
+                            .rules
+                            .retain(|rule| !selector_path_matches(&rule.selector, image_path)),
+                        (None, Some(guid)) => {
+                            s.$field.rules.push($new_rule(image_path, Some(guid)));
+                        }
+                        (Some(index), Some(guid)) => {
+                            let rule = &s.$field.rules[index];
+                            if !rule.enabled || rule.power_plan_guid.as_ref() != Some(&guid) {
+                                let rule = &mut s.$field.rules[index];
+                                rule.enabled = true;
+                                rule.power_plan_guid = Some(guid);
+                            }
+                        }
+                    }
+                }};
+            }
             if focus {
-                let rules = &mut s.by_focus.rules;
-                if let Some(guid) = guid {
-                    if let Some(r) = rules
-                        .iter_mut()
-                        .find(|r| process_setting_matches(&r.executable_path, &path))
-                    {
-                        r.enabled = true;
-                        r.power_plan_guid = Some(guid);
-                    } else {
-                        rules.push(crate::ui::process_rules::new_by_focus_rule(
-                            &path,
-                            Some(guid),
-                        ));
-                    }
-                } else {
-                    rules.retain(|r| !process_setting_matches(&r.executable_path, &path));
-                }
+                update_path_plan!(by_focus, new_by_focus_rule);
             } else {
-                let rules = &mut s.by_running_app.rules;
-                if let Some(guid) = guid {
-                    if let Some(r) = rules
-                        .iter_mut()
-                        .find(|r| process_setting_matches(&r.executable_path, &path))
-                    {
-                        r.enabled = true;
-                        r.power_plan_guid = Some(guid);
-                    } else {
-                        rules.push(crate::ui::process_rules::new_by_running_app_rule(
-                            &path,
-                            Some(guid),
-                        ));
-                    }
-                } else {
-                    rules.retain(|r| !process_setting_matches(&r.executable_path, &path));
-                }
+                update_path_plan!(by_running_app, new_by_running_app_rule);
             }
         }
         Message::CpuEnabled(soft, enabled) => {
-            let other = if soft {
-                &s.processor_affinity_hard
-            } else {
-                &s.cpu_sets_soft
-            };
-            if enabled && other.contains_rule_for(&path) {
-                return None;
-            }
-            let setting = if soft {
-                &mut s.cpu_sets_soft
-            } else {
-                &mut s.processor_affinity_hard
-            };
-            if !enabled {
-                setting
+            let (kind, other) = if soft { (Soft, Hard) } else { (Hard, Soft) };
+            let has_rule = cpu_allocation::settings(s, kind).contains_rule_for(image_path);
+            if !enabled && has_rule {
+                cpu_allocation::settings_mut(s, kind)
                     .rules
-                    .retain(|r| !process_setting_matches(&r.executable_path, &path));
-            } else if !setting.contains_rule_for(&path)
-                && !crate::cpu_allocation::is_builtin_excluded(&path)
+                    .retain(|rule| !same_rule_executable_path(&rule.executable_path, image_path));
+            } else if enabled
+                && !has_rule
+                && !cpu_allocation::settings(s, other).contains_rule_for(image_path)
+                && !crate::cpu_allocation::is_builtin_excluded(image_path)
             {
-                let kind = if soft {
-                    cpu_allocation::Kind::Soft
-                } else {
-                    cpu_allocation::Kind::Hard
-                };
                 let selection =
                     match cpu_allocation::SelectionCatalog::capture(kind).all_selection() {
                         Ok(selection) => selection,
                         Err(error) => return Some(error),
                     };
-                setting.rules.push(CpuAllocationRule {
-                    enabled: true,
-                    executable_path: path,
-                    focus_selection: selection.clone(),
-                    visible_window_selection: selection.clone(),
-                    background_selection: selection,
-                });
+                cpu_allocation::settings_mut(s, kind)
+                    .rules
+                    .push(CpuAllocationRule {
+                        enabled: true,
+                        executable_path: crate::foreground::process_list::normalize_path_slashes(
+                            image_path,
+                        )
+                        .into_owned(),
+                        focus_selection: selection.clone(),
+                        visible_window_selection: selection.clone(),
+                        background_selection: selection,
+                    });
             }
         }
         Message::CpuMask(soft, tier, selection) => {
-            let setting = if soft {
-                &mut s.cpu_sets_soft
-            } else {
-                &mut s.processor_affinity_hard
-            };
-            if let Some(r) = setting
+            let kind = if soft { Soft } else { Hard };
+            if let Some((index, rule)) = cpu_allocation::settings(s, kind)
                 .rules
-                .iter_mut()
-                .find(|r| process_setting_matches(&r.executable_path, &path))
+                .iter()
+                .enumerate()
+                .find(|(_, rule)| same_rule_executable_path(&rule.executable_path, image_path))
             {
-                let kind = if soft {
-                    cpu_allocation::Kind::Soft
-                } else {
-                    cpu_allocation::Kind::Hard
-                };
                 if let Err(error) = cpu_allocation::verify_selection(&selection, kind) {
                     return Some(error);
                 }
-                match tier {
-                    Tier::Focus => r.focus_selection = selection,
-                    Tier::VisibleWindow => r.visible_window_selection = selection,
-                    Tier::Background => r.background_selection = selection,
+                let tier = match tier {
+                    Tier::Focus => AllocationTier::Focus,
+                    Tier::VisibleWindow => AllocationTier::Visible,
+                    Tier::Background => AllocationTier::Background,
+                };
+                if selection != *tier.selection(rule) {
+                    tier.set(
+                        &mut cpu_allocation::settings_mut(s, kind).rules[index],
+                        selection,
+                    );
                 }
             }
         }
         Message::Limiter(enabled) => {
-            if !enabled {
-                s.cpu_limiter
-                    .rules
-                    .retain(|r| !process_setting_matches(&r.executable_path, &path));
-            } else if !s
+            let has_rule = s
                 .cpu_limiter
                 .rules
                 .iter()
-                .any(|r| process_setting_matches(&r.executable_path, &path))
-                && !crate::cpu_limiter::is_builtin_excluded(&path)
-            {
-                s.cpu_limiter.rules.push(new_cpu_limiter_rule(&path));
+                .any(|r| same_rule_executable_path(&r.executable_path, image_path));
+            if !enabled && has_rule {
+                s.cpu_limiter
+                    .rules
+                    .retain(|r| !same_rule_executable_path(&r.executable_path, image_path));
+                *limiter = Default::default();
+            } else if enabled && !has_rule && !crate::cpu_limiter::is_builtin_excluded(image_path) {
+                s.cpu_limiter.rules.push(new_cpu_limiter_rule(image_path));
             }
         }
         Message::LimiterMode(tier, value) => {
-            if let Some(i) = s
-                .cpu_limiter
-                .rules
-                .iter()
-                .position(|r| process_setting_matches(&r.executable_path, &path))
-            {
-                cpu_limiter::CpuLimiter::default().update(
-                    &mut s.cpu_limiter,
-                    cpu_limiter::Message::RuleMode(i, limiter_tier(tier), value),
-                );
-            }
+            update_limiter_rule(s, image_path, limiter, |index| {
+                cpu_limiter::Message::RuleMode(index, limiter_tier(tier), value)
+            });
         }
         Message::LimiterLimit(tier, value) => {
-            if let Some(i) = s
-                .cpu_limiter
-                .rules
-                .iter()
-                .position(|r| process_setting_matches(&r.executable_path, &path))
-            {
-                cpu_limiter::CpuLimiter::default().update(
-                    &mut s.cpu_limiter,
-                    cpu_limiter::Message::RuleLimit(i, limiter_tier(tier), value),
-                );
-            }
+            update_limiter_rule(s, image_path, limiter, |index| {
+                cpu_limiter::Message::RuleLimit(index, limiter_tier(tier), value)
+            });
+        }
+        Message::LimiterNumber(tier, raw) => {
+            update_limiter_rule(s, image_path, limiter, |index| {
+                cpu_limiter::Message::Number(Some(index), limiter_tier(tier), raw)
+            });
         }
     }
     None
 }
+
+fn update_limiter_rule(
+    settings: &mut SettingsEditor,
+    path: &str,
+    limiter: &mut cpu_limiter::CpuLimiter,
+    message: impl FnOnce(usize) -> cpu_limiter::Message,
+) {
+    if let Some(index) = settings.cpu_limiter.rules.iter().position(|rule| {
+        rule.affinity_limit.is_none() && same_rule_executable_path(&rule.executable_path, path)
+    }) {
+        limiter.update_profile(settings, message(index));
+    }
+}
+
+fn can_set_running_app_plan(path: &str) -> bool {
+    can_add_exact_process_candidate(path, |_| false, by_running_app::is_builtin_excluded)
+}
+
 fn limiter_tier(tier: Tier) -> cpu_limiter::Tier {
     match tier {
         Tier::Focus => cpu_limiter::Tier::Focus,
@@ -271,21 +314,16 @@ pub(super) fn view<'a>(
     s: &'a Settings,
     path: &'a str,
     plans: PlanCatalog<'_>,
+    limiter_editor: &cpu_limiter::CpuLimiter,
 ) -> Element<'a, Message> {
-    let adaptive = !s
-        .adaptive_engine_process
-        .custom_rules
-        .iter()
-        .any(|r| r.enabled && process_setting_matches(&r.executable_path, path));
+    let excluded_by_name = adaptive_name_excluded(s, path);
+    let adaptive = !s.adaptive_engine_process.excludes_executable_path(path);
     let efficiency = s
-        .background_efficiency
+        .efficiency_mode
         .custom_rules
         .iter()
-        .find(|r| r.enabled && process_setting_matches(&r.executable_path, path))
-        .is_none_or(|r| {
-            s.background_efficiency
-                .custom_rule_applies_efficiency_mode(r)
-        });
+        .find(|r| r.enabled && same_rule_executable_path(&r.executable_path, path))
+        .is_none_or(|r| s.efficiency_mode.custom_rule_applies_efficiency_mode(r));
     let mut body = column![widgets::heading(
         t!("process_list.details_exclusions").to_string(),
         design::typography::BODY
@@ -294,8 +332,21 @@ pub(super) fn view<'a>(
     let mut exclusions = Vec::new();
     for (key, included, adaptive_rule) in [
         ("nav.adaptive_engine", adaptive, true),
-        ("nav.background_efficiency", efficiency, false),
+        ("nav.efficiency_mode", efficiency, false),
     ] {
+        if adaptive_rule && excluded_by_name {
+            exclusions.push(
+                setting_row(
+                    key,
+                    text(t!("process_list.adaptive_excluded_by_name").into_owned())
+                        .size(design::typography::SECONDARY)
+                        .style(text::secondary)
+                        .width(design::SELECT_WIDTH),
+                )
+                .into(),
+            );
+            continue;
+        }
         let options = [
             t!("process_list.include").to_string(),
             t!("process_list.exclude").to_string(),
@@ -325,40 +376,68 @@ pub(super) fn view<'a>(
     if let PlanCatalog::Loaded(plans) = plans {
         let mut power = Vec::new();
         for focus in [true, false] {
+            let can_set = focus || can_set_running_app_plan(path);
             let selected = if focus {
                 s.by_focus
                     .rules
                     .iter()
-                    .find(|r| r.enabled && process_setting_matches(&r.executable_path, path))
+                    .find(|r| r.enabled && selector_path_matches(&r.selector, path))
                     .and_then(|r| r.power_plan_guid.clone())
             } else {
-                s.by_running_app
-                    .rules
-                    .iter()
-                    .find(|r| r.enabled && process_setting_matches(&r.executable_path, path))
-                    .and_then(|r| r.power_plan_guid.clone())
+                let saved = s.by_running_app.rules.iter().find(|rule| {
+                    (rule.enabled || !can_set) && selector_path_matches(&rule.selector, path)
+                });
+                if !can_set && saved.is_none() {
+                    continue;
+                }
+                saved.and_then(|rule| rule.power_plan_guid.clone())
             };
-            let mut options = vec![Plan(None, t!("common.default").to_string())];
+            let mut options = vec![Plan(
+                None,
+                t!("process_list.no_path_specific_plan").to_string(),
+            )];
             options.extend(
                 plans
                     .iter()
+                    .filter(|plan| !plan.managed_adaptive)
                     .map(|p| Plan(Some(p.guid.clone()), p.name.clone())),
             );
-            if let Some(guid) = &selected {
-                if !options.iter().any(|p| p.0.as_ref() == Some(guid)) {
-                    options.push(Plan(
-                        selected.clone(),
-                        t!("common.selected_plan_unavailable").to_string(),
-                    ));
-                }
+            let selected = options
+                .iter()
+                .find(|p| p.0 == selected)
+                .cloned()
+                .or_else(|| {
+                    selected.map(|guid| {
+                        Plan(
+                            Some(guid),
+                            t!("common.selected_plan_unavailable").to_string(),
+                        )
+                    })
+                });
+            if !can_set {
+                let label =
+                    selected.map_or_else(|| t!("common.unavailable").into_owned(), |plan| plan.1);
+                power.push(
+                    setting_row(
+                        "nav.by_running_app",
+                        row![
+                            text(label).wrapping(text::Wrapping::WordOrGlyph),
+                            action_button(t!("common.remove").to_string())
+                                .on_press(Message::Power(false, None)),
+                        ]
+                        .spacing(design::space::SMALL)
+                        .align_y(iced::Center),
+                    )
+                    .into(),
+                );
+                continue;
             }
-            let selected = options.iter().find(|p| p.0 == selected).cloned();
             power.push(
                 setting_row(
                     if focus {
-                        "process_list.power_plan_focus"
+                        "nav.by_focus"
                     } else {
-                        "process_list.power_plan_running"
+                        "nav.by_running_app"
                     },
                     pick_list(options, selected, move |p| Message::Power(focus, p.0))
                         .width(design::SELECT_WIDTH),
@@ -396,6 +475,7 @@ pub(super) fn view<'a>(
     header = header.push(iced::widget::Space::new().width(32));
     let mut priorities =
         column![container(header).padding(widgets::CARD_PADDING as u16)].spacing(0);
+    let default_rule = ProcessExclusionRule::default();
     for kind in [
         Kind::Process,
         Kind::Thread,
@@ -408,25 +488,26 @@ pub(super) fn view<'a>(
         let rule = kind
             .rules(s)
             .iter()
-            .find(|r| process_setting_matches(&r.executable_path, path))
-            .cloned()
-            .unwrap_or_default();
+            .find(|r| same_rule_executable_path(&r.executable_path, path));
+        let reset = rule.is_some().then_some(Message::ResetPriority(kind));
+        let rule = rule.unwrap_or(&default_rule);
+        let choices: Rc<[_]> = kind.choices(s.advanced.expose_all_priority_values).into();
         let mut controls = row![text(t!(&key).to_string()).width(Fill)]
             .spacing(design::space::SMALL)
             .align_y(iced::Center)
-            .height(widgets::SETTING_ROW_HEIGHT);
+            .height(PRIORITY_RULE_ROW_HEIGHT);
         for tier in Tier::ALL {
             controls = controls.push(
                 pick_list(
-                    kind.choices(s.advanced.expose_all_priority_values),
-                    Some(kind.rule_value(&rule, tier)),
+                    Rc::clone(&choices),
+                    Some(kind.rule_value(rule, tier)),
                     move |v| Message::Priority(kind, tier, v),
                 )
                 .width(Fill),
             );
         }
         controls = controls.push(widgets::tooltip(
-            icon_button("icons/rotate-ccw.svg").on_press(Message::ResetPriority(kind)),
+            widgets::icon_button_maybe("icons/rotate-ccw.svg", reset),
             text(t!("process_list.use_page_defaults").to_string()),
             iced::widget::tooltip::Position::Top,
         ));
@@ -448,16 +529,18 @@ pub(super) fn view<'a>(
         body = body.push(text(t!("cpu_sets_soft.warning").to_string()));
     }
     body = body.push(text(t!("processor_affinity_hard.warning").to_string()));
+    let excluded = crate::cpu_allocation::is_builtin_excluded(path);
     for soft in [true, false] {
-        let settings = if soft {
-            &s.cpu_sets_soft
+        let (settings, other) = if soft {
+            (&s.cpu_sets_soft, &s.processor_affinity_hard)
         } else {
-            &s.processor_affinity_hard
+            (&s.processor_affinity_hard, &s.cpu_sets_soft)
         };
         let rule = settings
             .rules
             .iter()
-            .find(|r| process_setting_matches(&r.executable_path, path));
+            .find(|r| same_rule_executable_path(&r.executable_path, path));
+        let blocked = rule.is_none() && (excluded || other.contains_rule_for(path));
         let catalog = rule.map(|_| {
             cpu_allocation::SelectionCatalog::capture(if soft {
                 cpu_allocation::Kind::Soft
@@ -471,7 +554,10 @@ pub(super) fn view<'a>(
             } else {
                 "nav.processor_affinity_hard"
             },
-            switch(rule.is_some(), Some(move |v| Message::CpuEnabled(soft, v))),
+            switch(
+                rule.is_some(),
+                (!blocked).then_some(move |v| Message::CpuEnabled(soft, v)),
+            ),
         )]
         .spacing(widgets::CARD_GAP);
         if let Some(rule) = rule {
@@ -489,9 +575,28 @@ pub(super) fn view<'a>(
                         selection,
                         catalog,
                         &s.cpu_allocation_presets,
+                        cpu_allocation::ProcessorPickerLayout::Compact,
                         move |v| Message::CpuMask(soft, tier, v),
                     ));
             }
+        } else if blocked {
+            let reason = if excluded {
+                t!("cpu_allocation.builtin_exclusion").to_string()
+            } else {
+                let owner = t!(if soft {
+                    "nav.processor_affinity_hard"
+                } else {
+                    "nav.cpu_sets_soft"
+                });
+                t!("cpu_allocation.ownership_conflict", owner = owner).to_string()
+            };
+            card = card.push(
+                text(reason)
+                    .size(design::typography::SECONDARY)
+                    .style(text::secondary)
+                    .width(Fill)
+                    .wrapping(text::Wrapping::WordOrGlyph),
+            );
         }
         body = body.push(settings_card(card));
     }
@@ -499,39 +604,57 @@ pub(super) fn view<'a>(
         .cpu_limiter
         .rules
         .iter()
-        .find(|r| process_setting_matches(&r.executable_path, path));
+        .find(|r| same_rule_executable_path(&r.executable_path, path));
     let mut card = column![setting_row(
         "nav.cpu_limiter",
         switch(limiter.is_some(), Some(Message::Limiter))
     )]
     .spacing(widgets::CARD_GAP);
-    if let Some(rule) = limiter {
+    if let Some(limit) = limiter.and_then(|rule| rule.affinity_limit.as_ref()) {
+        card = card
+            .push(widgets::settings_divider())
+            .push(text(t!("cpu_limiter.load_triggered_affinity").into_owned()))
+            .push(setting_row(
+                "cpu_allocation.selected_logical_cpus",
+                text(cpu_allocation::selection_text(&limit.selection))
+                    .width(Fill)
+                    .wrapping(text::Wrapping::WordOrGlyph),
+            ));
+    } else if let Some(rule) = limiter {
         for tier in Tier::ALL {
-            let (mode, limit) = match tier {
-                Tier::Focus => (rule.focus_mode, rule.focus_allowed_cpu_time_percent),
-                Tier::VisibleWindow => (
-                    rule.visible_window_mode,
-                    rule.visible_window_allowed_cpu_time_percent,
-                ),
-                Tier::Background => (
-                    rule.background_mode,
-                    rule.background_allowed_cpu_time_percent,
-                ),
-            };
+            let limit_tier = limiter_tier(tier);
+            let (mode, limit) = limit_tier.rule_values(rule);
             let mut controls = column![row![
-                text(tier.label()).width(Fill),
-                pick_list(ProcessRuleMode::ALL.map(Mode), Some(Mode(mode)), move |m| {
-                    Message::LimiterMode(tier, m.0)
-                })
+                text(widgets::label_with_unit(
+                    &tier.label(),
+                    if mode == ProcessRuleMode::Enabled {
+                        "%"
+                    } else {
+                        ""
+                    },
+                ))
+                .width(Fill),
+                pick_list(
+                    ProcessRuleMode::ALL.map(cpu_limiter::Mode),
+                    Some(cpu_limiter::Mode(mode)),
+                    move |m| Message::LimiterMode(tier, m.0),
+                )
             ]]
             .spacing(widgets::CARD_GAP);
             if mode == ProcessRuleMode::Enabled {
-                controls = controls.push(row![
-                    slider(1..=100, limit, move |v| Message::LimiterLimit(tier, v)),
-                    text(format!("{limit}%"))
-                ]);
+                controls = controls.push(widgets::trailing_slider(limiter_editor.limit_field(
+                    &rule.executable_path,
+                    limit_tier,
+                    limit,
+                    move |v| Message::LimiterLimit(tier, v),
+                    move |raw| Message::LimiterNumber(tier, raw),
+                )));
             }
             card = card.push(widgets::settings_divider()).push(controls);
+        }
+        if limiter_editor.has_invalid_inputs() {
+            card =
+                card.push(text(t!("cpu_limiter.invalid_limit").into_owned()).style(text::danger));
         }
     }
     body = body.push(settings_card(card));
@@ -540,12 +663,147 @@ pub(super) fn view<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn update(settings: &mut SettingsEditor, path: &str, message: Message) -> Option<String> {
+        super::update(
+            settings,
+            path,
+            message,
+            &mut cpu_limiter::CpuLimiter::default(),
+        )
+    }
+
+    #[test]
+    fn cpu_limiter_text_edits_only_stage_valid_percentages() {
+        let path = r"C:\Apps\worker.exe";
+        let mut initial = Settings::default();
+        let mut rule = new_cpu_limiter_rule(path);
+        rule.focus_mode = ProcessRuleMode::Enabled;
+        initial.cpu_limiter.rules.push(rule);
+        let mut settings = SettingsEditor::with_settings(initial);
+        let mut limiter = cpu_limiter::CpuLimiter::default();
+
+        for invalid in ["", "0", "101"] {
+            let _ = super::update(
+                &mut settings,
+                path,
+                Message::LimiterNumber(Tier::Focus, invalid.into()),
+                &mut limiter,
+            );
+            assert!(limiter.has_invalid_inputs());
+            assert!(!settings.has_unsaved_changes());
+        }
+
+        let _ = super::update(
+            &mut settings,
+            path,
+            Message::LimiterNumber(Tier::Focus, "75".into()),
+            &mut limiter,
+        );
+        assert_eq!(
+            settings.cpu_limiter.rules[0].focus_allowed_cpu_time_percent,
+            75
+        );
+        assert!(!limiter.has_invalid_inputs());
+        assert!(settings.has_unsaved_changes());
+
+        let _ = super::update(
+            &mut settings,
+            path,
+            Message::LimiterNumber(Tier::Focus, String::new()),
+            &mut limiter,
+        );
+        let _ = super::update(
+            &mut settings,
+            path,
+            Message::LimiterMode(Tier::Focus, ProcessRuleMode::Default),
+            &mut limiter,
+        );
+        assert!(!limiter.has_invalid_inputs());
+        assert_eq!(
+            settings.cpu_limiter.rules[0].focus_allowed_cpu_time_percent,
+            75
+        );
+    }
+
+    #[test]
+    fn details_focus_plan_only_edits_the_exact_path() {
+        let mut settings = Settings::default();
+        let path = r"C:\Apps\worker.exe";
+        settings.by_focus.rules.push(ByFocusRule {
+            enabled: true,
+            name: "worker.exe".into(),
+            selector: ExecutableSelector::ExactName {
+                executable_name: "worker.exe".into(),
+            },
+            power_plan_guid: Some("name-plan".into()),
+        });
+        let mut settings = SettingsEditor::with_settings(settings);
+        settings.select_power_source(PowerSourceProfile::OnBattery);
+        let _ = update(&mut settings, path, Message::Power(true, None));
+        assert!(settings.global().on_battery.is_none());
+
+        let _ = update(
+            &mut settings,
+            path,
+            Message::Power(true, Some("path-plan".into())),
+        );
+        assert_eq!(settings.by_focus.rules.len(), 2);
+        assert_eq!(settings.global().by_focus.rules.len(), 1);
+        assert!(selector_path_matches(
+            &settings.by_focus.rules[1].selector,
+            path
+        ));
+        let literal_path = format!("{path}\u{3000}");
+        let _ = update(
+            &mut settings,
+            &literal_path,
+            Message::Power(false, Some("running-plan".into())),
+        );
+        assert_eq!(
+            settings.by_running_app.rules[0].selector.exact_path(),
+            Some(literal_path.as_str())
+        );
+
+        let _ = update(&mut settings, path, Message::Power(true, None));
+        assert_eq!(settings.by_focus.rules.len(), 1);
+        assert_eq!(
+            settings.by_focus.rules[0].power_plan_guid.as_deref(),
+            Some("name-plan")
+        );
+    }
+
+    #[test]
+    fn details_can_remove_but_not_set_a_plan_for_an_excluded_running_app() {
+        let path = r"C:\Apps\searchhost.exe";
+        let mut settings = Settings::default();
+        settings
+            .by_running_app
+            .rules
+            .push(new_by_running_app_rule(path, Some("old-plan".into())));
+        let mut editor = SettingsEditor::with_settings(settings);
+        let set_plan = Message::Power(false, Some("new-plan".into()));
+        let _ = update(&mut editor, path, set_plan.clone());
+        assert_eq!(
+            editor.by_running_app.rules[0].power_plan_guid.as_deref(),
+            Some("old-plan")
+        );
+        let _ = update(&mut editor, path, Message::Power(false, None));
+        let _ = update(&mut editor, path, set_plan);
+        assert!(editor.by_running_app.rules.is_empty());
+    }
+
     #[test]
     fn details_priority_edits_do_not_enable_master_or_other_tiers() {
-        let mut s = Settings::default();
+        let mut s = SettingsEditor::with_settings(Settings::default());
+        s.select_power_source(PowerSourceProfile::OnBattery);
+        let path = r"C:\App\app.exe";
+        let _ = update(&mut s, path, Message::ResetPriority(Kind::Process));
+        assert!(s.global().on_battery.is_none());
+
         let _ = update(
             &mut s,
-            r"C:\App\app.exe",
+            path,
             Message::Priority(
                 Kind::Process,
                 Tier::Focus,
@@ -562,18 +820,241 @@ mod tests {
             r.process_priority_override(false, false),
             ProcessPrioritySetting::Default
         );
+        let _ = update(&mut s, path, Message::ResetPriority(Kind::Process));
+        assert!(Kind::Process.rules(&s).is_empty());
     }
+
     #[test]
-    fn cpu_rule_cannot_join_both_owners() {
+    fn selecting_stored_priority_preserves_battery_inheritance() {
+        let mut s = SettingsEditor::with_settings(Settings::default());
+        let path = r"C:\App\app.exe";
+        let message = Message::Priority(
+            Kind::Process,
+            Tier::Focus,
+            Value::Process(ProcessPrioritySetting::AboveNormal),
+        );
+        let _ = update(&mut s, path, message.clone());
+
+        s.select_power_source(PowerSourceProfile::OnBattery);
+        let _ = update(&mut s, path, message);
+        assert!(s.global().on_battery.is_none());
+    }
+
+    #[test]
+    fn unchanged_feature_exclusions_preserve_battery_inheritance() {
+        let included = r"C:\App\included.exe";
+        let excluded = r"C:\App\excluded.exe";
+        let mut s = SettingsEditor::with_settings(Settings::default());
+        let _ = update(&mut s, excluded, Message::Adaptive(false));
+        let _ = update(&mut s, excluded, Message::Efficiency(false));
+        s.select_power_source(PowerSourceProfile::OnBattery);
+        for (path, message) in [
+            (included, Message::Adaptive(true)),
+            (included, Message::Efficiency(true)),
+            (excluded, Message::Adaptive(false)),
+            (excluded, Message::Efficiency(false)),
+        ] {
+            let _ = update(&mut s, path, message);
+            assert!(s.global().on_battery.is_none());
+        }
+    }
+
+    #[test]
+    fn priority_and_exclusion_details_keep_literal_executables_separate() {
+        let ordinary = r"C:\Apps\worker.exe";
+        let selected = "C:\\Apps\\worker.exe\u{3000}";
+        let mut settings = SettingsEditor::with_settings(Settings::default());
+        for path in [ordinary, selected] {
+            for message in [
+                Message::Priority(
+                    Kind::Process,
+                    Tier::Focus,
+                    Value::Process(ProcessPrioritySetting::AboveNormal),
+                ),
+                Message::Adaptive(false),
+                Message::Efficiency(false),
+            ] {
+                assert_eq!(update(&mut settings, path, message), None);
+            }
+        }
+        assert_eq!(
+            settings.process_priority.exclusions[1].executable_path,
+            selected
+        );
+        assert_eq!(
+            settings.adaptive_engine_process.custom_rules[1]
+                .selector
+                .exact_path(),
+            Some(selected),
+        );
+        assert_eq!(
+            settings.efficiency_mode.custom_rules[1].executable_path,
+            selected
+        );
+
+        for message in [
+            Message::ResetPriority(Kind::Process),
+            Message::Adaptive(true),
+            Message::Efficiency(true),
+        ] {
+            assert_eq!(update(&mut settings, selected, message), None);
+        }
+        assert_eq!(settings.process_priority.exclusions.len(), 1);
+        assert_eq!(
+            settings.process_priority.exclusions[0].executable_path,
+            ordinary
+        );
+        assert_eq!(
+            settings.adaptive_engine_process.custom_rules,
+            vec![AdaptiveEngineExclusionRule::exact_path(ordinary)],
+        );
+        assert_eq!(settings.efficiency_mode.custom_rules.len(), 1);
+        assert_eq!(
+            settings.efficiency_mode.custom_rules[0].executable_path,
+            ordinary
+        );
+    }
+
+    #[test]
+    fn details_keeps_name_exclusions_in_custom_rules() {
+        let path = r"C:\Apps\Worker.exe";
+        for rule in [
+            AdaptiveEngineExclusionRule::exact_name("worker.exe"),
+            toml::from_str("executable_name_pattern = 'work*.exe'").unwrap(),
+        ] {
+            let mut original = Settings::default();
+            original.adaptive_engine_process.custom_rules =
+                vec![AdaptiveEngineExclusionRule::exact_path(path), rule];
+            let mut settings = SettingsEditor::with_settings(original.clone());
+            assert!(adaptive_name_excluded(&settings, path));
+            assert_eq!(update(&mut settings, path, Message::Adaptive(true)), None);
+            assert_eq!(
+                update(
+                    &mut settings,
+                    r"C:\Other\Worker.exe",
+                    Message::Adaptive(false)
+                ),
+                None
+            );
+            assert_eq!(settings.global(), &original);
+            assert!(!settings.has_unsaved_changes());
+        }
+    }
+
+    #[test]
+    fn cpu_rule_ownership_and_noops_preserve_battery_inheritance() {
+        let path = r"C:\App\app.exe";
         let mut s = Settings::default();
         s.cpu_sets_soft.rules.push(CpuAllocationRule {
             enabled: true,
-            executable_path: r"C:\App\app.exe".into(),
+            executable_path: path.into(),
             focus_selection: crate::cpu_topology::test_selection(1),
             visible_window_selection: crate::cpu_topology::test_selection(1),
             background_selection: crate::cpu_topology::test_selection(1),
         });
-        let _ = update(&mut s, r"C:\App\app.exe", Message::CpuEnabled(false, true));
+        let mut s = SettingsEditor::with_settings(s);
+        s.select_power_source(PowerSourceProfile::OnBattery);
+        for message in [
+            Message::CpuEnabled(false, true),
+            Message::CpuEnabled(true, true),
+            Message::CpuEnabled(false, false),
+        ] {
+            let _ = update(&mut s, path, message);
+        }
+        assert!(s.global().on_battery.is_none());
         assert!(s.processor_affinity_hard.rules.is_empty());
+    }
+
+    #[test]
+    fn cpu_rule_edits_keep_literal_executable_suffixes() {
+        let ordinary = r"C:\Apps\worker.exe";
+        let selected = "C:\\Apps\\worker.exe\u{3000}";
+        let mut initial = Settings::default();
+        initial
+            .cpu_limiter
+            .rules
+            .push(new_cpu_limiter_rule(ordinary));
+        let selection = crate::cpu_topology::test_selection(1);
+        initial.cpu_sets_soft.rules = [ordinary, selected]
+            .into_iter()
+            .map(|path| CpuAllocationRule {
+                enabled: true,
+                executable_path: path.into(),
+                focus_selection: selection.clone(),
+                visible_window_selection: selection.clone(),
+                background_selection: selection.clone(),
+            })
+            .collect();
+        let mut settings = SettingsEditor::with_settings(initial);
+        assert_eq!(
+            update(&mut settings, selected, Message::Limiter(true)),
+            None
+        );
+        assert_eq!(
+            update(
+                &mut settings,
+                selected,
+                Message::LimiterLimit(Tier::Focus, 25)
+            ),
+            None
+        );
+
+        let raw = toml::to_string_pretty(settings.global()).unwrap();
+        let saved: Settings = toml::from_str(&raw).unwrap();
+        assert_eq!(saved.cpu_limiter.rules[0].executable_path, ordinary);
+        assert_ne!(
+            saved.cpu_limiter.rules[0].focus_allowed_cpu_time_percent,
+            25
+        );
+        assert_eq!(saved.cpu_limiter.rules[1].executable_path, selected);
+        assert_eq!(
+            saved.cpu_limiter.rules[1].focus_allowed_cpu_time_percent,
+            25
+        );
+        assert_eq!(saved.cpu_sets_soft.rules[1].executable_path, selected);
+
+        assert_eq!(
+            update(&mut settings, selected, Message::Limiter(false)),
+            None
+        );
+        assert_eq!(
+            update(&mut settings, selected, Message::CpuEnabled(true, false)),
+            None
+        );
+        assert_eq!(settings.cpu_limiter.rules.len(), 1);
+        assert_eq!(settings.cpu_limiter.rules[0].executable_path, ordinary);
+        assert_eq!(settings.cpu_sets_soft.rules.len(), 1);
+        assert_eq!(settings.cpu_sets_soft.rules[0].executable_path, ordinary);
+    }
+
+    #[test]
+    fn limiter_edits_override_battery_only_when_the_rule_changes() {
+        let path = r"C:\App\app.exe";
+        let mut settings = Settings::default();
+        settings.cpu_limiter.rules.push(new_cpu_limiter_rule(path));
+        let mut settings = SettingsEditor::with_settings(settings);
+        settings.select_power_source(PowerSourceProfile::OnBattery);
+
+        let _ = update(
+            &mut settings,
+            path,
+            Message::LimiterMode(Tier::Focus, ProcessRuleMode::Default),
+        );
+        let _ = update(&mut settings, r"C:\App\other.exe", Message::Limiter(false));
+        assert!(settings.global().on_battery.is_none());
+
+        let _ = update(
+            &mut settings,
+            path,
+            Message::LimiterMode(Tier::Focus, ProcessRuleMode::Enabled),
+        );
+        assert_eq!(
+            settings.cpu_limiter.rules[0].focus_mode,
+            ProcessRuleMode::Enabled
+        );
+        assert_eq!(
+            settings.global().cpu_limiter.rules[0].focus_mode,
+            ProcessRuleMode::Default
+        );
     }
 }

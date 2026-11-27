@@ -1,32 +1,37 @@
 mod action_log;
 mod adaptive_engine;
+mod adaptive_processor_power;
 #[cfg(feature = "runtime-benchmark")]
 pub(crate) use adaptive_engine::benchmark as runtime_benchmark;
 mod advanced_power_plan_tuning;
 mod animated_controls;
 mod app_picker;
 mod app_suspension;
-mod background_efficiency;
 mod by_activity;
 mod cpu_allocation;
 mod cpu_limiter;
+mod dashboard;
 mod design;
-mod home;
+mod efficiency_mode;
+mod feature_tabs;
 mod hotkeys;
 mod instance_balancing;
 mod instance_limits;
+mod interrupt_timing;
 mod keep_running;
+mod keyboard_focus;
 mod memory_trim;
 mod modal;
 mod motion;
 mod navigation;
-mod navigation_flyout;
 mod pickers;
 mod popover;
+mod power_plan_control;
 mod power_rules;
 mod priority_control;
 mod process_list;
 mod process_power_plans;
+mod resource_thresholds;
 mod scrolling;
 mod select;
 mod settings_pages;
@@ -34,7 +39,6 @@ mod sleep_prevention;
 mod status_rail;
 mod tasks;
 mod timer_resolution;
-mod watchdog;
 mod widgets;
 mod win32_priority_separation;
 mod window_frame;
@@ -46,24 +50,24 @@ pub(crate) mod process_rules;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Page {
-    Home,
+    Dashboard,
     PowerPlanControl,
-    WinderustFeatures,
+    Watchdog,
     CpuControl,
     PriorityControl,
     SettingsHome,
     AdvancedControls,
     ByActivity,
     ByCpuLoad,
+    AdaptiveProcessorPower,
     AdvancedPowerPlanTuning,
     ProcessPriority,
     ThreadPriority,
     DynamicPriorityBoost,
     CpuLimiter,
     CpuSetsSoft,
-    ProcessList,
     AdaptiveEngine,
-    BackgroundEfficiency,
+    EfficiencyMode,
     AppSuspension,
     SleepPrevention,
     KeepRunning,
@@ -73,7 +77,7 @@ pub enum Page {
     GpuPriority,
     MemoryPriority,
     MemoryTrim,
-    Watchdog,
+    ResourceThresholds,
     ProcessorAffinityHard,
     InstanceBalancing,
     ByFocus,
@@ -92,35 +96,39 @@ pub struct PageSection {
     pub pages: &'static [Page],
 }
 
-const HOME_PAGES: [Page; 1] = [Page::Home];
-const PROCESS_LIST_PAGES: [Page; 1] = [Page::ProcessList];
-const POWER_PLAN_CONTROL_PAGES: [Page; 6] = [
+const DASHBOARD_PAGES: [Page; 1] = [Page::Dashboard];
+const POWER_PLAN_CONTROL_PAGES: [Page; 7] = [
     Page::ByFocus,
     Page::ByRunningApp,
     Page::ByCpuLoad,
     Page::ByActivity,
     Page::ByTime,
+    Page::AdaptiveProcessorPower,
     Page::AdvancedPowerPlanTuning,
 ];
-const CPU_CONTROL_PAGES: [Page; 4] = [
+const CPU_CONTROL_PAGES: [Page; 5] = [
+    Page::AdaptiveEngine,
     Page::CpuLimiter,
     Page::CpuSetsSoft,
     Page::ProcessorAffinityHard,
     Page::InstanceBalancing,
 ];
-const PRIORITY_CONTROL_PAGES: [Page; 6] = [
+const PRIORITY_CONTROL_PAGES: [Page; 7] = [
     Page::ProcessPriority,
+    Page::EfficiencyMode,
     Page::ThreadPriority,
     Page::DynamicPriorityBoost,
     Page::IoPriority,
     Page::GpuPriority,
     Page::MemoryPriority,
 ];
-const WINDERUST_FEATURE_PAGES: [Page; 4] = [
-    Page::AdaptiveEngine,
-    Page::BackgroundEfficiency,
+const WATCHDOG_PAGES: [Page; 6] = [
+    Page::ResourceThresholds,
     Page::MemoryTrim,
-    Page::Watchdog,
+    Page::KeepRunning,
+    Page::SleepPrevention,
+    Page::InstanceLimits,
+    Page::AppSuspension,
 ];
 const ACTION_LOG_PAGES: [Page; 1] = [Page::ActionLog];
 const SETTINGS_PAGES: [Page; 3] = [
@@ -129,26 +137,15 @@ const SETTINGS_PAGES: [Page; 3] = [
     Page::ExperimentalFeatures,
 ];
 const ABOUT_PAGES: [Page; 1] = [Page::About];
-const ADVANCED_CONTROLS_PAGES: [Page; 6] = [
-    Page::AppSuspension,
-    Page::SleepPrevention,
-    Page::KeepRunning,
-    Page::InstanceLimits,
-    Page::TimerResolution,
-    Page::Win32PrioritySeparation,
-];
-const PAGE_SECTIONS: [PageSection; 10] = [
+const ADVANCED_CONTROLS_PAGES: [Page; 2] = [Page::TimerResolution, Page::Win32PrioritySeparation];
+const PAGE_SECTIONS: [PageSection; 9] = [
     PageSection {
-        landing_page: Page::Home,
-        pages: &HOME_PAGES,
+        landing_page: Page::Dashboard,
+        pages: &DASHBOARD_PAGES,
     },
     PageSection {
-        landing_page: Page::ProcessList,
-        pages: &PROCESS_LIST_PAGES,
-    },
-    PageSection {
-        landing_page: Page::WinderustFeatures,
-        pages: &WINDERUST_FEATURE_PAGES,
+        landing_page: Page::Watchdog,
+        pages: &WATCHDOG_PAGES,
     },
     PageSection {
         landing_page: Page::PowerPlanControl,
@@ -186,20 +183,18 @@ impl Page {
             self,
             Self::ByActivity
                 | Self::ByCpuLoad
+                | Self::AdaptiveProcessorPower
                 | Self::ProcessPriority
                 | Self::ThreadPriority
                 | Self::DynamicPriorityBoost
                 | Self::CpuLimiter
                 | Self::CpuSetsSoft
                 | Self::AdaptiveEngine
-                | Self::BackgroundEfficiency
-                | Self::AppSuspension
-                | Self::SleepPrevention
+                | Self::EfficiencyMode
                 | Self::ByRunningApp
                 | Self::IoPriority
                 | Self::GpuPriority
                 | Self::MemoryPriority
-                | Self::MemoryTrim
                 | Self::ProcessorAffinityHard
                 | Self::ByFocus
                 | Self::ByTime
@@ -209,24 +204,24 @@ impl Page {
 
     pub fn label(self) -> String {
         match self {
-            Self::Home => t!("nav.home"),
+            Self::Dashboard => t!("nav.dashboard"),
             Self::PowerPlanControl => t!("nav.power_plan_control"),
-            Self::WinderustFeatures => t!("nav.winderust_features"),
+            Self::Watchdog => t!("nav.watchdog"),
             Self::CpuControl => t!("nav.cpu_control"),
             Self::PriorityControl => t!("nav.priority_control"),
             Self::SettingsHome => t!("nav.settings"),
             Self::AdvancedControls => t!("nav.advanced"),
             Self::ByActivity => t!("nav.by_activity"),
             Self::ByCpuLoad => t!("nav.by_cpu_load"),
+            Self::AdaptiveProcessorPower => t!("nav.adaptive_processor_power"),
             Self::AdvancedPowerPlanTuning => t!("nav.advanced_power_plan_tuning"),
             Self::ProcessPriority => t!("nav.process_priority"),
             Self::ThreadPriority => t!("nav.thread_priority"),
             Self::DynamicPriorityBoost => t!("nav.dynamic_priority_boost"),
             Self::CpuLimiter => t!("nav.cpu_limiter"),
             Self::CpuSetsSoft => t!("nav.cpu_sets_soft"),
-            Self::ProcessList => t!("nav.process_list"),
             Self::AdaptiveEngine => t!("nav.adaptive_engine"),
-            Self::BackgroundEfficiency => t!("nav.background_efficiency"),
+            Self::EfficiencyMode => t!("nav.efficiency_mode"),
             Self::AppSuspension => t!("nav.app_suspension"),
             Self::SleepPrevention => t!("nav.sleep_prevention"),
             Self::KeepRunning => t!("nav.keep_running"),
@@ -236,7 +231,7 @@ impl Page {
             Self::GpuPriority => t!("nav.gpu_priority"),
             Self::MemoryPriority => t!("nav.memory_priority"),
             Self::MemoryTrim => t!("nav.memory_trim"),
-            Self::Watchdog => t!("nav.watchdog"),
+            Self::ResourceThresholds => t!("nav.resource_thresholds"),
             Self::ProcessorAffinityHard => t!("nav.processor_affinity_hard"),
             Self::InstanceBalancing => t!("nav.instance_balancing"),
             Self::ByFocus => t!("nav.by_focus"),
@@ -258,27 +253,31 @@ impl Page {
 
     pub const fn section_landing_page(self) -> Page {
         match self {
-            Self::Home => Self::Home,
-            Self::ProcessList => Self::ProcessList,
-            Self::WinderustFeatures
-            | Self::AdaptiveEngine
-            | Self::BackgroundEfficiency
-            | Self::Watchdog
-            | Self::MemoryTrim => Self::WinderustFeatures,
+            Self::Dashboard => Self::Dashboard,
+            Self::Watchdog
+            | Self::ResourceThresholds
+            | Self::MemoryTrim
+            | Self::KeepRunning
+            | Self::SleepPrevention
+            | Self::InstanceLimits
+            | Self::AppSuspension => Self::Watchdog,
             Self::PowerPlanControl
             | Self::ByActivity
             | Self::ByTime
             | Self::ByFocus
             | Self::ByRunningApp
             | Self::ByCpuLoad
+            | Self::AdaptiveProcessorPower
             | Self::AdvancedPowerPlanTuning => Self::PowerPlanControl,
             Self::CpuControl
+            | Self::AdaptiveEngine
             | Self::CpuLimiter
             | Self::CpuSetsSoft
             | Self::InstanceBalancing
             | Self::ProcessorAffinityHard => Self::CpuControl,
             Self::PriorityControl
             | Self::ProcessPriority
+            | Self::EfficiencyMode
             | Self::ThreadPriority
             | Self::DynamicPriorityBoost
             | Self::IoPriority
@@ -290,13 +289,9 @@ impl Page {
             | Self::LanguageAndAppearance
             | Self::ExperimentalFeatures => Self::SettingsHome,
             Self::About => Self::About,
-            Self::AdvancedControls
-            | Self::AppSuspension
-            | Self::SleepPrevention
-            | Self::KeepRunning
-            | Self::InstanceLimits
-            | Self::TimerResolution
-            | Self::Win32PrioritySeparation => Self::AdvancedControls,
+            Self::AdvancedControls | Self::TimerResolution | Self::Win32PrioritySeparation => {
+                Self::AdvancedControls
+            }
         }
     }
 
@@ -334,15 +329,16 @@ mod tests {
     #[test]
     fn power_source_profiles_are_limited_to_configurable_feature_pages() {
         assert!(Page::AdaptiveEngine.supports_power_source_profiles());
+        assert!(Page::AdaptiveProcessorPower.supports_power_source_profiles());
         assert!(Page::ByFocus.supports_power_source_profiles());
         assert!(Page::TimerResolution.supports_power_source_profiles());
-        assert!(!Page::Home.supports_power_source_profiles());
+        assert!(!Page::Dashboard.supports_power_source_profiles());
         assert!(!Page::Watchdog.supports_power_source_profiles());
-        assert!(!Page::KeepRunning.supports_power_source_profiles());
-        assert!(!Page::InstanceLimits.supports_power_source_profiles());
+        for page in WATCHDOG_PAGES {
+            assert!(!page.supports_power_source_profiles(), "{page:?}");
+        }
         assert!(!Page::InstanceBalancing.supports_power_source_profiles());
         assert!(!Page::PowerPlanControl.supports_power_source_profiles());
-        assert!(!Page::ProcessList.supports_power_source_profiles());
         assert!(!Page::ActionLog.supports_power_source_profiles());
         assert!(!Page::WinderustBehaviour.supports_power_source_profiles());
         assert!(!Page::About.supports_power_source_profiles());

@@ -29,30 +29,39 @@
 > Alpha state, expects things to break,imperfect or not nicely handled.
 
 <p align="center">
-  <img src="resources/Home.png" alt="Winderust Home dashboard" width="960">
+  <img src="resources/Dashboard.png" alt="Winderust Dashboard with live metrics and a process table" width="960">
+  <br><em>Dashboard shown with sample data.</em>
 </p>
 
 ## Features
 
 - Adaptive Engine - automatic background process restraint.
-- Power Plan Control - switch plans by app focus, running apps, CPU load, activity, or time, with optional restoration when no rule selects a plan.
-- Advanced Power Plan Tuning - adjust processor performance, core parking, and thread scheduling policies.
+- Power Plan Control - switch plans manually or by app focus, running apps, CPU load, activity, or time. Optionally restore the previous plan when no rule selects one.
+- Adaptive Processor Power - adjust processor settings to match demand through the temporary Winderust Adaptive plan.
+- Advanced Power Plan Tuning - adjust processor performance, core parking, boost, and thread scheduling policies.
 - CPU Control - CPU Limiter, CPU Sets (Soft), Processor Affinity (Hard), and Cache Domain presets.
-- Priority Control - Process Priority, Thread Priority, Dynamic Priority Boost, I/O Priority, GPU Priority, and Memory Priority.
-- Memory Trim - trim background process working sets.
-- Watchdog - CPU and memory alerts, with optional Stop or Restart actions.
-- App Suspension and Timer Resolution for selected apps.
-- Sleep Prevention - prevent idle sleep while selected apps run, with an option to keep the display on.
-- Keep Running - relaunch selected desktop apps after their last instance exits. Start the app yourself once to arm its rule.
-- Instance Limits - monitor process counts and notify when an app exceeds your chosen maximum, without blocking launches.
-- Instance Balancing - distribute whole-core CPU Sets (Soft) preferences across app instances.
-- Process List and Action Log - inspect running processes and export action history to CSV.
+- Priority Control - Process Priority, Thread Priority, Dynamic Priority Boost, I/O Priority, GPU Priority, and Memory Priority. Efficiency Mode sets power-efficiency preferences by app and window state.
+- Watchdog groups app automation features.
+  - Resource Thresholds - alert on sustained CPU or working-set usage combined by executable path. Trim memory, Terminate, and Restart require an exact executable path. Trim memory is available for working-set rules.
+  - Memory Trim - trim idle process working sets with optional focus and visible-window exclusions.
+  - Keep Running - relaunch selected desktop apps after their last instance exits. Start the app yourself once to arm its rule.
+  - Sleep Prevention - ask Windows to stay awake while selected apps run, with an option to keep the display on.
+  - Instance Limits - get notified when an app exceeds your chosen instance count in your Windows session. Launches still proceed.
+  - App Suspension - pause selected apps when inactive.
+- Timer Resolution for selected apps.
+- Instance Balancing - distribute whole-core CPU Sets (Soft) preferences across eligible app instances in your Windows session.
+- Dashboard - monitor CPU, memory, disk, and network, inspect running processes, and edit per-app rules.
+- Action Log - review action history and export it to CSV.
+- Win32 Priority Separation - adjust Windows scheduler time slices and foreground boost, with backup and restore.
+- Interrupt Timing - capture DPC and ISR activity in Adaptive Engine. View the capture timeline or export the report to JSON.
 
 ## Getting started
 
 Download and extract the release ZIP, then run `winderust.exe`. Settings are saved in `settings.toml` beside the executable.
 
 Check the [changelog](CHANGELOG.md) before upgrading; settings formats can change between alpha releases.
+
+Efficiency Mode uses `[efficiency_mode]` in `settings.toml`. When upgrading from an alpha with the older settings format, configure Efficiency Mode again and choose **Save**.
 
 ## Run/Build it yourself
 - [Prerequisites](https://rustup.rs)
@@ -67,7 +76,7 @@ Release build
 cargo build --release
 ```
 
-The release build is in `target\*`
+The release build is in `target\release\winderust.exe`.
 
 
 ## Bug Report

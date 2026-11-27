@@ -1,4 +1,5 @@
 use super::*;
+use crate::features::power_plan_control::by_running_app::same_exclusion_selectors;
 
 pub(super) fn automation_refresh_interval(
     hidden_to_tray: bool,
@@ -16,11 +17,11 @@ pub(super) fn automation_refresh_interval(
 }
 
 pub(super) fn process_appearance_refresh_interval(
-    settings: &Settings,
     hidden_to_tray: bool,
     adaptive_engine_enabled: bool,
+    cpu_limiter_active: bool,
 ) -> Duration {
-    if cpu_limiter_required(settings) {
+    if cpu_limiter_active {
         PROCESS_APPEARANCE_SCAN_INTERVAL
     } else {
         automation_refresh_interval(
@@ -31,45 +32,24 @@ pub(super) fn process_appearance_refresh_interval(
     }
 }
 
-pub(super) fn input_hook_required(settings: &Settings) -> bool {
-    input_hook_required_for_profile(settings)
-        || settings
-            .on_battery
-            .as_deref()
-            .is_some_and(input_hook_required_for_profile)
-}
-
-fn input_hook_required_for_profile(settings: &Settings) -> bool {
-    settings.general.enabled
-        && (activity_input_hook_required(settings) || app_suspension_input_hook_required(settings))
-}
-
 pub(super) fn input_hook_config(settings: &Settings) -> InputHookConfig {
-    let plugged_in_app_suspension = app_suspension_input_hook_required(settings);
-    let battery = settings.on_battery.as_deref();
-    let battery_app_suspension = battery.is_some_and(app_suspension_input_hook_required);
-    InputHookConfig {
-        keyboard: settings.by_activity.input_detection.keyboard
-            || plugged_in_app_suspension
-            || battery.is_some_and(|settings| settings.by_activity.input_detection.keyboard)
-            || battery_app_suspension,
-        mouse: settings.by_activity.input_detection.mouse
-            || plugged_in_app_suspension
-            || battery.is_some_and(|settings| settings.by_activity.input_detection.mouse)
-            || battery_app_suspension,
+    if app_suspension_focus_hooks_required(settings) {
+        return InputHookConfig {
+            keyboard: true,
+            mouse: true,
+        };
     }
-}
-
-fn app_suspension_input_hook_required(settings: &Settings) -> bool {
-    settings.app_suspension.enabled
-}
-
-fn activity_input_hook_required(settings: &Settings) -> bool {
-    activity_power_plan_required(settings)
-        && settings
-            .by_activity
-            .input_detection
-            .keyboard_or_mouse_enabled()
+    let mut config = InputHookConfig::default();
+    for profile in std::iter::once(settings)
+        .chain(settings.on_battery.as_deref())
+        .filter(|profile| profile.general.enabled)
+    {
+        if activity_power_plan_required(profile) {
+            config.keyboard |= profile.by_activity.input_detection.keyboard;
+            config.mouse |= profile.by_activity.input_detection.mouse;
+        }
+    }
+    config
 }
 
 pub(super) fn adaptive_engine_process_refresh_interval(settings: &Settings) -> Duration {
@@ -83,30 +63,200 @@ pub(super) fn feature_refresh_required(settings: &Settings, feature_enabled: boo
     settings.general.enabled && feature_enabled
 }
 
+pub(super) struct PrioritySourceSchedule {
+    pub(super) active: bool,
+    pub(super) refresh_required: bool,
+    pub(super) waiting_for_source: bool,
+    pub(super) source_recheck: bool,
+}
+
+pub(super) fn priority_source_schedule<T: Eq>(
+    configured: &Settings,
+    settings: &Settings,
+    plugged_in: Option<bool>,
+    windows_event_watcher_active: bool,
+    settings_changed: bool,
+    policy: impl Fn(&Settings) -> (&T, bool),
+) -> PrioritySourceSchedule {
+    let active_policy = |settings| {
+        let (policy, enabled) = policy(settings);
+        feature_refresh_required(settings, enabled).then_some(policy)
+    };
+    let current = active_policy(settings);
+    let source_recheck = (plugged_in.is_none()
+        || (!windows_event_watcher_active && current.is_none()))
+        && configured.on_battery.as_deref().is_some_and(|battery| {
+            let other = if plugged_in == Some(false) {
+                configured
+            } else {
+                battery
+            };
+            current != active_policy(other)
+        });
+    let waiting_for_source = plugged_in.is_none() && source_recheck;
+    let active = current.is_some() && !waiting_for_source;
+    PrioritySourceSchedule {
+        active,
+        refresh_required: settings_changed || active,
+        waiting_for_source,
+        source_recheck,
+    }
+}
+
 fn enabled_executable_path_rule(enabled: bool, executable_path: &str) -> bool {
     enabled && std::path::Path::new(executable_path.trim()).is_absolute()
 }
 
 pub(super) fn adaptive_engine_process_required(settings: &Settings) -> bool {
-    settings.adaptive_engine.enabled
-        && (settings
-            .adaptive_engine_process
-            .cpu_pressure_restraint_enabled
-            || settings
-                .adaptive_engine_process
-                .limit_background_processors_enabled
-            || settings
-                .adaptive_engine_process
-                .dynamic_resource_zones_enabled)
+    settings.adaptive_engine.enabled && settings.adaptive_engine_process.has_enabled_policies()
+}
+
+pub(super) fn adaptive_engine_process_waits_for_source(
+    settings: &Settings,
+    plugged_in: Option<bool>,
+) -> bool {
+    if plugged_in.is_some() {
+        return false;
+    }
+    let Some(battery) = settings.on_battery.as_deref() else {
+        return false;
+    };
+    let active =
+        |profile| feature_refresh_required(profile, adaptive_engine_process_required(profile));
+    let (ac_active, battery_active) = (active(settings), active(battery));
+    if !ac_active || !battery_active {
+        return ac_active != battery_active;
+    }
+
+    let ac = &settings.adaptive_engine_process;
+    let dc = &battery.adaptive_engine_process;
+    let shared_policy = |policy: &crate::config::AdaptiveEngineProcessSettings| {
+        (
+            policy.cpu_pressure_restraint_enabled.then_some((
+                policy.restraint_trigger_time_ms,
+                policy.restraint_priority,
+                (
+                    policy.protect_focused_app,
+                    policy.protect_focused_children,
+                    policy.protect_non_normal_priority,
+                ),
+                (!policy.placement_only_restraint_enabled()).then_some((
+                    policy.restraint_io_priority,
+                    policy.restraint_energy_efficient_scheduling,
+                )),
+                policy.maximum_restraint_time_ms,
+                policy
+                    .pause_restraint_when_idle
+                    .then_some(policy.restraint_idle_timeout_seconds),
+            )),
+            policy
+                .background_processor_limit_enabled()
+                .then_some(policy.background_processor_limit_scoped()),
+            policy.dynamic_resource_zones_enabled,
+            policy.pressure_source,
+            policy.exclude_service_hosts,
+            policy.pressure_thresholds(),
+            policy.background_app_cpu_threshold_percent,
+            policy.cpu_recovery_threshold_percent,
+            policy.reaction_time_ms,
+            policy.minimum_restraint_time_ms,
+            policy.cpu_recovery_time_seconds,
+            policy.maximum_restrained_apps,
+        )
+    };
+    !same_exclusion_selectors(&settings.by_running_app, &battery.by_running_app)
+        || shared_policy(ac) != shared_policy(dc)
+        || (ac.background_processor_limit_enabled()
+            && (ac.cpu_allocation_method != dc.cpu_allocation_method
+                || (ac.cpu_allocation_method.is_hard_affinity()
+                    && ac.preserve_custom_affinity != dc.preserve_custom_affinity)
+                || if ac.cpu_allocation_method.uses_processor_selection() {
+                    ac.background_processor_selection != dc.background_processor_selection
+                        || (ac.background_processor_selection.uses_percentage()
+                            && ac.processor_limit_percent != dc.processor_limit_percent)
+                        || (ac.background_processor_selection
+                            == crate::config::BackgroundProcessorSelection::Custom
+                            && ac.specific_processors != dc.specific_processors)
+                } else {
+                    ac.processors_to_remove != dc.processors_to_remove
+                }))
+        || (ac.dynamic_resource_zones_enabled
+            && ac.dynamic_resource_zone_settings != dc.dynamic_resource_zone_settings)
+        || ac
+            .custom_rules
+            .iter()
+            .filter(|rule| rule.enabled)
+            .map(|rule| &rule.selector)
+            .ne(dc
+                .custom_rules
+                .iter()
+                .filter(|rule| rule.enabled)
+                .map(|rule| &rule.selector))
+}
+
+pub(super) fn efficiency_mode_policy_varies_by_source(settings: &Settings) -> bool {
+    let Some(battery) = settings.on_battery.as_deref() else {
+        return false;
+    };
+    if settings.general.enabled == battery.general.enabled
+        && settings.efficiency_mode == battery.efficiency_mode
+    {
+        return false;
+    }
+    let has_policy = |profile: &Settings| {
+        let efficiency = &profile.efficiency_mode;
+        feature_refresh_required(profile, efficiency.enabled)
+            && (efficiency.background_efficiency_mode
+                || (efficiency.foreground_detection_enabled
+                    && efficiency.foreground_efficiency_mode)
+                || (efficiency.visible_window_detection_enabled
+                    && efficiency.visible_window_efficiency_mode)
+                || efficiency.custom_rules.iter().any(|rule| {
+                    rule.enabled && efficiency.custom_rule_applies_efficiency_mode(rule)
+                }))
+    };
+    has_policy(settings) || has_policy(battery)
 }
 
 pub(super) fn app_suspension_required(settings: &Settings) -> bool {
-    settings.app_suspension.enabled
-        && settings
-            .app_suspension
-            .suspendable_apps
-            .iter()
-            .any(|rule| enabled_executable_path_rule(rule.enabled, &rule.executable_path))
+    settings.general.enabled
+        && settings.app_suspension.enabled
+        && app_suspension::has_enabled_rules(&settings.app_suspension)
+}
+
+pub(super) fn app_suspension_focus_hooks_required(settings: &Settings) -> bool {
+    feature_refresh_required(settings, settings.app_suspension.enabled)
+        && settings.app_suspension.auto_resume_when_focused
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct CpuAllocationSourceDifference {
+    pub(super) soft: bool,
+    pub(super) hard: bool,
+}
+
+pub(super) fn cpu_allocation_source_difference(
+    settings: &Settings,
+) -> Option<CpuAllocationSourceDifference> {
+    let battery = settings.on_battery.as_deref()?;
+    if !settings.general.enabled
+        || (settings.cpu_sets_soft == battery.cpu_sets_soft
+            && settings.processor_affinity_hard == battery.processor_affinity_hard)
+    {
+        return None;
+    }
+    // Hard yields to configured Soft paths even if those Soft rules are disabled.
+    let has_rule = |feature: &CpuAllocationSettings| {
+        feature.enabled
+            && feature.rules.iter().any(|rule| {
+                enabled_executable_path_rule(rule.enabled, &rule.executable_path)
+                    && rule.has_cpu_selection()
+            })
+    };
+    let soft = has_rule(&settings.cpu_sets_soft) || has_rule(&battery.cpu_sets_soft);
+    let hard =
+        has_rule(&settings.processor_affinity_hard) || has_rule(&battery.processor_affinity_hard);
+    (soft || hard).then_some(CpuAllocationSourceDifference { soft, hard })
 }
 
 pub(super) fn cpu_sets_soft_required(settings: &Settings) -> bool {
@@ -124,18 +274,33 @@ pub(super) fn processor_affinity_hard_required(settings: &Settings) -> bool {
                 && rule.has_cpu_selection()
                 && !settings
                     .cpu_sets_soft
-                    .contains_rule_for(&rule.executable_path)
+                    .contains_rule_for(rule.executable_path.trim_start())
         })
 }
 
 pub(super) fn cpu_limiter_required(settings: &Settings) -> bool {
     settings.cpu_limiter.enabled
-        && settings.cpu_limiter.rules.iter().any(|rule| {
-            crate::features::cpu_control::cpu_limiter::rule_has_finite_limit(
+        && crate::features::cpu_control::cpu_limiter::has_finite_limits(&settings.cpu_limiter)
+}
+
+pub(super) fn cpu_limiter_policy_varies_by_source(settings: &Settings) -> bool {
+    if !settings.general.enabled {
+        return false;
+    }
+    let Some(battery) = settings.on_battery.as_deref() else {
+        return false;
+    };
+    if settings.cpu_limiter == battery.cpu_limiter {
+        return false;
+    }
+    let ac_active = cpu_limiter_required(settings);
+    let battery_active = cpu_limiter_required(battery);
+    ac_active != battery_active
+        || (ac_active
+            && !crate::features::cpu_control::cpu_limiter::same_limit_policy(
                 &settings.cpu_limiter,
-                rule,
-            )
-        })
+                &battery.cpu_limiter,
+            ))
 }
 
 pub(super) fn timer_resolution_required(settings: &Settings) -> bool {
@@ -147,6 +312,34 @@ pub(super) fn timer_resolution_required(settings: &Settings) -> bool {
             .any(|rule| enabled_executable_path_rule(rule.enabled, &rule.executable_path))
 }
 
+pub(super) fn timer_resolution_enablement_varies_by_source(settings: &Settings) -> bool {
+    let enabled =
+        |profile: &Settings| feature_refresh_required(profile, timer_resolution_required(profile));
+    settings
+        .on_battery
+        .as_deref()
+        .is_some_and(|battery| enabled(settings) != enabled(battery))
+}
+
+pub(super) fn timer_resolution_policy_varies_by_source(settings: &Settings) -> bool {
+    fn intents(profile: &Settings) -> impl Iterator<Item = (&str, u32)> {
+        let enabled = feature_refresh_required(profile, profile.timer_resolution.enabled);
+        profile
+            .timer_resolution
+            .rules
+            .iter()
+            .filter(move |rule| {
+                enabled && enabled_executable_path_rule(rule.enabled, &rule.executable_path)
+            })
+            .map(|rule| (rule.executable_path.trim_start(), rule.desired_100ns))
+    }
+
+    settings
+        .on_battery
+        .as_deref()
+        .is_some_and(|battery| intents(settings).ne(intents(battery)))
+}
+
 pub(super) fn sleep_prevention_required(settings: &Settings) -> bool {
     settings.sleep_prevention.enabled
         && settings
@@ -156,214 +349,40 @@ pub(super) fn sleep_prevention_required(settings: &Settings) -> bool {
             .any(|rule| enabled_executable_path_rule(rule.enabled, &rule.executable_path))
 }
 
-pub(super) fn io_priority_required(settings: &Settings) -> bool {
-    settings.io_priority.enabled
-        || (settings.adaptive_engine.enabled
-            && settings
-                .adaptive_engine_process
-                .cpu_pressure_restraint_enabled
-            && settings.adaptive_engine_process.io_priority.enabled)
-}
-
-pub(super) fn adaptive_engine_process_priority_assist_required(settings: &Settings) -> bool {
-    settings.adaptive_engine.enabled
-        && settings
-            .adaptive_engine_process
-            .cpu_pressure_restraint_enabled
-}
-
-pub(super) fn thread_priority_required(settings: &Settings) -> bool {
-    settings.thread_priority.enabled
-        || (adaptive_engine_process_priority_assist_required(settings)
-            && settings.adaptive_engine_process.thread_priority.enabled)
-}
-
-pub(super) fn dynamic_priority_boost_required(settings: &Settings) -> bool {
-    settings.dynamic_priority_boost.enabled
-        || (adaptive_engine_process_priority_assist_required(settings)
-            && settings
-                .adaptive_engine_process
-                .dynamic_priority_boost
-                .enabled)
-}
-
-pub(super) fn gpu_priority_required(settings: &Settings) -> bool {
-    settings.gpu_priority.enabled
-        || (adaptive_engine_process_priority_assist_required(settings)
-            && settings.adaptive_engine_process.gpu_priority.enabled)
-}
-
-pub(super) fn effective_io_priority_settings(
-    settings: &Settings,
-    cpu_pressure_restraint_active: bool,
-) -> crate::config::IoPrioritySettings {
-    if !adaptive_io_priority_active(settings, cpu_pressure_restraint_active) {
-        return settings.io_priority.clone();
-    }
-    let mut io_priority = io_priority_settings(settings);
-    io_priority
-        .exclusions
-        .extend_from_slice(&settings.adaptive_engine_process.custom_rules);
-    io_priority
-}
-
-pub(super) fn io_priority_control_owner(
-    settings: &Settings,
-    cpu_pressure_restraint_active: bool,
-) -> ControlOwner {
-    if adaptive_io_priority_active(settings, cpu_pressure_restraint_active) {
-        ControlOwner::AdaptiveEngine
-    } else {
-        ControlOwner::IoPriority
-    }
-}
-
-fn adaptive_io_priority_active(settings: &Settings, cpu_pressure_restraint_active: bool) -> bool {
-    cpu_pressure_restraint_active && settings.adaptive_engine_process.io_priority.enabled
-}
-
-pub(super) fn io_priority_settings(settings: &Settings) -> crate::config::IoPrioritySettings {
-    let mut io_priority = settings.adaptive_engine_process.io_priority.clone();
-    io_priority.foreground_detection_enabled = true;
-    io_priority.visible_window_detection_enabled = true;
-    io_priority.preserve_foreground_priority = true;
-    io_priority.preserve_visible_window_priority = true;
-    io_priority.preserve_background_priority = true;
-    io_priority
-}
-
-pub(super) fn effective_thread_priority_settings(
-    settings: &Settings,
-    cpu_pressure_restraint_active: bool,
-) -> crate::config::ThreadPrioritySettings {
-    if !adaptive_thread_priority_active(settings, cpu_pressure_restraint_active) {
-        return settings.thread_priority.clone();
-    }
-    let mut thread_priority = settings.adaptive_engine_process.thread_priority.clone();
-    thread_priority.foreground_detection_enabled = true;
-    thread_priority.visible_window_detection_enabled = true;
-    thread_priority.preserve_foreground_priority = true;
-    thread_priority.preserve_visible_window_priority = true;
-    thread_priority.preserve_background_priority = true;
-    thread_priority
-        .exclusions
-        .extend_from_slice(&settings.adaptive_engine_process.custom_rules);
-    thread_priority
-}
-
-pub(super) fn thread_priority_control_owner(
-    settings: &Settings,
-    cpu_pressure_restraint_active: bool,
-) -> ControlOwner {
-    if adaptive_thread_priority_active(settings, cpu_pressure_restraint_active) {
-        ControlOwner::AdaptiveEngine
-    } else {
-        ControlOwner::ThreadPriority
-    }
-}
-
-fn adaptive_thread_priority_active(
-    settings: &Settings,
-    cpu_pressure_restraint_active: bool,
-) -> bool {
-    cpu_pressure_restraint_active
-        && adaptive_engine_process_priority_assist_required(settings)
-        && settings.adaptive_engine_process.thread_priority.enabled
-}
-
-pub(super) fn effective_dynamic_priority_boost_settings(
-    settings: &Settings,
-    cpu_pressure_restraint_active: bool,
-) -> crate::config::DynamicPriorityBoostSettings {
-    if !adaptive_dynamic_priority_boost_active(settings, cpu_pressure_restraint_active) {
-        return settings.dynamic_priority_boost.clone();
-    }
-    let mut dynamic_priority_boost = settings
-        .adaptive_engine_process
-        .dynamic_priority_boost
-        .clone();
-    dynamic_priority_boost.foreground_detection_enabled = true;
-    dynamic_priority_boost.visible_window_detection_enabled = true;
-    dynamic_priority_boost
-        .exclusions
-        .extend_from_slice(&settings.adaptive_engine_process.custom_rules);
-    dynamic_priority_boost
-}
-
-pub(super) fn dynamic_priority_boost_control_owner(
-    settings: &Settings,
-    cpu_pressure_restraint_active: bool,
-) -> ControlOwner {
-    if adaptive_dynamic_priority_boost_active(settings, cpu_pressure_restraint_active) {
-        ControlOwner::AdaptiveEngine
-    } else {
-        ControlOwner::DynamicPriorityBoost
-    }
-}
-
-fn adaptive_dynamic_priority_boost_active(
-    settings: &Settings,
-    cpu_pressure_restraint_active: bool,
-) -> bool {
-    cpu_pressure_restraint_active
-        && adaptive_engine_process_priority_assist_required(settings)
-        && settings
-            .adaptive_engine_process
-            .dynamic_priority_boost
-            .enabled
-}
-
-pub(super) fn effective_gpu_priority_settings(
-    settings: &Settings,
-    cpu_pressure_restraint_active: bool,
-) -> crate::config::GpuPrioritySettings {
-    if !adaptive_gpu_priority_active(settings, cpu_pressure_restraint_active) {
-        return settings.gpu_priority.clone();
-    }
-    let mut gpu_priority = settings.adaptive_engine_process.gpu_priority.clone();
-    gpu_priority.foreground_detection_enabled = true;
-    gpu_priority.visible_window_detection_enabled = true;
-    gpu_priority.preserve_foreground_priority = true;
-    gpu_priority.preserve_visible_window_priority = true;
-    gpu_priority.preserve_background_priority = true;
-    gpu_priority
-        .exclusions
-        .extend_from_slice(&settings.adaptive_engine_process.custom_rules);
-    gpu_priority
-}
-
-pub(super) fn gpu_priority_control_owner(
-    settings: &Settings,
-    cpu_pressure_restraint_active: bool,
-) -> ControlOwner {
-    if adaptive_gpu_priority_active(settings, cpu_pressure_restraint_active) {
-        ControlOwner::AdaptiveEngine
-    } else {
-        ControlOwner::GpuPriority
-    }
-}
-
-fn adaptive_gpu_priority_active(settings: &Settings, cpu_pressure_restraint_active: bool) -> bool {
-    cpu_pressure_restraint_active
-        && adaptive_engine_process_priority_assist_required(settings)
-        && settings.adaptive_engine_process.gpu_priority.enabled
-}
-
 pub(super) fn process_appearance_scan_required(settings: &Settings) -> bool {
+    let priority_or_efficiency_configured = settings.efficiency_mode.enabled
+        || settings.process_priority.enabled
+        || settings.thread_priority.enabled
+        || settings.dynamic_priority_boost.enabled
+        || settings.io_priority.enabled
+        || settings.gpu_priority.enabled
+        || settings.memory_priority.enabled;
+    process_appearance_scan_required_for_runtime(
+        settings,
+        cpu_limiter_required(settings),
+        settings.memory_trim.enabled,
+        settings.general.enabled
+            && (cpu_sets_soft_required(settings) || processor_affinity_hard_required(settings)),
+        priority_or_efficiency_configured,
+        adaptive_engine_process_required(settings),
+    )
+}
+
+pub(super) fn process_appearance_scan_required_for_runtime(
+    settings: &Settings,
+    cpu_limiter_active: bool,
+    memory_trim_active: bool,
+    explicit_cpu_allocation_active: bool,
+    priority_or_efficiency_active: bool,
+    adaptive_engine_process_active: bool,
+) -> bool {
     settings.general.enabled
-        && (settings.background_efficiency.enabled
-            || cpu_sets_soft_required(settings)
-            || processor_affinity_hard_required(settings)
-            || cpu_limiter_required(settings)
+        && (priority_or_efficiency_active
+            || explicit_cpu_allocation_active
+            || cpu_limiter_active
             || by_running_app_required(settings)
-            || adaptive_engine_process_required(settings)
-            || settings.process_priority.enabled
-            || thread_priority_required(settings)
-            || dynamic_priority_boost_required(settings)
-            || io_priority_required(settings)
-            || gpu_priority_required(settings)
-            || settings.memory_priority.enabled
-            || settings.memory_trim.enabled)
+            || adaptive_engine_process_active
+            || memory_trim_active)
 }
 
 pub(super) fn power_plan_checks_required(settings: &Settings) -> bool {
@@ -375,10 +394,59 @@ pub(super) fn power_plan_checks_required(settings: &Settings) -> bool {
             || by_running_app_required(settings))
 }
 
+pub(super) fn ordinary_power_plan_waits_for_source(
+    settings: &Settings,
+    plugged_in: Option<bool>,
+) -> bool {
+    plugged_in.is_none() && ordinary_power_plan_policy_varies_by_source(settings)
+}
+
+pub(super) fn ordinary_power_plan_policy_varies_by_source(settings: &Settings) -> bool {
+    if !settings.general.enabled {
+        return false;
+    }
+
+    let battery = settings.battery_profile();
+    (settings.general.pause_power_plan_switching_while_plugged_in
+        || settings.on_battery.as_deref().is_some_and(|battery| {
+            settings.by_activity != battery.by_activity
+                || settings.by_focus != battery.by_focus
+                || settings.by_running_app != battery.by_running_app
+                || settings.by_cpu_load != battery.by_cpu_load
+                || settings.by_time != battery.by_time
+        }))
+        && (power_plan_checks_required(settings) || power_plan_checks_required(battery))
+}
+
+pub(super) fn adaptive_power_plan_waits_for_source(
+    settings: &Settings,
+    plugged_in: Option<bool>,
+) -> bool {
+    if plugged_in.is_some() || !settings.general.enabled {
+        return false;
+    }
+    let Some(battery) = settings.on_battery.as_deref() else {
+        return false;
+    };
+    let ac = &settings.adaptive_engine;
+    let battery = &battery.adaptive_engine;
+    ac.adaptive_processor_power_enabled != battery.adaptive_processor_power_enabled
+        || (ac.adaptive_processor_power_enabled
+            && (ac.base_processor_policy.normalized()
+                != battery.base_processor_policy.normalized()
+                || ac.background_pressure_profile.normalized()
+                    != battery.background_pressure_profile.normalized()
+                || ac.focus_and_launch_profile.normalized()
+                    != battery.focus_and_launch_profile.normalized()))
+}
+
 pub(super) fn automation_worker_required(settings: &Settings) -> bool {
     keep_running_required(settings)
         || instance_limits_required(settings)
         || instance_balancing_required(settings)
+        || app_suspension_required(settings)
+        || feature_refresh_required(settings, sleep_prevention_required(settings))
+        || feature_refresh_required(settings, resource_thresholds_required(settings))
         || automation_worker_required_for_profile(settings)
         || settings
             .on_battery
@@ -388,22 +456,24 @@ pub(super) fn automation_worker_required(settings: &Settings) -> bool {
 
 fn automation_worker_required_for_profile(settings: &Settings) -> bool {
     settings.general.enabled
-        && (watchdog_required(settings)
-            || power_plan_checks_required(settings)
+        && (power_plan_checks_required(settings)
             || adaptive_power_plan_required(settings)
             || bottleneck_classifier_required(settings)
-            || app_suspension_required(settings)
             || process_appearance_scan_required(settings)
-            || timer_resolution_required(settings)
-            || sleep_prevention_required(settings))
+            || timer_resolution_required(settings))
 }
 
 pub(super) fn bottleneck_classifier_required(settings: &Settings) -> bool {
     settings.general.enabled && settings.adaptive_engine.enabled
 }
 
-pub(super) fn watchdog_required(settings: &Settings) -> bool {
-    settings.watchdog.enabled && settings.watchdog.rules.iter().any(|rule| rule.enabled)
+pub(super) fn resource_thresholds_required(settings: &Settings) -> bool {
+    settings.resource_thresholds.enabled
+        && settings
+            .resource_thresholds
+            .rules
+            .iter()
+            .any(|rule| rule.enabled)
 }
 
 pub(super) fn keep_running_required(settings: &Settings) -> bool {
@@ -436,10 +506,49 @@ pub(super) fn instance_balancing_required(settings: &Settings) -> bool {
             .any(|rule| rule.enabled)
 }
 
+pub(super) fn windows_event_watcher_mode(settings: &Settings) -> Option<WindowsEventWatcherMode> {
+    if windows_event_watcher_required(settings)
+        || adaptive_enablement_varies_by_source(settings)
+        || cpu_limiter_policy_varies_by_source(settings)
+        || timer_resolution_enablement_varies_by_source(settings)
+    {
+        Some(WindowsEventWatcherMode::Full)
+    } else if std::iter::once(settings)
+        .chain(settings.on_battery.as_deref())
+        .any(|profile| {
+            feature_refresh_required(
+                profile,
+                adaptive_engine_process_required(profile) || adaptive_power_plan_required(profile),
+            )
+        })
+    {
+        Some(WindowsEventWatcherMode::SuspendResumeOnly)
+    } else {
+        None
+    }
+}
+
+pub(super) fn adaptive_enablement_varies_by_source(settings: &Settings) -> bool {
+    let enabled = |profile: &Settings| {
+        (
+            bottleneck_classifier_required(profile),
+            feature_refresh_required(profile, adaptive_engine_process_required(profile)),
+            feature_refresh_required(profile, adaptive_power_plan_required(profile)),
+        )
+    };
+    settings
+        .on_battery
+        .as_deref()
+        .is_some_and(|battery| enabled(settings) != enabled(battery))
+}
+
+// Full Windows event coverage is required by the existing event-driven features.
 pub(super) fn windows_event_watcher_required(settings: &Settings) -> bool {
     keep_running_required(settings)
         || instance_limits_required(settings)
         || instance_balancing_required(settings)
+        || app_suspension_required(settings)
+        || feature_refresh_required(settings, sleep_prevention_required(settings))
         || windows_event_watcher_required_for_profile(settings)
         || settings
             .on_battery
@@ -454,26 +563,53 @@ fn windows_event_watcher_required_for_profile(settings: &Settings) -> bool {
 
 pub(super) fn automation_windows_event_watcher_required(settings: &Settings) -> bool {
     settings.general.enabled
-        && (power_plan_checks_required(settings)
-            || event_driven_process_work_required(settings)
-            || sleep_prevention_required(settings))
+        && (power_plan_checks_required(settings) || event_driven_process_work_required(settings))
 }
 
 pub(super) fn event_driven_process_work_required(settings: &Settings) -> bool {
-    app_suspension_required(settings)
-        || (!settings.adaptive_engine.enabled && process_appearance_scan_required(settings))
+    !settings.adaptive_engine.enabled && process_appearance_scan_required(settings)
 }
 
 pub(super) fn windows_event_wake_required(
     settings: &Settings,
     event: WindowsAutomationEvent,
 ) -> bool {
+    if app_suspension_required(settings)
+        && matches!(
+            event,
+            WindowsAutomationEvent::ForegroundChanged
+                | WindowsAutomationEvent::WindowCreated
+                | WindowsAutomationEvent::PowerChanged
+                | WindowsAutomationEvent::SuspendResume
+                | WindowsAutomationEvent::SessionChanged
+        )
+    {
+        return true;
+    }
+    if feature_refresh_required(settings, sleep_prevention_required(settings))
+        && matches!(
+            event,
+            WindowsAutomationEvent::SuspendResume
+                | WindowsAutomationEvent::SessionChanged
+                | WindowsAutomationEvent::WindowCreated
+        )
+    {
+        return true;
+    }
     if (keep_running_required(settings)
         || instance_limits_required(settings)
         || instance_balancing_required(settings))
         && matches!(
             event,
             WindowsAutomationEvent::SuspendResume | WindowsAutomationEvent::SessionChanged
+        )
+    {
+        return true;
+    }
+    if feature_refresh_required(settings, resource_thresholds_required(settings))
+        && matches!(
+            event,
+            WindowsAutomationEvent::PowerChanged | WindowsAutomationEvent::SuspendResume
         )
     {
         return true;
@@ -494,15 +630,21 @@ fn windows_event_wake_required_for_profile(
     if settings.general.enabled {
         match event {
             WindowsAutomationEvent::ForegroundChanged => {
-                power_plan_checks_required(settings) || event_driven_process_work_required(settings)
+                by_focus_required(settings)
+                    || event_driven_process_work_required(settings)
+                    // Preserve foreground work already scheduled when another plan rule keeps the watcher available.
+                    || (power_plan_checks_required(settings)
+                        && (process_appearance_scan_required(settings)
+                            || timer_resolution_required(settings)
+                            || adaptive_power_plan_required(settings)))
             }
-            WindowsAutomationEvent::WindowCreated => {
-                event_driven_process_work_required(settings) || sleep_prevention_required(settings)
-            }
+            WindowsAutomationEvent::WindowCreated => event_driven_process_work_required(settings),
             WindowsAutomationEvent::PowerChanged | WindowsAutomationEvent::SuspendResume => {
                 automation_worker_required_for_profile(settings)
             }
-            WindowsAutomationEvent::SessionChanged => windows_event_watcher_required(settings),
+            WindowsAutomationEvent::SessionChanged => {
+                windows_event_watcher_required_for_profile(settings)
+            }
             WindowsAutomationEvent::ClockChanged => by_time_rules_required(settings),
             WindowsAutomationEvent::AppearanceChanged => false,
         }
@@ -535,10 +677,11 @@ pub(super) fn controller_activity_poll_required(settings: &Settings) -> bool {
 
 pub(super) fn by_focus_required(settings: &Settings) -> bool {
     settings.by_focus.enabled
-        && (settings.by_focus.rules.iter().any(|rule| {
-            enabled_executable_path_rule(rule.enabled, &rule.executable_path)
-                && rule.power_plan_guid.is_some()
-        }))
+        && settings
+            .by_focus
+            .rules
+            .iter()
+            .any(|rule| rule.configured_plan().is_some())
 }
 
 pub(super) fn foreground_lookup_required(settings: &Settings) -> bool {
@@ -551,7 +694,21 @@ pub(super) fn by_time_rules_required(settings: &Settings) -> bool {
             .by_time
             .rules
             .iter()
-            .any(|rule| rule.enabled && rule.power_plan_guid.is_some())
+            .any(|rule| rule.configured_plan().is_some())
+}
+
+pub(super) fn cpu_usage_required(configured: &Settings, plugged_in: Option<bool>) -> bool {
+    let settings = active_power_source_settings(configured, plugged_in);
+    bottleneck_classifier_required(settings)
+        || (feature_refresh_required(settings, adaptive_power_plan_required(settings))
+            && !adaptive_power_plan_waits_for_source(configured, plugged_in))
+        || (by_cpu_load_sample_required(settings, plugged_in)
+            && !ordinary_power_plan_waits_for_source(configured, plugged_in))
+}
+
+pub(super) fn by_cpu_load_sample_required(settings: &Settings, plugged_in: Option<bool>) -> bool {
+    crate::rules::decision_engine::ordinary_power_plan_stop(settings, plugged_in).is_none()
+        && by_cpu_load_rules_required(settings)
 }
 
 pub(super) fn by_cpu_load_rules_required(settings: &Settings) -> bool {
@@ -566,8 +723,11 @@ pub(super) fn by_cpu_load_rules_required(settings: &Settings) -> bool {
 pub(super) fn by_running_app_required(settings: &Settings) -> bool {
     settings.by_running_app.enabled
         && settings.by_running_app.rules.iter().any(|rule| {
-            enabled_executable_path_rule(rule.enabled, &rule.executable_path)
-                && rule.power_plan_guid.is_some()
+            rule.configured_plan().is_some()
+                && rule
+                    .selector
+                    .exact_path()
+                    .is_none_or(|path| std::path::Path::new(path.trim()).is_absolute())
         })
 }
 
@@ -592,6 +752,8 @@ pub(super) fn power_plan_check_delay(
     settings: &Settings,
     windows_event_watcher_active: bool,
     activity_idle_for: Option<Duration>,
+    wall_time: DateTime<Local>,
+    paused_cpu_load_readback_delay: Option<Duration>,
 ) -> Option<Duration> {
     if !windows_event_watcher_active {
         return Some(configured_check_interval(settings));
@@ -599,11 +761,12 @@ pub(super) fn power_plan_check_delay(
 
     let mut delay = None;
     if by_cpu_load_rules_required(settings) {
-        delay = Some(min_worker_wait(delay, CPU_USAGE_REFRESH_INTERVAL));
+        let cpu_delay = paused_cpu_load_readback_delay.unwrap_or(CPU_USAGE_REFRESH_INTERVAL);
+        delay = Some(min_worker_wait(delay, cpu_delay));
     }
     if by_time_rules_required(settings) {
         let schedule_delay = bounded_by_time_check_delay(
-            next_by_time_change_delay(&settings.by_time),
+            next_by_time_change_delay(&settings.by_time, wall_time),
             configured_check_interval(settings),
         );
         delay = Some(min_worker_wait(delay, schedule_delay));

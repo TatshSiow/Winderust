@@ -1,15 +1,20 @@
 use super::design;
 use super::widgets::{action_button, button, checkbox, icon_button, text_input};
+use crate::application::SettingsEditor;
 use crate::config::{CpuAllocationPreset, CpuAllocationRule, CpuAllocationSettings, Settings};
 use crate::cpu_allocation::{self, LogicalProcessorInfo, LogicalProcessorKind};
-use crate::cpu_topology::{CacheKind, CpuSelection, CpuTopology, ProcessorId, SavedSelectionError};
-use crate::foreground::executable_path_key;
-use crate::ui::process_rules::can_add_process_candidate;
+use crate::cpu_topology::{
+    CacheKind, CpuSelection, CpuTopology, ProcessorId, SavedSelectionError, SelectionError,
+};
+use crate::foreground::process_list::normalize_path_slashes;
+use crate::ui::process_rules::{
+    can_add_exact_process_candidate, exact_path_input, picked_path_input,
+};
 use crate::ui::scrolling::scrollable;
 use iced::widget::{column, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
-use std::path::Path;
+use std::{rc::Rc, sync::Arc};
 
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Kind {
@@ -17,6 +22,10 @@ pub(super) enum Kind {
     Hard,
 }
 impl Kind {
+    fn supports(self, id: ProcessorId) -> bool {
+        matches!(self, Self::Soft) || id.group == 0
+    }
+
     fn verify(
         self,
         selection: &CpuSelection,
@@ -28,13 +37,13 @@ impl Kind {
         }
     }
 }
-fn settings(s: &Settings, k: Kind) -> &CpuAllocationSettings {
+pub(super) fn settings(s: &Settings, k: Kind) -> &CpuAllocationSettings {
     match k {
         Kind::Soft => &s.cpu_sets_soft,
         Kind::Hard => &s.processor_affinity_hard,
     }
 }
-fn settings_mut(s: &mut Settings, k: Kind) -> &mut CpuAllocationSettings {
+pub(super) fn settings_mut(s: &mut Settings, k: Kind) -> &mut CpuAllocationSettings {
     match k {
         Kind::Soft => &mut s.cpu_sets_soft,
         Kind::Hard => &mut s.processor_affinity_hard,
@@ -55,14 +64,14 @@ impl Tier {
         })
         .to_string()
     }
-    fn selection(self, r: &CpuAllocationRule) -> &CpuSelection {
+    pub(super) fn selection(self, r: &CpuAllocationRule) -> &CpuSelection {
         match self {
             Self::Focus => &r.focus_selection,
             Self::Visible => &r.visible_window_selection,
             Self::Background => &r.background_selection,
         }
     }
-    fn set(self, r: &mut CpuAllocationRule, selection: CpuSelection) {
+    pub(super) fn set(self, r: &mut CpuAllocationRule, selection: CpuSelection) {
         match self {
             Self::Focus => r.focus_selection = selection,
             Self::Visible => r.visible_window_selection = selection,
@@ -98,18 +107,20 @@ pub(super) enum Message {
     EditPreset(usize),
     PresetName(String),
     PresetSelection(CpuSelection),
+    TogglePresetProcessor(ProcessorId, Arc<CpuTopology>),
     SavePreset,
     DeletePreset(usize),
     ClosePreset,
 }
 impl Editor {
-    pub(super) fn update(&mut self, s: &mut Settings, k: Kind, m: Message) {
+    pub(super) fn update(&mut self, s: &mut SettingsEditor, k: Kind, m: Message) {
         match m {
             Message::Enabled(v) => settings_mut(s, k).enabled = v,
             Message::Path(v) => self.path = v,
             Message::Browse => {}
             Message::Add => {
-                if can_add(s, &self.path) {
+                let path = exact_path_input(&self.path);
+                if can_add(s, path) {
                     let selection = match SelectionCatalog::capture(k).all_selection() {
                         Ok(selection) => selection,
                         Err(error) => {
@@ -119,7 +130,7 @@ impl Editor {
                     };
                     settings_mut(s, k).rules.push(CpuAllocationRule {
                         enabled: true,
-                        executable_path: executable_path_key(Path::new(&self.path)),
+                        executable_path: normalize_path_slashes(path).into_owned(),
                         focus_selection: selection.clone(),
                         visible_window_selection: selection.clone(),
                         background_selection: selection,
@@ -170,7 +181,7 @@ impl Editor {
             }
             Message::EditPreset(i) => {
                 self.preset_read_only = false;
-                if let Some(p) = s.cpu_allocation_presets.get(i) {
+                if let Some(p) = s.global().cpu_allocation_presets.get(i) {
                     self.preset_open = true;
                     self.editing_preset = Some(i);
                     self.preset_name = p.name.clone();
@@ -182,15 +193,21 @@ impl Editor {
             Message::PresetName(v) if !self.preset_read_only => self.preset_name = v,
             Message::PresetSelection(selection) if !self.preset_read_only => {
                 let topology = cpu_allocation::processor_topology();
-                if let Err(error) = verify_selection_against(&selection, &topology, k) {
-                    self.error = error;
-                } else {
-                    self.preset_selection = selection;
-                    self.preset_topology = Some(topology);
-                    self.error.clear();
-                }
+                let selection =
+                    verify_selection_against(&selection, &topology, k).map(|()| selection);
+                self.stage_preset_selection(selection, topology);
             }
-            Message::PresetName(_) | Message::PresetSelection(_) => {}
+            Message::TogglePresetProcessor(id, rendered) if self.has_pending_editor() => {
+                self.toggle_preset_processor(
+                    id,
+                    k,
+                    &rendered,
+                    cpu_allocation::processor_topology(),
+                );
+            }
+            Message::PresetName(_)
+            | Message::PresetSelection(_)
+            | Message::TogglePresetProcessor(..) => {}
             Message::SavePreset => {
                 if self.preset_read_only {
                     return;
@@ -203,28 +220,38 @@ impl Editor {
                 }
                 let name = self.preset_name.trim();
                 if !name.is_empty()
-                    && !s.cpu_allocation_presets.iter().enumerate().any(|(i, p)| {
-                        Some(i) != self.editing_preset && p.name.trim().eq_ignore_ascii_case(name)
-                    })
+                    && !s
+                        .global()
+                        .cpu_allocation_presets
+                        .iter()
+                        .enumerate()
+                        .any(|(i, p)| {
+                            Some(i) != self.editing_preset
+                                && p.name.trim().eq_ignore_ascii_case(name)
+                        })
                 {
                     let p = CpuAllocationPreset {
                         name: name.into(),
                         selection: self.preset_selection.clone(),
                     };
-                    if let Some(i) = self.editing_preset {
-                        if let Some(old) = s.cpu_allocation_presets.get_mut(i) {
-                            *old = p;
+                    s.edit_global(|settings| {
+                        if let Some(i) = self.editing_preset {
+                            if let Some(old) = settings.cpu_allocation_presets.get_mut(i) {
+                                *old = p;
+                            }
+                        } else {
+                            settings.cpu_allocation_presets.push(p);
                         }
-                    } else {
-                        s.cpu_allocation_presets.push(p);
-                    }
+                    });
                     self.preset_open = false;
                     self.error.clear();
                 }
             }
             Message::DeletePreset(i) => {
-                if i < s.cpu_allocation_presets.len() {
-                    s.cpu_allocation_presets.remove(i);
+                if i < s.global().cpu_allocation_presets.len() {
+                    s.edit_global(|settings| {
+                        settings.cpu_allocation_presets.remove(i);
+                    });
                     self.preset_open = false;
                 }
             }
@@ -254,6 +281,43 @@ impl Editor {
                 .insert((rule.executable_path.clone(), tier as usize), choice);
             self.error.clear();
         }
+    }
+
+    fn stage_preset_selection(
+        &mut self,
+        selection: Result<CpuSelection, String>,
+        topology: Result<CpuTopology, String>,
+    ) {
+        match selection {
+            Ok(selection) => {
+                self.preset_selection = selection;
+                self.preset_topology = Some(topology);
+                self.error.clear();
+            }
+            Err(error) => self.error = error,
+        }
+    }
+
+    fn toggle_preset_processor(
+        &mut self,
+        id: ProcessorId,
+        kind: Kind,
+        rendered: &CpuTopology,
+        current: Result<CpuTopology, String>,
+    ) {
+        let selection = current
+            .as_ref()
+            .map_err(|error| {
+                t!("cpu_allocation.preset_topology_unavailable", error = error).to_string()
+            })
+            .and_then(|topology| {
+                if topology != rendered {
+                    return Err(t!("cpu_allocation.topology_changed").to_string());
+                }
+                toggle_processor(&self.preset_selection, id, kind, topology)
+                    .map_err(saved_selection_error)
+            });
+        self.stage_preset_selection(selection, current);
     }
 
     fn validate_preset_selection(
@@ -302,8 +366,12 @@ impl Editor {
         };
     }
 
+    pub(super) fn preset_open(&self) -> bool {
+        self.preset_open
+    }
+
     pub(super) fn has_pending_editor(&self) -> bool {
-        self.preset_open && !self.preset_read_only
+        self.preset_open() && !self.preset_read_only
     }
     pub(super) fn view<'a>(
         &'a self,
@@ -312,61 +380,52 @@ impl Editor {
         candidates: &'a [super::app_picker::Candidate],
     ) -> Element<'a, Message> {
         let feature = settings(s, k);
-        let catalog = SelectionCatalog::capture(k);
-        let mut body = column![
-            super::widgets::toggle_card(
-                match k {
-                    Kind::Soft => "cpu_sets_soft.enable",
-                    Kind::Hard => "processor_affinity_hard.enable",
-                },
-                feature.enabled,
-                Some(Message::Enabled),
-            ),
-            super::widgets::setting_title_with_help(
-                "cpu_allocation.custom_rules",
-                "",
-                "cpu_allocation.rules_help"
-            ),
-            super::app_picker::view(
-                &self.path,
-                candidates,
-                true,
-                Message::Path,
-                Message::Browse,
-                (can_add(s, &self.path)).then_some(Message::Add),
-                |path| can_add(s, path).then_some(true)
-            )
-        ]
-        .spacing(super::widgets::CARD_GAP);
+        let picker = super::app_picker::view_with_path_selection(
+            &self.path,
+            candidates,
+            true,
+            (Message::Path, |path| Message::Path(picked_path_input(path))),
+            Message::Browse,
+            can_add(s, exact_path_input(&self.path)).then_some(Message::Add),
+            |path| can_add(s, path).then_some(true),
+        );
         let mut rules = Vec::new();
+        let mut rule_options: Option<(SelectionCatalog, Rc<[_]>)> = None;
         for (i, r) in feature.rules.iter().enumerate() {
+            let (catalog, presets) = rule_options.get_or_insert_with(|| {
+                let catalog = SelectionCatalog::capture(k);
+                let mut choices = catalog.presets.clone();
+                choices.extend(
+                    s.cpu_allocation_presets
+                        .iter()
+                        .map(|p| super::widgets::Choice(p.selection.clone(), p.name.clone())),
+                );
+                choices.retain(|p| !p.0.is_empty() && catalog.error(&p.0).is_none());
+                (catalog, choices.into())
+            });
             let controls = [Tier::Focus, Tier::Visible, Tier::Background]
                 .into_iter()
                 .map(|tier| {
                     let selection = tier.selection(r);
-                    let mut choices = catalog.presets.clone();
-                    choices.extend(
-                        s.cpu_allocation_presets
-                            .iter()
-                            .map(|p| super::widgets::Choice(p.selection.clone(), p.name.clone())),
-                    );
-                    choices.retain(|p| !p.0.is_empty() && catalog.error(&p.0).is_none());
-                    let selected = self
-                        .selected_preset(&r.executable_path, tier, selection, &choices)
-                        .unwrap_or_else(|| {
-                            super::widgets::Choice(
-                                selection.clone(),
-                                t!(if catalog.error(selection).is_none() {
-                                    "common.custom"
-                                } else {
-                                    "cpu_allocation.unavailable_selection"
-                                })
-                                .to_string(),
-                            )
-                        });
-                    if !choices.contains(&selected) {
+                    let error = catalog.error(selection);
+                    let (choices, selected) = if let Some(selected) =
+                        self.selected_preset(&r.executable_path, tier, selection, presets)
+                    {
+                        (Rc::clone(presets), selected)
+                    } else {
+                        let selected = super::widgets::Choice(
+                            selection.clone(),
+                            t!(if error.is_some() {
+                                "cpu_allocation.unavailable_selection"
+                            } else {
+                                "common.custom"
+                            })
+                            .to_string(),
+                        );
+                        let mut choices = presets.to_vec();
                         choices.push(selected.clone());
-                    }
+                        (choices.into(), selected)
+                    };
                     let mut control =
                         column![
                             super::widgets::pick_list(choices, Some(selected), move |v| {
@@ -375,7 +434,7 @@ impl Editor {
                             .width(Fill)
                         ]
                         .spacing(design::space::TIGHT);
-                    if let Some(error) = catalog.error(selection) {
+                    if let Some(error) = error {
                         control = control.push(text(error).style(text::danger));
                         control = control.push(text(selection_text(selection)));
                         if let Some(reviewed) = catalog.reviewed(selection) {
@@ -408,11 +467,36 @@ impl Editor {
                 ),
             ));
         }
-        body = body.push(super::widgets::process_rules_table(
+        let table = super::widgets::process_rules_table(
             [Tier::Focus, Tier::Visible, Tier::Background].map(|tier| tier.label()),
             rules,
-            t!("common.no_custom_rules").to_string(),
-        ));
+            false,
+        );
+        let mut body = column![
+            super::widgets::toggle_card(
+                match k {
+                    Kind::Soft => "cpu_sets_soft.enable",
+                    Kind::Hard => "processor_affinity_hard.enable",
+                },
+                feature.enabled,
+                Some(Message::Enabled),
+            ),
+            super::widgets::settings_section(
+                "common.rules",
+                column![
+                    super::widgets::settings_card(
+                        column![
+                            super::widgets::help_text("cpu_allocation.rules_help"),
+                            picker
+                        ]
+                        .spacing(design::space::SMALL),
+                    ),
+                    table,
+                ]
+                .spacing(super::widgets::CARD_GAP),
+            ),
+        ]
+        .spacing(super::widgets::CARD_GAP);
         if !self.error.is_empty() {
             body = body.push(text(self.error.clone()).style(text::danger));
         }
@@ -428,9 +512,9 @@ impl Editor {
             self.preset_name.clone()
         } else {
             t!(if self.editing_preset.is_some() {
-                "common.edit"
+                "common.edit_preset"
             } else {
-                "cpu_allocation.add_preset"
+                "common.add_preset"
             })
             .to_string()
         };
@@ -447,76 +531,54 @@ impl Editor {
             self.validate_preset_selection(&catalog.topology, kind)
                 .err()
         };
+        let toggle_topology = catalog
+            .topology
+            .as_ref()
+            .ok()
+            .filter(|topology| {
+                !self.preset_read_only && kind.verify(&self.preset_selection, topology).is_ok()
+            })
+            .cloned()
+            .map(Arc::new);
         let mut cpus = row![].spacing(design::space::CONTROL);
         for (id, cpu) in processors {
-            let selected = self.preset_selection.processors().contains(id);
-            let kind = t!(match cpu.kind {
-                LogicalProcessorKind::Performance => "cpu_allocation.p_core",
-                LogicalProcessorKind::Efficiency => "cpu_allocation.e_core",
-                LogicalProcessorKind::Standard => "cpu_allocation.core",
-            })
-            .to_string();
-            cpus = cpus.push(
-                button(
-                    iced::widget::container(
-                        column![
-                            text(kind).size(design::typography::CAPTION),
-                            text(format!("G{}:CPU {}", id.group, id.number))
-                        ]
-                        .align_x(iced::Center),
-                    )
-                    .center_x(Fill)
-                    .center_y(Fill),
-                )
-                .width(100)
-                .height(64)
-                .style(move |theme, status| {
-                    if selected {
-                        super::widgets::tab_style(theme, status, true)
-                    } else {
-                        super::widgets::tertiary_button(theme, status)
-                    }
-                })
-                .on_press_maybe(
-                    (!self.preset_read_only)
-                        .then(|| catalog.toggled(&self.preset_selection, *id))
-                        .flatten()
-                        .map(Message::PresetSelection),
-                ),
-            );
+            let selected = self.preset_selection.processors().binary_search(id).is_ok();
+            cpus = cpus.push(processor_button(
+                *id,
+                processor_kind_label(cpu.kind),
+                selected,
+                toggle_topology
+                    .as_ref()
+                    .map(|topology| Message::TogglePresetProcessor(*id, Arc::clone(topology))),
+            ));
         }
         let valid_name = !self.preset_name.trim().is_empty()
             && !s.cpu_allocation_presets.iter().enumerate().any(|(i, p)| {
                 Some(i) != self.editing_preset
                     && p.name.trim().eq_ignore_ascii_case(self.preset_name.trim())
             });
-        let mut body = column![
-            super::widgets::heading(
-                t!("common.preset_details").to_string(),
-                design::typography::BODY
-            ),
-            super::widgets::settings_card(super::widgets::settings_rows([
-                column![
-                    text(t!("cpu_allocation.preset_name").to_string()),
-                    text_input(
-                        &t!("cpu_allocation.preset_name_placeholder"),
-                        &self.preset_name
-                    )
-                    .on_input_maybe((!self.preset_read_only).then_some(Message::PresetName)),
-                    text(t!("cpu_allocation.preset_name_help").to_string()).style(text::secondary)
-                ]
-                .spacing(design::space::SMALL)
-                .into(),
-                column![
-                    text(t!("cpu_allocation.selected_logical_cpus").to_string()),
-                    cpus.wrap(),
-                    text(selection_text(&self.preset_selection))
-                ]
-                .spacing(design::space::SMALL)
-                .into(),
-            ]))
-        ]
-        .spacing(design::space::MEDIUM);
+        let name = (!self.preset_read_only).then(|| {
+            let mut field = column![
+                text(t!("cpu_allocation.preset_name").to_string()),
+                text_input(
+                    &t!("cpu_allocation.preset_name_placeholder"),
+                    &self.preset_name
+                )
+                .on_input(Message::PresetName),
+                text(t!("cpu_allocation.preset_name_help").to_string()).style(text::secondary)
+            ]
+            .spacing(design::space::SMALL);
+            if !self.preset_name.trim().is_empty() && !valid_name {
+                field = field.push(
+                    text(t!("cpu_allocation.duplicate_preset_name").to_string())
+                        .style(text::danger),
+                );
+            }
+            field.into()
+        });
+
+        let mut selection = column![text(t!("cpu_allocation.selected_logical_cpus").to_string())]
+            .spacing(design::space::SMALL);
         if let Ok(topology) = &catalog.topology {
             let cores = topology
                 .processors()
@@ -524,7 +586,7 @@ impl Editor {
                 .map(|cpu| cpu.core)
                 .collect::<std::collections::BTreeSet<_>>()
                 .len();
-            body = body.push(
+            selection = selection.push(
                 text(
                     t!(
                         "cpu_allocation.topology_summary",
@@ -538,7 +600,22 @@ impl Editor {
                 .style(text::secondary),
             );
         }
+        if let Some(error) = &validation_error {
+            selection = selection.push(text(error.clone()).style(text::danger));
+        }
+        if !self.error.is_empty() && validation_error.as_deref() != Some(self.error.as_str()) {
+            selection = selection.push(text(self.error.clone()).style(text::danger));
+        }
         if !self.preset_read_only {
+            if catalog.error(&self.preset_selection).is_some() {
+                if let Some(reviewed) = catalog.reviewed(&self.preset_selection) {
+                    selection = selection.push(
+                        button(text(t!("cpu_allocation.use_this_selection").to_string()))
+                            .on_press(Message::PresetSelection(reviewed)),
+                    );
+                }
+            }
+
             let mut choices = row![].spacing(design::space::TIGHT);
             for preset in &catalog.presets {
                 choices = choices.push(
@@ -546,27 +623,21 @@ impl Editor {
                         .on_press(Message::PresetSelection(preset.0.clone())),
                 );
             }
-            body = body.push(choices.wrap());
-            if catalog.error(&self.preset_selection).is_some() {
-                if let Some(reviewed) = catalog.reviewed(&self.preset_selection) {
-                    body = body.push(
-                        button(text(t!("cpu_allocation.use_this_selection").to_string()))
-                            .on_press(Message::PresetSelection(reviewed)),
-                    );
-                }
-            }
+            selection = selection.push(choices.wrap());
         }
-        if let Some(error) = &validation_error {
-            body = body.push(text(error.clone()).style(text::danger));
-        }
-        if !self.error.is_empty() && validation_error.as_deref() != Some(self.error.as_str()) {
-            body = body.push(text(self.error.clone()).style(text::danger));
-        }
-        if !self.preset_read_only && !self.preset_name.trim().is_empty() && !valid_name {
-            body = body.push(
-                text(t!("cpu_allocation.duplicate_preset_name").to_string()).style(text::danger),
-            );
-        }
+        let selection = selection
+            .push(cpus.wrap())
+            .push(text(selection_text(&self.preset_selection)));
+        let body = column![
+            super::widgets::heading(
+                t!("common.preset_details").to_string(),
+                design::typography::BODY
+            ),
+            super::widgets::settings_card(super::widgets::settings_rows(
+                name.into_iter().chain([selection.into()]),
+            ))
+        ]
+        .spacing(design::space::MEDIUM);
         let mut footer = row![
             iced::widget::Space::new().width(Fill),
             action_button(
@@ -599,76 +670,48 @@ impl Editor {
     }
     pub(super) fn presets_panel<'a>(
         &'a self,
-        s: &'a crate::application::SettingsEditor,
+        s: &'a SettingsEditor,
         kind: Kind,
     ) -> Element<'a, Message> {
+        use super::widgets;
         let catalog = SelectionCatalog::capture(kind);
-        let mut rail = column![super::widgets::heading(
-            t!("cpu_allocation.core_presets").to_string(),
-            design::typography::SECONDARY
-        ),]
-        .spacing(design::space::MEDIUM)
-        .padding([0, design::space::MEDIUM as u16]);
-        rail = rail
+        let mut rail = widgets::preset_list()
+            .push(widgets::heading(
+                t!("cpu_allocation.core_presets").to_string(),
+                design::typography::SECONDARY,
+            ))
             .push(text(t!("cpu_allocation.cache_domains_help").to_string()).style(text::secondary));
-        for preset in catalog.presets {
-            let message = Message::ViewPreset(preset.1.clone(), preset.0);
-            rail = rail.push(
-                row![
-                    button(
-                        iced::widget::container(text(preset.1))
-                            .center_y(design::NAVIGATION_ROW_HEIGHT - 10)
-                    )
-                    .width(Fill)
-                    .style(super::widgets::quiet)
-                    .on_press(message.clone()),
-                    icon_button("icons/info.svg").on_press(message)
-                ]
-                .align_y(iced::Center)
-                .spacing(design::space::TIGHT),
-            );
+        for widgets::Choice(selection, label) in catalog.presets {
+            rail = rail.push(widgets::preset_row(
+                label.clone(),
+                Message::ViewPreset(label, selection),
+                None,
+            ));
         }
-        rail = rail.push(super::widgets::heading(
-            t!("adaptive_engine.custom_presets").to_string(),
+        rail = rail.push(widgets::heading(
+            t!("common.custom_presets").to_string(),
             design::typography::SECONDARY,
         ));
         if s.cpu_allocation_presets.is_empty() {
-            rail = rail.push(
-                text(t!("cpu_allocation.no_custom_presets").to_string()).style(text::secondary),
-            );
+            rail =
+                rail.push(text(t!("common.no_custom_presets").to_string()).style(text::secondary));
         }
         for (i, p) in s.cpu_allocation_presets.iter().enumerate() {
-            rail = rail.push(
-                row![
-                    button(text(p.name.clone()))
-                        .width(Fill)
-                        .style(super::widgets::quiet)
-                        .on_press(Message::EditPreset(i)),
-                    super::widgets::tooltip(
-                        icon_button("icons/pencil.svg").on_press(Message::EditPreset(i)),
-                        text(t!("common.edit").to_string()),
-                        iced::widget::tooltip::Position::Top
-                    ),
-                    super::widgets::rule_delete_button(Some(Message::DeletePreset(i)))
-                ]
-                .align_y(iced::Center)
-                .spacing(design::space::TIGHT),
-            );
+            rail = rail.push(widgets::preset_row(
+                p.name.as_str(),
+                Message::ViewPreset(p.name.clone(), p.selection.clone()),
+                Some((Message::EditPreset(i), Message::DeletePreset(i))),
+            ));
         }
-        column![
-            scrollable(rail).width(Fill).height(Fill),
-            super::widgets::preset_footer(
-                t!("cpu_allocation.add_preset").to_string(),
-                Message::NewPreset
-            ),
-        ]
-        .spacing(design::space::MEDIUM)
-        .height(Fill)
-        .into()
+        widgets::preset_panel(
+            rail,
+            t!("common.add_preset").to_string(),
+            Message::NewPreset,
+        )
     }
 }
 fn can_add(s: &Settings, path: &str) -> bool {
-    can_add_process_candidate(
+    can_add_exact_process_candidate(
         path,
         |p| s.cpu_sets_soft.contains_rule_for(p) || s.processor_affinity_hard.contains_rule_for(p),
         cpu_allocation::is_builtin_excluded,
@@ -691,7 +734,7 @@ impl SelectionCatalog {
             .map(|topology| {
                 cpu_allocation::logical_processors_for_topology(topology)
                     .into_iter()
-                    .filter(|(id, _)| matches!(kind, Kind::Soft) || id.group == 0)
+                    .filter(|(id, _)| kind.supports(*id))
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
@@ -729,7 +772,11 @@ impl SelectionCatalog {
         .map_err(|error| error.to_string())
     }
 
-    fn error(&self, selection: &CpuSelection) -> Option<String> {
+    pub(super) fn processor_count(&self) -> usize {
+        self.processors.len()
+    }
+
+    pub(super) fn error(&self, selection: &CpuSelection) -> Option<String> {
         match &self.topology {
             Ok(_) => verify_selection_against(selection, &self.topology, self.kind).err(),
             Err(error) => {
@@ -746,30 +793,28 @@ impl SelectionCatalog {
     }
 
     fn toggled(&self, selection: &CpuSelection, id: ProcessorId) -> Option<CpuSelection> {
-        let topology = self.topology.as_ref().ok()?;
-        if !self
-            .processors
-            .iter()
-            .any(|(candidate, _)| *candidate == id)
-        {
-            return None;
-        }
-        if selection.processors().iter().any(|selected| {
-            !self
-                .processors
-                .iter()
-                .any(|(candidate, _)| candidate == selected)
-        }) {
-            return None;
-        }
-        let mut processors = selection.processors().to_vec();
-        if processors.contains(&id) {
-            processors.retain(|selected| *selected != id);
-        } else {
-            processors.push(id);
-        }
-        CpuSelection::bind(topology, processors).ok()
+        toggle_processor(selection, id, self.kind, self.topology.as_ref().ok()?).ok()
     }
+}
+
+fn toggle_processor(
+    selection: &CpuSelection,
+    id: ProcessorId,
+    kind: Kind,
+    topology: &CpuTopology,
+) -> Result<CpuSelection, SavedSelectionError> {
+    kind.verify(selection, topology)?;
+    if !kind.supports(id) {
+        return Err(SelectionError::UnsupportedGroup.into());
+    }
+    let mut processors = selection.processors().to_vec();
+    match processors.binary_search(&id) {
+        Ok(index) => {
+            processors.remove(index);
+        }
+        Err(index) => processors.insert(index, id),
+    }
+    CpuSelection::bind(topology, processors).map_err(Into::into)
 }
 
 pub(super) fn verify_selection(selection: &CpuSelection, kind: Kind) -> Result<(), String> {
@@ -789,7 +834,6 @@ pub(super) fn verify_selection_against(
 }
 
 fn saved_selection_error(error: crate::cpu_topology::SavedSelectionError) -> String {
-    use crate::cpu_topology::{SavedSelectionError, SelectionError};
     let key = match error {
         SavedSelectionError::MissingTopology => "cpu_allocation.selection_missing_topology",
         SavedSelectionError::TopologyChanged => "cpu_allocation.selection_topology_changed",
@@ -863,6 +907,19 @@ fn core_presets(
             .map(|selection| super::widgets::Choice(selection, t!(key).to_string()))
     })
     .collect::<Result<Vec<_>, _>>()?;
+    let groups = all
+        .iter()
+        .map(|id| id.group)
+        .collect::<std::collections::BTreeSet<_>>();
+    if groups.len() > 1 {
+        for group in groups {
+            let members = all.iter().copied().filter(|id| id.group == group).collect();
+            presets.push(super::widgets::Choice(
+                CpuSelection::bind(topology, members)?,
+                t!("cpu_allocation.processor_group_preset", group = group).into_owned(),
+            ));
+        }
+    }
     presets.extend(cache_presets(topology, &all)?);
     Ok(presets)
 }
@@ -908,44 +965,110 @@ fn cache_presets(
         .collect()
 }
 
+fn processor_kind_label(kind: LogicalProcessorKind) -> String {
+    t!(match kind {
+        LogicalProcessorKind::Performance => "cpu_allocation.p_core",
+        LogicalProcessorKind::Efficiency => "cpu_allocation.e_core",
+        LogicalProcessorKind::Standard => "cpu_allocation.core",
+    })
+    .into_owned()
+}
+
+fn processor_button<'a, M: Clone + 'a>(
+    id: ProcessorId,
+    caption: String,
+    selected: bool,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    button(
+        iced::widget::container(
+            column![
+                text(caption).size(design::typography::CAPTION),
+                text(format!("G{}:CPU {}", id.group, id.number))
+            ]
+            .align_x(iced::Center),
+        )
+        .center_x(Fill)
+        .center_y(Fill),
+    )
+    .width(100)
+    .height(64)
+    .style(move |theme, status| {
+        if selected {
+            super::widgets::tab_style(theme, status, true)
+        } else {
+            super::widgets::tertiary_button(theme, status)
+        }
+    })
+    .on_press_maybe(on_press)
+    .into()
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum ProcessorPickerLayout {
+    Compact,
+    Buttons,
+}
+
 pub(super) fn mask_selector<'a, M: Clone + 'a>(
     selection: &CpuSelection,
     catalog: &SelectionCatalog,
     custom: &[CpuAllocationPreset],
-    message: impl Fn(CpuSelection) -> M + Clone + 'a,
+    layout: ProcessorPickerLayout,
+    message: impl Fn(CpuSelection) -> M,
 ) -> Element<'a, M> {
     let mut presets = row![].spacing(design::space::TIGHT);
     for preset in &catalog.presets {
         presets = presets.push(button(text(preset.1.clone())).on_press(message(preset.0.clone())));
     }
+    let mut unavailable = std::collections::BTreeMap::<_, Vec<&str>>::new();
     for preset in custom {
-        presets = presets.push(
-            button(text(preset.name.clone())).on_press_maybe(
-                (catalog.error(&preset.selection).is_none() && !preset.selection.is_empty())
-                    .then(|| message(preset.selection.clone())),
-            ),
-        );
+        let reason = catalog.error(&preset.selection).or_else(|| {
+            preset
+                .selection
+                .is_empty()
+                .then(|| t!("cpu_allocation.no_logical_cpus").into_owned())
+        });
+        if let Some(reason) = reason {
+            unavailable.entry(reason).or_default().push(&preset.name);
+        } else {
+            presets = presets.push(
+                button(text(preset.name.clone())).on_press(message(preset.selection.clone())),
+            );
+        }
     }
     let mut cpus = row![].spacing(design::space::CONTROL);
     for (id, cpu) in &catalog.processors {
-        let selected = selection.processors().contains(id);
-        let msg = message.clone();
-        let candidate = catalog.toggled(selection, *id);
-        let kind = t!(match cpu.kind {
-            LogicalProcessorKind::Performance => "cpu_allocation.p_core",
-            LogicalProcessorKind::Efficiency => "cpu_allocation.e_core",
-            LogicalProcessorKind::Standard => "cpu_allocation.core",
-        });
-        cpus = cpus.push(
-            checkbox(selected)
-                .label(format!(
-                    "G{}:CPU {} ({kind} {})",
-                    id.group, id.number, cpu.core_index
-                ))
-                .on_toggle_maybe(candidate.map(|candidate| move |_| msg(candidate.clone()))),
-        );
+        let selected = selection.processors().binary_search(id).is_ok();
+        let toggle = catalog.toggled(selection, *id).map(&message);
+        let core = format!("{} {}", processor_kind_label(cpu.kind), cpu.core_index);
+        let control = match layout {
+            ProcessorPickerLayout::Compact => checkbox(selected)
+                .label(format!("G{}:CPU {} ({core})", id.group, id.number))
+                .on_toggle_maybe(toggle.map(|message| move |_| message.clone()))
+                .into(),
+            ProcessorPickerLayout::Buttons => processor_button(*id, core, selected, toggle),
+        };
+        cpus = cpus.push(control);
     }
-    let mut selector = column![presets.wrap(), cpus.wrap(), text(selection_text(selection))]
+    let unavailable = unavailable.into_iter().map(|(reason, names)| {
+        column![
+            text(names.join(" \u{00b7} "))
+                .size(design::typography::SECONDARY)
+                .wrapping(text::Wrapping::WordOrGlyph),
+            text(reason)
+                .size(design::typography::SECONDARY)
+                .style(text::secondary)
+                .wrapping(text::Wrapping::WordOrGlyph),
+        ]
+        .spacing(design::space::TIGHT)
+        .width(Fill)
+        .into()
+    });
+    let mut selector = column![presets.wrap()]
+        .extend(unavailable)
+        .push(cpus.wrap())
+        .push(text(selection_text(selection)))
         .spacing(design::space::SMALL);
     if let Some(error) = catalog.error(selection) {
         selector = selector.push(text(error).style(text::danger));
@@ -1056,6 +1179,23 @@ mod tests {
         assert_eq!(zero.processors().len(), 2);
         assert!(soft.error(&all).is_none());
         assert!(hard.error(&all).is_some());
+        for group in [0, 1] {
+            let label = t!("cpu_allocation.processor_group_preset", group = group);
+            let preset = soft
+                .presets
+                .iter()
+                .find(|preset| preset.1 == label)
+                .unwrap();
+            assert_eq!(
+                preset.0.processors(),
+                all.processors()
+                    .iter()
+                    .copied()
+                    .filter(|id| id.group == group)
+                    .collect::<Vec<_>>()
+            );
+            assert!(!hard.presets.iter().any(|preset| preset.1 == label));
+        }
         let group_one = ProcessorId {
             group: 1,
             number: 0,
@@ -1163,19 +1303,69 @@ mod tests {
     #[test]
     fn same_members_on_changed_topology_require_explicit_review() {
         let saved = crate::cpu_topology::test_selection(3);
-        let catalog = SelectionCatalog::from_topology(Ok(changed_topology()), Kind::Hard);
-        assert!(catalog.error(&saved).is_some());
-        assert!(verify_selection_against(&saved, &catalog.topology, Kind::Hard).is_err());
-        let reviewed = catalog.reviewed(&saved).unwrap();
-        assert_eq!(saved.processors(), reviewed.processors());
-        assert_ne!(saved.topology(), reviewed.topology());
-        assert!(verify_selection_against(&reviewed, &catalog.topology, Kind::Hard).is_ok());
+        let first = saved.processors()[0];
+        for kind in [Kind::Soft, Kind::Hard] {
+            let catalog = SelectionCatalog::from_topology(Ok(changed_topology()), kind);
+            assert!(catalog.error(&saved).is_some());
+            assert!(catalog.toggled(&saved, first).is_none());
+            let reviewed = catalog.reviewed(&saved).unwrap();
+            assert_eq!(saved.processors(), reviewed.processors());
+            assert_ne!(saved.topology(), reviewed.topology());
+            assert!(catalog.error(&reviewed).is_none());
+            let toggled = catalog.toggled(&reviewed, first).unwrap();
+            assert_eq!(toggled.processors(), &saved.processors()[1..]);
+            assert_eq!(toggled.topology(), reviewed.topology());
+        }
         assert_eq!(saved, crate::cpu_topology::test_selection(3));
         assert!(
             SelectionCatalog::from_topology(Err("unavailable".into()), Kind::Hard)
                 .reviewed(&saved)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn preset_processor_click_rejects_stale_layout_and_can_recover_an_empty_selection() {
+        let original = crate::cpu_topology::test_topology();
+        let current = changed_topology();
+        let id = original.processors()[0].id;
+        let mut editor = Editor {
+            preset_open: true,
+            preset_topology: Some(Ok(original.clone())),
+            ..Editor::default()
+        };
+
+        editor.toggle_preset_processor(id, Kind::Soft, &original, Ok(current.clone()));
+        assert_eq!(editor.preset_selection, CpuSelection::default());
+        assert_eq!(editor.preset_topology, Some(Ok(original)));
+        assert_eq!(editor.error, t!("cpu_allocation.topology_changed"));
+
+        editor.toggle_preset_processor(id, Kind::Soft, &current, Ok(current.clone()));
+        assert_eq!(editor.preset_selection.processors(), &[id]);
+        assert!(editor
+            .validate_preset_selection(&Ok(current.clone()), Kind::Soft)
+            .is_ok());
+
+        editor.toggle_preset_processor(id, Kind::Soft, &current, Ok(current.clone()));
+        assert!(editor.preset_selection.is_empty());
+        assert!(editor
+            .validate_preset_selection(&Ok(current.clone()), Kind::Soft)
+            .is_err());
+
+        let missing = ProcessorId {
+            group: 1,
+            number: 0,
+        };
+        editor.toggle_preset_processor(missing, Kind::Soft, &current, Ok(current.clone()));
+        assert_eq!(
+            editor.error,
+            saved_selection_error(SelectionError::Unknown.into())
+        );
+        assert!(editor.preset_selection.is_empty());
+
+        editor.toggle_preset_processor(id, Kind::Soft, &current, Ok(current.clone()));
+        assert_eq!(editor.preset_selection.processors(), &[id]);
+        assert!(editor.error.is_empty());
     }
 
     #[test]
@@ -1234,9 +1424,19 @@ mod tests {
             name: "saved".into(),
             selection: selection.clone(),
         });
+        let mut settings = SettingsEditor::with_settings(settings);
         let mut editor = Editor::default();
+        editor.update(
+            &mut settings,
+            Kind::Hard,
+            Message::ViewPreset("saved".into(), selection.clone()),
+        );
+        assert_eq!(editor.preset_selection, selection);
+        assert!(!editor.has_pending_editor());
+        editor.update(&mut settings, Kind::Hard, Message::ClosePreset);
         editor.update(&mut settings, Kind::Soft, Message::EditPreset(0));
         assert_eq!(editor.preset_selection, selection);
+        assert!(editor.has_pending_editor());
         assert_eq!(settings.cpu_allocation_presets[0].selection, selection);
         editor.update(&mut settings, Kind::Soft, Message::ClosePreset);
         assert_eq!(settings.cpu_allocation_presets[0].selection, selection);
@@ -1292,6 +1492,7 @@ mod tests {
                 super::settings(&before, kind).rules[0].focus_selection,
                 selection
             );
+            let mut settings = SettingsEditor::with_settings(settings);
             editor.update(&mut settings, kind, Message::Remove(0));
             assert!(editor.selected_presets.is_empty());
         }
@@ -1300,8 +1501,9 @@ mod tests {
     #[test]
     fn builtin_preview_is_read_only_and_cancel_discards_new_preset() {
         let mut editor = Editor::default();
-        let mut settings = Settings::default();
-        let before = settings.clone();
+        let before = Settings::default();
+        let mut settings = SettingsEditor::with_settings(before.clone());
+        settings.select_power_source(crate::config::PowerSourceProfile::OnBattery);
         let selection = crate::cpu_topology::test_selection(u64::MAX);
         editor.update(
             &mut settings,
@@ -1316,17 +1518,25 @@ mod tests {
         editor.update(
             &mut settings,
             Kind::Soft,
+            Message::TogglePresetProcessor(
+                selection.processors()[0],
+                Arc::new(crate::cpu_topology::test_topology()),
+            ),
+        );
+        editor.update(
+            &mut settings,
+            Kind::Soft,
             Message::PresetName("Changed".into()),
         );
         editor.update(&mut settings, Kind::Soft, Message::SavePreset);
         assert_eq!(editor.preset_selection, selection);
         assert_eq!(editor.preset_name, "All");
-        assert_eq!(settings, before);
+        assert_eq!(settings.global(), &before);
         editor.update(&mut settings, Kind::Hard, Message::NewPreset);
         assert!(editor.has_pending_editor());
         editor.update(&mut settings, Kind::Hard, Message::ClosePreset);
         assert!(!editor.has_pending_editor());
-        assert_eq!(settings, before);
+        assert_eq!(settings.global(), &before);
     }
 
     #[test]
@@ -1338,8 +1548,11 @@ mod tests {
             name: "Shared".into(),
             selection: selection.clone(),
         });
+        let mut settings = SettingsEditor::with_settings(settings);
+        settings.select_power_source(crate::config::PowerSourceProfile::OnBattery);
         Editor::default().update(&mut settings, Kind::Soft, Message::DeletePreset(0));
         assert_eq!(settings.cpu_sets_soft.rules[0].focus_selection, selection);
         assert!(settings.cpu_allocation_presets.is_empty());
+        assert!(settings.global().on_battery.is_none());
     }
 }

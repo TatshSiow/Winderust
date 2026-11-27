@@ -100,6 +100,33 @@ fn unavailable_cpu_observations_restart_the_sustained_condition_interval() {
 }
 
 #[test]
+fn sustained_condition_uses_the_sample_time_and_starts_at_first_evaluation() {
+    let mut rule = rule_with_else(CpuUsageComparison::AtOrAbove);
+    rule.duration_seconds = 2;
+    let settings = ByCpuLoadSettings {
+        enabled: true,
+        rules: vec![rule],
+    };
+    let mut scheduler = ByCpuLoadScheduler::default();
+    let start = Instant::now();
+    for (sample, evaluation, expected) in [
+        (0, 1, ByCpuLoadMatch::Else),
+        (2, 2, ByCpuLoadMatch::Else),
+        (2, 3, ByCpuLoadMatch::Else),
+        (3, 3, ByCpuLoadMatch::Condition),
+    ] {
+        let decision = scheduler
+            .current_decision_for_sample_at(
+                &settings,
+                Some((80.0, start + Duration::from_secs(sample))),
+                start + Duration::from_secs(evaluation),
+            )
+            .unwrap();
+        assert_eq!(decision.selection, expected);
+    }
+}
+
+#[test]
 fn selected_rule_index_survives_else_branch_and_arbitration() {
     let mut settings = crate::config::Settings::default();
     settings.general.enabled = true;
@@ -383,7 +410,7 @@ fn apply_at(
         .current_decision_at(settings, Some(usage), now)
         .unwrap();
     scheduler.confirm_applied_rule(
-        (!decision.is_else).then_some(decision.rule_index),
+        (!decision.is_else()).then_some(decision.rule_index),
         Some(&decision.power_plan_guid),
         now,
     );
@@ -443,17 +470,18 @@ fn exit_bands_retain_only_qualified_active_rules_and_include_their_bounds() {
         settings.rules[0].validate().unwrap();
         let mut scheduler = ByCpuLoadScheduler::default();
         let start = Instant::now();
-        assert!(apply_at(&mut scheduler, &settings, inside, start).is_else);
+        assert!(apply_at(&mut scheduler, &settings, inside, start).is_else());
         let entry_usage = f32::from(entry);
-        assert!(apply_at(&mut scheduler, &settings, entry_usage, start).is_else);
-        assert!(
-            !apply_at(
+        assert!(apply_at(&mut scheduler, &settings, entry_usage, start).is_else());
+        assert_eq!(
+            apply_at(
                 &mut scheduler,
                 &settings,
                 entry_usage,
                 start + Duration::from_secs(5)
             )
-            .is_else
+            .selection,
+            ByCpuLoadMatch::Condition
         );
         for seconds in 6..10 {
             let usage = if seconds % 2 == 0 {
@@ -461,25 +489,24 @@ fn exit_bands_retain_only_qualified_active_rules_and_include_their_bounds() {
             } else {
                 entry_usage
             };
-            assert!(
-                !apply_at(
+            assert_eq!(
+                apply_at(
                     &mut scheduler,
                     &settings,
                     usage,
                     start + Duration::from_secs(seconds)
                 )
-                .is_else
+                .selection,
+                ByCpuLoadMatch::ReleaseThreshold
             );
         }
-        assert!(
-            apply_at(
-                &mut scheduler,
-                &settings,
-                outside,
-                start + Duration::from_secs(10)
-            )
-            .is_else
-        );
+        assert!(apply_at(
+            &mut scheduler,
+            &settings,
+            outside,
+            start + Duration::from_secs(10)
+        )
+        .is_else());
     }
 }
 
@@ -493,41 +520,46 @@ fn minimum_hold_starts_at_confirmation_and_is_not_extended_by_rechecks() {
         .minimum_hold_seconds = 30;
     let mut scheduler = ByCpuLoadScheduler::default();
     let start = Instant::now();
-    assert!(
-        !scheduler
-            .current_decision_at(&settings, Some(80.0), start)
-            .unwrap()
-            .is_else
-    );
-    assert!(
+    assert!(!scheduler
+        .current_decision_at(&settings, Some(80.0), start)
+        .unwrap()
+        .is_else());
+    assert!(apply_at(
+        &mut scheduler,
+        &settings,
+        20.0,
+        start + Duration::from_secs(10)
+    )
+    .is_else());
+    let applied_at = start + Duration::from_secs(25);
+    assert!(!apply_at(&mut scheduler, &settings, 80.0, applied_at).is_else());
+    assert_eq!(
         apply_at(
             &mut scheduler,
             &settings,
-            20.0,
-            start + Duration::from_secs(10)
+            70.0,
+            applied_at + Duration::from_secs(1)
         )
-        .is_else
+        .selection,
+        ByCpuLoadMatch::ReleaseThreshold
     );
-    let applied_at = start + Duration::from_secs(25);
-    assert!(!apply_at(&mut scheduler, &settings, 80.0, applied_at).is_else);
-    assert!(
-        !apply_at(
+    assert_eq!(
+        apply_at(
             &mut scheduler,
             &settings,
             20.0,
             applied_at + Duration::from_secs(29)
         )
-        .is_else
+        .selection,
+        ByCpuLoadMatch::MinimumHold
     );
-    assert!(
-        apply_at(
-            &mut scheduler,
-            &settings,
-            20.0,
-            applied_at + Duration::from_secs(30)
-        )
-        .is_else
-    );
+    assert!(apply_at(
+        &mut scheduler,
+        &settings,
+        20.0,
+        applied_at + Duration::from_secs(30)
+    )
+    .is_else());
 }
 
 #[test]
@@ -580,15 +612,13 @@ fn earlier_qualified_cpu_rule_preempts_a_held_rule_even_with_the_same_plan() {
         .rule_index,
         0
     );
-    assert!(
-        apply_at(
-            &mut scheduler,
-            &settings,
-            20.0,
-            start + Duration::from_secs(36)
-        )
-        .is_else
-    );
+    assert!(apply_at(
+        &mut scheduler,
+        &settings,
+        20.0,
+        start + Duration::from_secs(36)
+    )
+    .is_else());
 }
 
 #[test]
@@ -602,34 +632,28 @@ fn same_plan_else_branch_never_starts_or_inherits_a_primary_hold() {
         .minimum_hold_seconds = 10;
     let mut scheduler = ByCpuLoadScheduler::default();
     let start = Instant::now();
-    assert!(apply_at(&mut scheduler, &settings, 20.0, start).is_else);
-    assert!(
-        !apply_at(
-            &mut scheduler,
-            &settings,
-            80.0,
-            start + Duration::from_secs(1)
-        )
-        .is_else
-    );
-    assert!(
-        apply_at(
-            &mut scheduler,
-            &settings,
-            20.0,
-            start + Duration::from_secs(11)
-        )
-        .is_else
-    );
-    assert!(
-        apply_at(
-            &mut scheduler,
-            &settings,
-            70.0,
-            start + Duration::from_secs(12)
-        )
-        .is_else
-    );
+    assert!(apply_at(&mut scheduler, &settings, 20.0, start).is_else());
+    assert!(!apply_at(
+        &mut scheduler,
+        &settings,
+        80.0,
+        start + Duration::from_secs(1)
+    )
+    .is_else());
+    assert!(apply_at(
+        &mut scheduler,
+        &settings,
+        20.0,
+        start + Duration::from_secs(11)
+    )
+    .is_else());
+    assert!(apply_at(
+        &mut scheduler,
+        &settings,
+        70.0,
+        start + Duration::from_secs(12)
+    )
+    .is_else());
 }
 
 #[test]
@@ -698,7 +722,7 @@ fn interruption_or_settings_invalidation_cannot_reuse_stability() {
                 70.0,
                 start + Duration::from_secs(2)
             )
-            .is_else,
+            .is_else(),
             "{interruption:?}"
         );
     }
@@ -711,29 +735,25 @@ fn absent_stability_keeps_existing_entry_duration_and_release_behavior() {
     settings.rules[0].duration_seconds = 5;
     let mut scheduler = ByCpuLoadScheduler::default();
     let start = Instant::now();
-    assert!(apply_at(&mut scheduler, &settings, 80.0, start).is_else);
+    assert!(apply_at(&mut scheduler, &settings, 80.0, start).is_else());
     // A higher-priority feature's selection does not erase legacy entry qualification.
     scheduler.confirm_applied_rule(
         None,
         Some("foreground-plan"),
         start + Duration::from_secs(1),
     );
-    assert!(
-        !apply_at(
-            &mut scheduler,
-            &settings,
-            80.0,
-            start + Duration::from_secs(5)
-        )
-        .is_else
-    );
-    assert!(
-        apply_at(
-            &mut scheduler,
-            &settings,
-            74.9,
-            start + Duration::from_secs(6)
-        )
-        .is_else
-    );
+    assert!(!apply_at(
+        &mut scheduler,
+        &settings,
+        80.0,
+        start + Duration::from_secs(5)
+    )
+    .is_else());
+    assert!(apply_at(
+        &mut scheduler,
+        &settings,
+        74.9,
+        start + Duration::from_secs(6)
+    )
+    .is_else());
 }

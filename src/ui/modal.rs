@@ -22,6 +22,17 @@ pub(super) fn picker<'a, M: Clone + 'a>(
     Element::new(Guard {
         content: content.into(),
         blocked: open,
+        dismiss: open.then_some(dismiss),
+    })
+}
+
+pub(super) fn dismiss_on_escape<'a, M: Clone + 'a>(
+    content: impl Into<Element<'a, M>>,
+    dismiss: M,
+) -> Element<'a, M> {
+    Element::new(Guard {
+        content: content.into(),
+        blocked: false,
         dismiss: Some(dismiss),
     })
 }
@@ -116,6 +127,22 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Guard<'_, M> {
             shell,
             viewport,
         );
+        if !self.blocked
+            && matches!(
+                event,
+                Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(keyboard::key::Named::Escape),
+                    modifiers,
+                    repeat: false,
+                    ..
+                }) if modifiers.is_empty()
+            )
+        {
+            if let Some(dismiss) = &self.dismiss {
+                shell.publish(dismiss.clone());
+                shell.capture_event();
+            }
+        }
     }
     fn operate(
         &mut self,
@@ -250,7 +277,15 @@ impl<M: Clone> iced::advanced::Overlay<M, Theme, Renderer> for Picker<'_, M> {
                 .as_overlay_mut()
                 .update(event, popup, cursor, renderer, clipboard, shell);
         }
-        if input(event) {
+        let tab = matches!(
+            event,
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(keyboard::key::Named::Tab),
+                modifiers,
+                ..
+            }) if modifiers.is_empty() || *modifiers == keyboard::Modifiers::SHIFT
+        );
+        if input(event) && !tab {
             shell.capture_event();
         }
     }

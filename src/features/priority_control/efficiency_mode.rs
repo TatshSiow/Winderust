@@ -1,0 +1,810 @@
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+};
+
+use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+
+use crate::{
+    action_log::{ActionLog, ActionLogFeature, ActionLogResult},
+    audio_activity::active_audio_process_ids,
+    config::EfficiencyModeSettings,
+    control::{
+        priority_efficiency::{
+            EfficiencyModeClaim, PriorityEfficiencyController, PriorityEfficiencyReleaseSummary,
+            ProcessPropertyApplyOutcome,
+        },
+        process::{ControlOwner, ProcessControlError, ProcessControlTarget, ProcessTargetKey},
+    },
+    foreground::{
+        contains_process_name, is_foreground_process, process_executable_path, process_failure_key,
+        process_list::catalog_process_executable_path, process_session_id, ProtectedProcesses,
+    },
+    rules::{
+        execution_failure_suppression_threshold, ExecutionFailureTracker, ExecutionSuppression,
+    },
+    runtime::observations::CycleObservations,
+};
+
+const BUILT_IN_EXCLUSIONS: &[&str] = &[
+    "audiodg.exe",
+    "conhost.exe",
+    "csrss.exe",
+    "ctfmon.exe",
+    "dwm.exe",
+    "explorer.exe",
+    "fontdrvhost.exe",
+    "lsaiso.exe",
+    "lsass.exe",
+    "registry",
+    "searchhost.exe",
+    "securityhealthservice.exe",
+    "securityhealthsystray.exe",
+    "services.exe",
+    "shellexperiencehost.exe",
+    "sihost.exe",
+    "smss.exe",
+    "startmenuexperiencehost.exe",
+    "system",
+    "taskmgr.exe",
+    "textinputhost.exe",
+    "wininit.exe",
+    "winlogon.exe",
+    "wudfhost.exe",
+];
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EfficiencyModeSnapshot {
+    pub enabled: bool,
+    pub observation_paused: bool,
+    pub waiting_for_power_source: bool,
+    pub unsupported: bool,
+    pub scanned_processes: usize,
+    pub throttled_processes: usize,
+    pub skipped_processes: usize,
+    pub access_denied_processes: usize,
+    pub failed_processes: usize,
+    pub last_error: Option<String>,
+}
+
+#[derive(Default)]
+pub struct EfficiencyModeManager {
+    failure_suppression: ExecutionFailureTracker,
+    non_release_failures: EfficiencyModeFailures,
+    release_error_reported: bool,
+}
+
+struct EfficiencyModeTarget {
+    process_id: u32,
+    process_name: String,
+    executable_path: String,
+    creation_time: u64,
+    ignore_timer_resolution: bool,
+}
+
+impl EfficiencyModeManager {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the policy boundary receives shared observations and its state controller"
+    )]
+    pub(crate) fn update(
+        &mut self,
+        controller: &mut PriorityEfficiencyController,
+        settings: &EfficiencyModeSettings,
+        automation_enabled: bool,
+        allow_cross_session_process_control: bool,
+        foreground_process_id: Option<u32>,
+        observations: &mut CycleObservations,
+        action_log: &mut ActionLog,
+    ) -> EfficiencyModeSnapshot {
+        if !automation_enabled {
+            return self.disabled_snapshot(
+                controller,
+                action_log,
+                "efficiency_mode.release_reason_automation_disabled",
+            );
+        }
+        if !settings.enabled {
+            return self.disabled_snapshot(
+                controller,
+                action_log,
+                "efficiency_mode.release_reason_feature_disabled",
+            );
+        }
+        let needs_foreground = settings.foreground_detection_enabled;
+        let needs_visible_windows = settings.visible_window_detection_enabled;
+        if needs_foreground && foreground_process_id.is_none() {
+            return self.paused_snapshot(
+                controller,
+                action_log,
+                "efficiency_mode.release_reason_unknown_foreground",
+                None,
+            );
+        }
+
+        let visible_window_process_ids = if needs_visible_windows {
+            let Ok(process_ids) = observations.visible_window_process_ids() else {
+                return self.paused_snapshot(
+                    controller,
+                    action_log,
+                    "efficiency_mode.release_reason_unavailable_windows",
+                    None,
+                );
+            };
+            process_ids
+        } else {
+            Default::default()
+        };
+
+        // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
+        let current_process_id = unsafe { GetCurrentProcessId() };
+        let Some(current_session_id) = process_session_id(current_process_id) else {
+            return self.paused_snapshot(
+                controller,
+                action_log,
+                "efficiency_mode.release_reason_unknown_session",
+                None,
+            );
+        };
+        let processes = match observations.processes() {
+            Ok(processes) => processes,
+            Err(error) => {
+                return self.paused_snapshot(
+                    controller,
+                    action_log,
+                    "efficiency_mode.release_reason_unavailable_processes",
+                    Some(error),
+                );
+            }
+        };
+
+        let scanned_processes = processes.len();
+        let foreground_process_id = foreground_process_id.filter(|_| needs_foreground);
+        let foreground_executable_path =
+            foreground_process_id.and_then(|id| catalog_process_executable_path(&processes, id));
+        if needs_foreground && foreground_executable_path.is_none() {
+            return self.paused_snapshot(
+                controller,
+                action_log,
+                "efficiency_mode.release_reason_unknown_foreground",
+                None,
+            );
+        }
+        let visible_processes = ProtectedProcesses::capture(
+            processes.as_ref(),
+            false,
+            None,
+            visible_window_process_ids,
+        );
+        let child_protection = observations.priority_child_protection(
+            settings.child_protection,
+            &processes,
+            foreground_process_id,
+            &visible_processes,
+        );
+        let active_audio_process_ids = active_audio_process_ids().ok();
+        let targets = processes
+            .iter()
+            .filter_map(|process| {
+                if process.id == 0
+                    || process.id == current_process_id
+                    || process.is_critical != Some(false)
+                    || !process.can_set_information
+                    || is_builtin_excluded(&process.name)
+                    || (!allow_cross_session_process_control
+                        && process_session_id(process.id) != Some(current_session_id))
+                {
+                    return None;
+                }
+                let executable_path = process_executable_path(process)?;
+                let path = executable_path.to_str()?;
+                let creation_time = process.creation_time?;
+                let focus = is_foreground_process(
+                    process.id,
+                    &executable_path,
+                    foreground_process_id,
+                    foreground_executable_path.as_deref(),
+                );
+                let visible_window = !focus
+                    && needs_visible_windows
+                    && visible_processes.contains(process.id, &executable_path);
+                if (!focus && !visible_window && child_protection.contains(process.id))
+                    || !efficiency_mode_enabled_for(settings, path, focus, || visible_window)
+                {
+                    return None;
+                }
+                Some(EfficiencyModeTarget {
+                    process_id: process.id,
+                    process_name: process.name.clone(),
+                    executable_path: path.to_owned(),
+                    creation_time,
+                    ignore_timer_resolution: ignore_timer_resolution_allowed(
+                        process.id,
+                        active_audio_process_ids.as_ref(),
+                    ),
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let active_targets = targets
+            .iter()
+            .map(efficiency_mode_target_key)
+            .collect::<BTreeSet<_>>();
+        let active_target_names = targets
+            .iter()
+            .map(|target| process_failure_key(&target.executable_path))
+            .collect::<BTreeSet<_>>();
+        self.failure_suppression.retain_keys(&active_target_names);
+
+        let mut failures = EfficiencyModeFailures::default();
+        self.record_policy_release(
+            controller
+                .release_efficiency_policy_except(ControlOwner::EfficiencyMode, &active_targets),
+            action_log,
+            "efficiency_mode.release_reason_no_longer_matches",
+        );
+
+        let mut skipped_processes = 0;
+        let mut access_denied_processes = 0;
+        for target in targets {
+            if self
+                .check_process_suppression(
+                    target.process_id,
+                    &target.process_name,
+                    &target.executable_path,
+                    action_log,
+                )
+                .suppressed
+            {
+                skipped_processes += 1;
+                continue;
+            }
+            let claim = EfficiencyModeClaim {
+                target: ProcessControlTarget::automatic(
+                    target.process_id,
+                    target.process_name.clone(),
+                    PathBuf::from(&target.executable_path),
+                    target.creation_time,
+                ),
+                owner: ControlOwner::EfficiencyMode,
+                ignore_timer_resolution: target.ignore_timer_resolution,
+            };
+            match controller.apply_efficiency_claim(claim, allow_cross_session_process_control) {
+                Ok(ProcessPropertyApplyOutcome::Applied) => {
+                    self.clear_process_failure(&target.executable_path);
+                    action_log.record(
+                        ActionLogFeature::EfficiencyMode,
+                        Some(target.process_id),
+                        target.process_name,
+                        ActionLogResult::Applied,
+                        "EcoQoS enabled; process priority lowered.",
+                    );
+                }
+                Ok(
+                    ProcessPropertyApplyOutcome::Unchanged
+                    | ProcessPropertyApplyOutcome::Preserved
+                    | ProcessPropertyApplyOutcome::Shadowed,
+                ) => self.clear_process_failure(&target.executable_path),
+                Err(ProcessControlError::ProcessExited) => skipped_processes += 1,
+                Err(ProcessControlError::AccessDenied(message)) => {
+                    skipped_processes += 1;
+                    access_denied_processes += 1;
+                    self.failure_suppression
+                        .suppress_process_failure(&target.executable_path);
+                    action_log.record(
+                        ActionLogFeature::EfficiencyMode,
+                        Some(target.process_id),
+                        target.process_name,
+                        ActionLogResult::Skipped,
+                        message,
+                    );
+                }
+                Err(ProcessControlError::Unavailable(message)) => {
+                    skipped_processes += 1;
+                    failures.unsupported = true;
+                    self.failure_suppression
+                        .suppress_process_failure(&target.executable_path);
+                    action_log.record(
+                        ActionLogFeature::EfficiencyMode,
+                        Some(target.process_id),
+                        target.process_name,
+                        ActionLogResult::Skipped,
+                        message,
+                    );
+                }
+                Err(error) => {
+                    self.record_process_failure(&target.executable_path);
+                    failures.record(
+                        "Apply",
+                        target.process_id,
+                        &target.process_name,
+                        error,
+                        action_log,
+                    );
+                }
+            }
+        }
+
+        self.non_release_failures = failures;
+        let status = EfficiencyModeSnapshot {
+            enabled: true,
+            scanned_processes,
+            skipped_processes,
+            access_denied_processes,
+            ..Default::default()
+        };
+        self.with_release_status(controller, status)
+    }
+
+    pub(crate) fn pause_for_power_source(
+        &mut self,
+        controller: &mut PriorityEfficiencyController,
+        action_log: &mut ActionLog,
+    ) -> EfficiencyModeSnapshot {
+        EfficiencyModeSnapshot {
+            waiting_for_power_source: true,
+            ..self.paused_snapshot(
+                controller,
+                action_log,
+                "efficiency_mode.release_reason_unknown_power_source",
+                None,
+            )
+        }
+    }
+
+    fn disabled_snapshot(
+        &mut self,
+        controller: &mut PriorityEfficiencyController,
+        action_log: &mut ActionLog,
+        reason_key: &str,
+    ) -> EfficiencyModeSnapshot {
+        self.non_release_failures = EfficiencyModeFailures::default();
+        self.record_policy_release(
+            controller.release_all_efficiency_policy(ControlOwner::EfficiencyMode),
+            action_log,
+            reason_key,
+        );
+        self.failure_suppression.clear();
+        self.with_release_status(controller, EfficiencyModeSnapshot::default())
+    }
+
+    fn paused_snapshot(
+        &mut self,
+        controller: &mut PriorityEfficiencyController,
+        action_log: &mut ActionLog,
+        reason_key: &str,
+        observation_error: Option<String>,
+    ) -> EfficiencyModeSnapshot {
+        self.non_release_failures = EfficiencyModeFailures {
+            last_error: observation_error,
+            ..Default::default()
+        };
+        self.record_policy_release(
+            controller.release_all_efficiency_policy(ControlOwner::EfficiencyMode),
+            action_log,
+            reason_key,
+        );
+        let status = EfficiencyModeSnapshot {
+            enabled: true,
+            observation_paused: true,
+            ..Default::default()
+        };
+        self.with_release_status(controller, status)
+    }
+
+    pub(crate) fn reported_release_is_resolved(
+        &self,
+        controller: &PriorityEfficiencyController,
+    ) -> bool {
+        self.release_error_reported
+            && controller
+                .efficiency_mode_release_failures()
+                .next()
+                .is_none()
+    }
+
+    pub(crate) fn with_release_status(
+        &mut self,
+        controller: &PriorityEfficiencyController,
+        mut status: EfficiencyModeSnapshot,
+    ) -> EfficiencyModeSnapshot {
+        status.throttled_processes =
+            controller.policy_managed_process_count(ControlOwner::EfficiencyMode);
+        status.failed_processes = self.non_release_failures.count;
+        status.unsupported = self.non_release_failures.unsupported;
+        let mut pending = controller.efficiency_mode_release_failures().peekable();
+        self.release_error_reported = pending.peek().is_some();
+        status.last_error = pending
+            .peek()
+            .map(|failure| {
+                process_failure_message(
+                    &format!("Restore {}", failure.property),
+                    failure.process_id,
+                    &failure.process_name,
+                    &failure.error.to_string(),
+                )
+            })
+            .or_else(|| self.non_release_failures.last_error.clone());
+        for failure in pending {
+            status.failed_processes += 1;
+            status.unsupported |= matches!(failure.error, ProcessControlError::Unavailable(_));
+        }
+        status
+    }
+
+    fn record_policy_release(
+        &mut self,
+        summary: PriorityEfficiencyReleaseSummary,
+        action_log: &mut ActionLog,
+        reason_key: &str,
+    ) {
+        for failure in &summary.failures {
+            self.record_process_failure(&failure.executable_path);
+        }
+        Self::record_release_summary(summary, action_log, reason_key);
+    }
+
+    pub(crate) fn record_release_summary(
+        summary: PriorityEfficiencyReleaseSummary,
+        action_log: &mut ActionLog,
+        reason_key: &str,
+    ) {
+        if summary.restored_processes > 0 {
+            let locale = rust_i18n::locale();
+            action_log.record(
+                ActionLogFeature::EfficiencyMode,
+                None,
+                "",
+                ActionLogResult::Restored,
+                rust_i18n::t!(
+                    "efficiency_mode.log_restored",
+                    locale = &*locale,
+                    count = summary.restored_processes,
+                    reason = rust_i18n::t!(reason_key, locale = &*locale)
+                ),
+            );
+        }
+        for failure in summary.failures {
+            action_log.record(
+                ActionLogFeature::EfficiencyMode,
+                Some(failure.process_id),
+                failure.process_name,
+                ActionLogResult::Failed,
+                format!("Restore {} failed. {}", failure.property, failure.error),
+            );
+        }
+    }
+
+    fn check_process_suppression(
+        &mut self,
+        process_id: u32,
+        process_name: &str,
+        executable_path: &str,
+        action_log: &mut ActionLog,
+    ) -> ExecutionSuppression {
+        let suppression = self
+            .failure_suppression
+            .process_suppression(executable_path);
+        if suppression.newly_suppressed {
+            action_log.record(
+                ActionLogFeature::EfficiencyMode,
+                Some(process_id),
+                process_name.to_owned(),
+                ActionLogResult::Skipped,
+                format!(
+                    "Stopped retrying Efficiency Mode after {} failed attempts.",
+                    execution_failure_suppression_threshold(),
+                ),
+            );
+        }
+        suppression
+    }
+
+    #[cfg(test)]
+    fn is_process_suppressed(
+        &mut self,
+        process_id: u32,
+        process_name: &str,
+        action_log: &mut ActionLog,
+    ) -> bool {
+        self.check_process_suppression(process_id, process_name, process_name, action_log)
+            .suppressed
+    }
+
+    fn record_process_failure(&mut self, process_name: &str) {
+        self.failure_suppression
+            .record_process_failure(process_name);
+    }
+
+    fn clear_process_failure(&mut self, process_name: &str) {
+        self.failure_suppression.clear_process_failure(process_name);
+    }
+}
+
+#[derive(Default)]
+struct EfficiencyModeFailures {
+    unsupported: bool,
+    count: usize,
+    last_error: Option<String>,
+}
+
+impl EfficiencyModeFailures {
+    fn record(
+        &mut self,
+        action: &str,
+        process_id: u32,
+        process_name: &str,
+        error: ProcessControlError,
+        action_log: &mut ActionLog,
+    ) {
+        let message = error.to_string();
+        if self.last_error.is_none() {
+            self.last_error = Some(process_failure_message(
+                action,
+                process_id,
+                process_name,
+                &message,
+            ));
+        }
+        self.count += 1;
+        action_log.record(
+            ActionLogFeature::EfficiencyMode,
+            Some(process_id),
+            process_name.to_owned(),
+            ActionLogResult::Failed,
+            message,
+        );
+    }
+}
+
+fn efficiency_mode_target_key(target: &EfficiencyModeTarget) -> ProcessTargetKey {
+    ProcessTargetKey::new(
+        target.process_id,
+        target.creation_time,
+        Path::new(&target.executable_path),
+    )
+}
+
+fn process_failure_message(
+    action: &str,
+    process_id: u32,
+    process_name: &str,
+    message: &str,
+) -> String {
+    format!("{action} {process_name} ({process_id}): {message}")
+}
+
+pub fn is_builtin_excluded(process_name: &str) -> bool {
+    contains_process_name(BUILT_IN_EXCLUSIONS, process_name)
+}
+
+fn ignore_timer_resolution_allowed(
+    process_id: u32,
+    active_audio_process_ids: Option<&BTreeSet<u32>>,
+) -> bool {
+    active_audio_process_ids.is_some_and(|ids| !ids.contains(&process_id))
+}
+
+fn efficiency_mode_enabled_for(
+    settings: &EfficiencyModeSettings,
+    process_name: &str,
+    focus: bool,
+    visible_window: impl FnOnce() -> bool,
+) -> bool {
+    let focus = settings.foreground_detection_enabled && focus;
+    let visible_window = !focus && settings.visible_window_detection_enabled && visible_window();
+    let default_enabled = if focus {
+        settings.foreground_efficiency_mode
+    } else if visible_window {
+        settings.visible_window_efficiency_mode
+    } else {
+        settings.background_efficiency_mode
+    };
+    settings
+        .custom_rule_for(process_name)
+        .map(|rule| rule.efficiency_mode_for(focus, visible_window, default_enabled))
+        .unwrap_or(default_enabled)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ProcessRuleMode;
+
+    #[test]
+    fn unverified_focused_executable_pauses_only_with_focus_detection() {
+        let mut manager = EfficiencyModeManager::default();
+        let mut controller = PriorityEfficiencyController::default();
+        let mut observations = CycleObservations::with_processes(Vec::new());
+        let mut action_log = ActionLog::default();
+        let mut settings = EfficiencyModeSettings {
+            enabled: true,
+            foreground_detection_enabled: true,
+            ..Default::default()
+        };
+        let mut update = |settings: &EfficiencyModeSettings| {
+            manager.update(
+                &mut controller,
+                settings,
+                true,
+                true,
+                Some(std::process::id()),
+                &mut observations,
+                &mut action_log,
+            )
+        };
+
+        assert!(update(&settings).observation_paused);
+        settings.foreground_detection_enabled = false;
+        assert!(!update(&settings).observation_paused);
+    }
+
+    #[test]
+    fn built_in_exclusions_protect_windows_shell_and_system_processes() {
+        for name in ["EXPLORER.EXE", "SearchHost.exe", "dwm.exe", "winlogon.exe"] {
+            assert!(is_builtin_excluded(name), "{name}");
+        }
+        assert!(!is_builtin_excluded("browser.exe"));
+    }
+
+    #[test]
+    fn disabled_user_exclusions_do_not_exclude_processes() {
+        let mut settings = EfficiencyModeSettings {
+            custom_rules: vec![crate::config::EfficiencyModeRule {
+                enabled: false,
+                executable_path: "mouse.exe".to_owned(),
+                focus_efficiency_mode: ProcessRuleMode::Disabled,
+                visible_window_efficiency_mode: ProcessRuleMode::Disabled,
+                background_efficiency_mode: ProcessRuleMode::Disabled,
+            }],
+            ..Default::default()
+        };
+
+        assert!(settings.contains_custom_rule("MOUSE.EXE"));
+        assert!(efficiency_mode_enabled_for(
+            &settings,
+            "mouse.exe",
+            false,
+            || false
+        ));
+        settings.custom_rules[0].enabled = true;
+        assert!(!efficiency_mode_enabled_for(
+            &settings,
+            "MOUSE.EXE",
+            false,
+            || false
+        ));
+    }
+
+    #[test]
+    fn custom_rule_prefers_focus_then_visible_window_then_background() {
+        let mut settings = EfficiencyModeSettings {
+            foreground_detection_enabled: true,
+            visible_window_detection_enabled: true,
+            custom_rules: vec![crate::config::EfficiencyModeRule {
+                enabled: true,
+                executable_path: "app.exe".to_owned(),
+                focus_efficiency_mode: ProcessRuleMode::Enabled,
+                visible_window_efficiency_mode: ProcessRuleMode::Disabled,
+                background_efficiency_mode: ProcessRuleMode::Enabled,
+            }],
+            ..Default::default()
+        };
+
+        assert!(efficiency_mode_enabled_for(
+            &settings,
+            "APP.EXE",
+            true,
+            || { panic!("Focus already decides which efficiency mode to use") }
+        ));
+        settings.foreground_detection_enabled = false;
+        assert!(!efficiency_mode_enabled_for(
+            &settings,
+            "app.exe",
+            true,
+            || true
+        ));
+        assert!(efficiency_mode_enabled_for(
+            &settings,
+            "app.exe",
+            true,
+            || false
+        ));
+    }
+
+    #[test]
+    fn custom_rule_default_inherits_global_layer() {
+        let settings = EfficiencyModeSettings {
+            foreground_detection_enabled: true,
+            visible_window_detection_enabled: true,
+            foreground_efficiency_mode: false,
+            visible_window_efficiency_mode: true,
+            custom_rules: vec![crate::config::EfficiencyModeRule {
+                enabled: true,
+                executable_path: "app.exe".to_owned(),
+                focus_efficiency_mode: ProcessRuleMode::Default,
+                visible_window_efficiency_mode: ProcessRuleMode::Default,
+                background_efficiency_mode: ProcessRuleMode::Default,
+            }],
+            ..Default::default()
+        };
+
+        assert!(!efficiency_mode_enabled_for(
+            &settings,
+            "app.exe",
+            true,
+            || false
+        ));
+        assert!(efficiency_mode_enabled_for(
+            &settings,
+            "app.exe",
+            false,
+            || true
+        ));
+    }
+
+    #[test]
+    fn process_failure_message_includes_action_name_pid_and_error() {
+        assert_eq!(
+            process_failure_message("Restore", 42, "browser.exe", "OpenProcess failed."),
+            "Restore browser.exe (42): OpenProcess failed."
+        );
+    }
+
+    #[test]
+    fn repeated_failures_suppress_future_efficiency_attempts_once() {
+        let mut manager = EfficiencyModeManager::default();
+        let mut log = ActionLog::new(8);
+        let executable_path = r"C:\Apps\app.exe";
+
+        manager.record_process_failure(executable_path);
+        manager.record_process_failure(executable_path);
+        assert!(
+            !manager
+                .check_process_suppression(42, "app.exe", executable_path, &mut log)
+                .suppressed
+        );
+        assert!(log.entries().is_empty());
+
+        manager.record_process_failure(executable_path);
+        assert!(
+            manager
+                .check_process_suppression(42, "app.exe", executable_path, &mut log)
+                .suppressed
+        );
+        assert!(manager.is_process_suppressed(43, r"C:/Apps/app.exe", &mut log));
+
+        let entries = log.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].process_name, "app.exe");
+        assert_eq!(entries[0].result, ActionLogResult::Skipped);
+    }
+
+    #[test]
+    fn first_suppression_reports_once() {
+        let mut manager = EfficiencyModeManager::default();
+        let mut log = ActionLog::new(8);
+
+        manager.record_process_failure("app.exe");
+        manager.record_process_failure("app.exe");
+        manager.record_process_failure("app.exe");
+
+        let first = manager.check_process_suppression(42, "app.exe", "app.exe", &mut log);
+        let second = manager.check_process_suppression(42, "app.exe", "app.exe", &mut log);
+
+        assert!(first.suppressed);
+        assert!(first.newly_suppressed);
+        assert!(second.suppressed);
+        assert!(!second.newly_suppressed);
+    }
+
+    #[test]
+    fn timer_ignore_guard_fails_closed_for_audio_detection() {
+        let mut audio_processes = BTreeSet::new();
+        audio_processes.insert(42);
+
+        assert!(!ignore_timer_resolution_allowed(42, Some(&audio_processes)));
+        assert!(ignore_timer_resolution_allowed(7, Some(&audio_processes)));
+        assert!(!ignore_timer_resolution_allowed(7, None));
+    }
+}

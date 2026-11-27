@@ -1,12 +1,13 @@
 use std::{
     collections::{BTreeMap, VecDeque},
-    time::{SystemTime, UNIX_EPOCH},
+    sync::Arc,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use crate::config::ActionLogMode;
 
 pub const DEFAULT_ACTION_LOG_CAPACITY: usize = 512;
-const SKIPPED_ENTRY_DEDUPLICATION_WINDOW_MS: u128 = 30_000;
+const SKIPPED_ENTRY_DEDUPLICATION_WINDOW: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionLogEntry {
@@ -26,7 +27,7 @@ pub enum ActionLogFeature {
     CpuSetsSoft,
     InstanceBalancing,
     ProcessorAffinityHard,
-    BackgroundEfficiency,
+    EfficiencyMode,
     CpuLimiter,
     ByFocus,
     ByRunningApp,
@@ -41,7 +42,7 @@ pub enum ActionLogFeature {
     GpuPriority,
     MemoryPriority,
     MemoryTrim,
-    Watchdog,
+    ResourceThresholds,
     TimerResolution,
     SleepPrevention,
     KeepRunning,
@@ -96,7 +97,8 @@ impl ActionLogResult {
 }
 
 pub struct ActionLog {
-    entries: VecDeque<ActionLogEntry>,
+    entries: VecDeque<(Instant, ActionLogEntry)>,
+    entries_snapshot: Option<Arc<Vec<ActionLogEntry>>>,
     next_sequence: u64,
     batch_id: Option<u64>,
     revision: u64,
@@ -110,6 +112,7 @@ impl ActionLog {
         let capacity = capacity.max(1);
         Self {
             entries: VecDeque::with_capacity(capacity),
+            entries_snapshot: None,
             next_sequence: 1,
             batch_id: None,
             revision: 0,
@@ -141,16 +144,15 @@ impl ActionLog {
         }
         let process_name = process_name.into();
         let reason = reason.into();
-        let timestamp_epoch_ms = timestamp_epoch_ms();
+        let now = Instant::now();
         if result == ActionLogResult::Skipped
-            && self.entries.iter().rev().any(|entry| {
+            && self.entries.iter().rev().any(|(recorded_at, entry)| {
                 entry.feature == feature
                     && entry.process_id == process_id
                     && entry.process_name == process_name
                     && entry.result == result
                     && entry.reason == reason
-                    && timestamp_epoch_ms.saturating_sub(entry.timestamp_epoch_ms)
-                        < SKIPPED_ENTRY_DEDUPLICATION_WINDOW_MS
+                    && now.duration_since(*recorded_at) < SKIPPED_ENTRY_DEDUPLICATION_WINDOW
             })
         {
             return;
@@ -159,7 +161,7 @@ impl ActionLog {
         let entry = ActionLogEntry {
             sequence: self.next_sequence,
             batch_id: self.batch_id.unwrap_or(self.next_sequence),
-            timestamp_epoch_ms,
+            timestamp_epoch_ms: timestamp_epoch_ms(),
             feature,
             process_id,
             process_name,
@@ -184,13 +186,26 @@ impl ActionLog {
             if self.entries.len() == self.capacity {
                 self.entries.pop_front();
             }
-            self.entries.push_back(entry);
+            self.entries.push_back((now, entry));
+            self.entries_snapshot = None;
         }
         self.revision = self.revision.wrapping_add(1);
     }
 
     pub fn entries(&self) -> Vec<ActionLogEntry> {
-        self.entries.iter().cloned().collect()
+        self.entries
+            .iter()
+            .map(|(_, entry)| entry.clone())
+            .collect()
+    }
+
+    pub(crate) fn entries_snapshot(&mut self) -> Arc<Vec<ActionLogEntry>> {
+        if let Some(entries) = &self.entries_snapshot {
+            return Arc::clone(entries);
+        }
+        let entries = Arc::new(self.entries());
+        self.entries_snapshot = Some(Arc::clone(&entries));
+        entries
     }
 
     pub fn summaries(&self) -> ActionLogSummaries {
@@ -203,6 +218,7 @@ impl ActionLog {
 
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.entries_snapshot = None;
         self.summaries.clear();
         self.revision = self.revision.wrapping_add(1);
     }
@@ -342,7 +358,10 @@ mod tests {
             ActionLogResult::Applied,
             "first",
         );
+        let captured = log.entries_snapshot();
         log.clear();
+        assert!(log.entries_snapshot().is_empty());
+        assert_eq!(captured.len(), 1);
         log.record(
             ActionLogFeature::CpuLimiter,
             Some(2),
@@ -361,21 +380,21 @@ mod tests {
         let mut log = ActionLog::new(8);
         log.set_mode(ActionLogMode::Warning);
         log.record(
-            ActionLogFeature::BackgroundEfficiency,
+            ActionLogFeature::EfficiencyMode,
             Some(1),
             "app.exe",
             ActionLogResult::Applied,
             "applied",
         );
         log.record(
-            ActionLogFeature::BackgroundEfficiency,
+            ActionLogFeature::EfficiencyMode,
             Some(1),
             "app.exe",
             ActionLogResult::Skipped,
             "skipped",
         );
         log.record(
-            ActionLogFeature::BackgroundEfficiency,
+            ActionLogFeature::EfficiencyMode,
             Some(1),
             "app.exe",
             ActionLogResult::Failed,
@@ -390,14 +409,14 @@ mod tests {
         let mut error_log = ActionLog::new(8);
         error_log.set_mode(ActionLogMode::Error);
         error_log.record(
-            ActionLogFeature::BackgroundEfficiency,
+            ActionLogFeature::EfficiencyMode,
             Some(1),
             "app.exe",
             ActionLogResult::Skipped,
             "skipped",
         );
         error_log.record(
-            ActionLogFeature::BackgroundEfficiency,
+            ActionLogFeature::EfficiencyMode,
             Some(1),
             "app.exe",
             ActionLogResult::Failed,
@@ -407,18 +426,20 @@ mod tests {
         assert_eq!(error_log.entries().len(), 1);
         assert_eq!(error_log.entries()[0].result, ActionLogResult::Failed);
 
+        let captured = log.entries_snapshot();
         log.set_mode(ActionLogMode::Off);
         log.record(
-            ActionLogFeature::BackgroundEfficiency,
+            ActionLogFeature::EfficiencyMode,
             Some(2),
             "other.exe",
             ActionLogResult::Restored,
             "restored",
         );
 
+        assert!(Arc::ptr_eq(&captured, &log.entries_snapshot()));
         assert_eq!(log.entries().len(), 2);
         assert_eq!(
-            log.summaries()[&ActionLogFeature::BackgroundEfficiency].successful_actions,
+            log.summaries()[&ActionLogFeature::EfficiencyMode].successful_actions,
             2
         );
     }

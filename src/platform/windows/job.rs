@@ -5,13 +5,11 @@ use windows_sys::Win32::{
         SetLastError, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_INVALID_PARAMETER,
         ERROR_NOT_SUPPORTED, HANDLE,
     },
-    System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob},
-};
-
-#[cfg(test)]
-use windows_sys::Win32::System::JobObjects::{
-    JobObjectBasicUIRestrictions, SetInformationJobObject, JOBOBJECT_BASIC_UI_RESTRICTIONS,
-    JOB_OBJECT_UILIMIT_HANDLES,
+    System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob,
+        JobObjectBasicAccountingInformation, QueryInformationJobObject,
+        JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+    },
 };
 
 use crate::win_util::{last_error, wide_null, WinHandle};
@@ -81,29 +79,19 @@ pub(crate) fn process_is_in_job(process: &WinHandle, job: Option<&JobHandle>) ->
     (ok != 0).then_some(in_job != 0)
 }
 
-#[cfg(test)]
-pub(crate) fn set_ui_restriction_for_test(job: &JobHandle) -> Result<(), JobObjectError> {
-    let restriction = JOBOBJECT_BASIC_UI_RESTRICTIONS {
-        UIRestrictionsClass: JOB_OBJECT_UILIMIT_HANDLES,
-    };
-    // SAFETY: job is live and restriction is a readable buffer with the exact information-class
-    // layout. This test-only restriction makes a disposable foreign job incompatible with nesting.
+pub(crate) fn has_no_active_processes(job: &JobHandle) -> bool {
+    let mut accounting = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+    // SAFETY: job is live and accounting is writable for the selected information class.
     let ok = unsafe {
-        SetInformationJobObject(
+        QueryInformationJobObject(
             job.raw(),
-            JobObjectBasicUIRestrictions,
-            (&restriction as *const JOBOBJECT_BASIC_UI_RESTRICTIONS).cast(),
-            std::mem::size_of::<JOBOBJECT_BASIC_UI_RESTRICTIONS>() as u32,
+            JobObjectBasicAccountingInformation,
+            (&raw mut accounting).cast(),
+            size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+            null_mut(),
         )
     };
-    if ok == 0 {
-        Err(JobObjectError::Failed(format!(
-            "Foreign job UI restriction failed with error {}.",
-            last_error()
-        )))
-    } else {
-        Ok(())
-    }
+    ok != 0 && accounting.ActiveProcesses == 0
 }
 
 fn assign_error(process_id: u32, error: u32) -> JobObjectError {

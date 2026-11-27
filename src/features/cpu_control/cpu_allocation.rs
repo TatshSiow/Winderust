@@ -1,10 +1,10 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
-use windows_sys::Win32::System::Threading::{GetActiveProcessorGroupCount, GetCurrentProcessId};
+use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
@@ -17,10 +17,12 @@ use crate::{
         },
         process::{ControlOwner, ProcessControlError, ProcessControlTarget, ProcessTargetKey},
     },
+    cpu::active_processor_group_count,
     cpu_topology::{CpuSelection, CpuTopology, ProcessorId},
     features::priority_control::PriorityProcessTier,
     foreground::{
         contains_process_name, is_foreground_process, process_executable_path, process_failure_key,
+        process_list::{catalog_process_executable_path, unicode_case_match},
         process_session_id, same_executable_path, ProtectedProcesses,
         EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
@@ -33,15 +35,16 @@ use crate::{
 const BUILT_IN_EXCLUSIONS: &[&str] = EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS;
 const EXTRA_BUILT_IN_EXCLUSIONS: &[&str] = &["rtkauduservice64.exe"];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CpuAllocationSnapshot {
     pub enabled: bool,
+    pub(crate) observation_paused: bool,
+    pub(crate) waiting_for_power_source: bool,
     pub scanned_processes: usize,
     pub adjusted_processes: usize,
     pub skipped_processes: usize,
     pub failed_processes: usize,
     pub auto_excluded_processes: Vec<String>,
-    pub message: String,
     pub last_error: Option<String>,
 }
 
@@ -92,12 +95,18 @@ pub struct CpuAllocationManager {
     zone_retry_after: Option<Instant>,
     zone_error: Option<String>,
     zone_failure: ZoneAllocationFailure,
+    status_after_release: Option<CpuAllocationSnapshot>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CpuAllocationMode {
     SoftCpuSets,
     HardAffinity,
+    PreserveHardAffinity,
+    ReduceAffinity {
+        processors_to_remove: u8,
+        preserve_custom_affinity: bool,
+    },
 }
 
 impl CpuAllocationManager {
@@ -115,6 +124,7 @@ impl CpuAllocationManager {
             zone_retry_after: None,
             zone_error: None,
             zone_failure: ZoneAllocationFailure::Waiting,
+            status_after_release: None,
         }
     }
 
@@ -130,18 +140,17 @@ impl CpuAllocationManager {
         allocation: (CpuAllocationMode, ActionLogFeature),
         automation_enabled: bool,
         allow_cross_session_process_control: bool,
-        foreground_process_id: Option<u32>,
         observations: &mut CycleObservations,
         action_log: &mut ActionLog,
     ) -> CpuAllocationSnapshot {
         let (mode, action_log_feature) = allocation;
         self.action_log_feature = action_log_feature;
+        self.status_after_release = None;
         if !automation_enabled {
             return self.disabled_snapshot(
                 coordinator,
                 owner,
                 false,
-                "Automation disabled.",
                 "automation disabled",
                 action_log,
             );
@@ -152,40 +161,33 @@ impl CpuAllocationManager {
                 coordinator,
                 owner,
                 false,
-                &format!("{} disabled.", self.feature_label()),
                 &format!("{} disabled", self.feature_label()),
                 action_log,
             );
         }
 
-        let enabled_process_names = settings
-            .rules
+        let enabled_process_names = enabled_rule_process_names(&settings.rules);
+        let unicode_process_names = enabled_process_names
             .iter()
-            .filter(|rule| cpu_allocation_rule_is_active(rule))
-            .filter_map(|rule| Path::new(&rule.executable_path).file_name())
-            .filter_map(|name| name.to_str())
-            .map(str::to_ascii_lowercase)
-            .collect::<BTreeSet<_>>();
+            .map(String::as_str)
+            .filter(|name| !name.is_ascii())
+            .collect::<Vec<_>>();
         if enabled_process_names.is_empty() {
             let reason = format!("no {} rules configured", self.feature_label());
-            return self.disabled_snapshot(
-                coordinator,
-                owner,
-                true,
-                &format!("No {} rules configured.", self.feature_label()),
-                &reason,
-                action_log,
-            );
+            return self.disabled_snapshot(coordinator, owner, true, &reason, action_log);
         }
 
         let (needs_foreground, needs_visible_windows) =
             cpu_allocation_observation_requirements(&settings.rules);
+        let foreground_process_id = needs_foreground
+            .then(|| observations.foreground_process_id())
+            .flatten();
         if needs_foreground && foreground_process_id.is_none() {
             return self.paused_snapshot(
                 coordinator,
                 owner,
-                "Paused: foreground app is unknown.".to_owned(),
                 "foreground app is unknown",
+                None,
                 action_log,
             );
         }
@@ -195,8 +197,8 @@ impl CpuAllocationManager {
                 return self.paused_snapshot(
                     coordinator,
                     owner,
-                    "Paused: visible windows are unavailable.".to_owned(),
                     "visible windows are unavailable",
+                    None,
                     action_log,
                 );
             };
@@ -211,8 +213,8 @@ impl CpuAllocationManager {
             return self.paused_snapshot(
                 coordinator,
                 owner,
-                "Paused: current Windows session is unknown.".to_owned(),
                 "current Windows session is unknown",
+                None,
                 action_log,
             );
         };
@@ -220,25 +222,28 @@ impl CpuAllocationManager {
         let processes = match observations.processes() {
             Ok(processes) => processes,
             Err(err) => {
-                let mut snapshot = self.paused_snapshot(
+                return self.paused_snapshot(
                     coordinator,
                     owner,
-                    err.clone(),
                     "process list unavailable",
+                    Some(err),
                     action_log,
                 );
-                snapshot.last_error.get_or_insert(err);
-                return snapshot;
             }
         };
 
+        let foreground_executable_path =
+            foreground_process_id.and_then(|id| catalog_process_executable_path(&processes, id));
+        if needs_foreground && foreground_executable_path.is_none() {
+            return self.paused_snapshot(
+                coordinator,
+                owner,
+                "foreground app is unknown",
+                None,
+                action_log,
+            );
+        }
         let scanned_processes = processes.len();
-        let foreground_executable_path = foreground_process_id.and_then(|id| {
-            processes
-                .iter()
-                .find(|process| process.id == id)
-                .and_then(process_executable_path)
-        });
         let visible_processes = ProtectedProcesses::capture(
             processes.as_ref(),
             false,
@@ -252,7 +257,11 @@ impl CpuAllocationManager {
                 || !process.can_set_information
                 || process.id == current_process_id
                 || is_builtin_excluded(&process.name)
-                || !enabled_process_names.contains(&process.name.to_ascii_lowercase())
+                || !process_name_may_match(
+                    &enabled_process_names,
+                    &unicode_process_names,
+                    &process.name,
+                )
             {
                 continue;
             }
@@ -294,17 +303,25 @@ impl CpuAllocationManager {
             }
         }
 
+        if targets.is_empty() && !coordinator.needs_topology_observation() {
+            return self
+                .reconcile_empty_generation(coordinator, owner, scanned_processes, action_log)
+                .snapshot;
+        }
+
         let topology = observations.cpu_topology();
-        self.apply_targets(
+        self.reconcile_targets(
             coordinator,
             topology.as_deref().map_err(String::as_str),
             owner,
             targets,
+            None,
+            None,
             scanned_processes,
-            cpu_allocation_message(mode),
             allow_cross_session_process_control,
             action_log,
         )
+        .snapshot
     }
 
     pub(crate) fn clear_discovered_targets<P: CpuAllocationPlatform>(
@@ -314,36 +331,32 @@ impl CpuAllocationManager {
         reason: &str,
         action_log: &mut ActionLog,
     ) -> CpuAllocationSnapshot {
-        self.disabled_snapshot(coordinator, owner, false, reason, reason, action_log)
+        self.disabled_snapshot(coordinator, owner, false, reason, action_log)
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the controller call keeps policy owner, access, and reporting context explicit"
-    )]
-    fn apply_targets(
+    pub(crate) fn reconcile_empty_generation<P: CpuAllocationPlatform>(
         &mut self,
-        coordinator: &mut CpuAllocationCoordinator,
-        topology: Result<&CpuTopology, &str>,
+        coordinator: &mut CpuAllocationCoordinator<P>,
         owner: ControlOwner,
-        targets: Vec<CpuAllocationTarget>,
         scanned_processes: usize,
-        message: String,
-        allow_cross_session_process_control: bool,
         action_log: &mut ActionLog,
-    ) -> CpuAllocationSnapshot {
-        self.reconcile_targets(
+    ) -> CpuAllocationGeneration {
+        self.invalidate_zone_generation();
+        self.zone_failure = ZoneAllocationFailure::Waiting;
+        let mut snapshot = self.clear_discovered_targets(
             coordinator,
-            topology,
             owner,
-            targets,
-            None,
-            scanned_processes,
-            message,
-            allow_cross_session_process_control,
+            "process no longer matches a CPU allocation rule",
             action_log,
-        )
-        .snapshot
+        );
+        snapshot.enabled = true;
+        snapshot.scanned_processes = scanned_processes;
+        CpuAllocationGeneration {
+            snapshot,
+            zone_counts: None,
+            fallback_count: 0,
+            zone_failure: ZoneAllocationFailure::Waiting,
+        }
     }
 
     #[expect(
@@ -356,9 +369,9 @@ impl CpuAllocationManager {
         topology: Result<&CpuTopology, &str>,
         owner: ControlOwner,
         targets: Vec<CpuAllocationTarget>,
+        episode_limit: Option<usize>,
         zones: Option<(Vec<CpuAllocationTarget>, Vec<CpuAllocationTarget>)>,
         scanned_processes: usize,
-        message: String,
         allow_cross_session_process_control: bool,
         action_log: &mut ActionLog,
     ) -> CpuAllocationGeneration {
@@ -421,13 +434,34 @@ impl CpuAllocationManager {
             "saved CPU selection is unavailable",
             &mut failures,
         );
+        let episode_cleanup_pending = if let Some(limit) = episode_limit {
+            let selected = targets
+                .iter()
+                .take(limit)
+                .map(cpu_allocation_target_key)
+                .collect::<BTreeSet<_>>();
+            let (release, pending) =
+                coordinator.release_adaptive_episode_placements_except(&selected);
+            self.merge_release_summary(
+                release,
+                owner,
+                action_log,
+                "CPU Pressure Restraint episode ended",
+                &mut failures,
+            );
+            pending
+        } else {
+            false
+        };
         let mut skipped_processes = 0;
         let mut auto_excluded_processes = BTreeSet::new();
         let mut zone_failure = self.zone_failure;
         if attempt_zones {
             zone_failure = ZoneAllocationFailure::Waiting;
         }
-        let fallback_label = if owner == ControlOwner::AdaptiveEngine {
+        let fallback_label = if episode_limit.is_some() {
+            "CPU Pressure Restraint processor placement".to_owned()
+        } else if owner == ControlOwner::AdaptiveEngine {
             "Limit Background Processors".to_owned()
         } else {
             self.feature_label().to_owned()
@@ -435,6 +469,8 @@ impl CpuAllocationManager {
         let mut unresolved_targets = BTreeSet::new();
         let mut apply = |target: CpuAllocationTarget, zone_role: Option<&str>| {
             let role = zone_role.unwrap_or(&fallback_label);
+            let episode = episode_limit.is_some() && zone_role.is_none();
+            let episode_key = episode.then(|| cpu_allocation_target_key(&target));
             let mut effective = false;
             let selection_valid = topology.is_ok_and(|topology| match target.mode {
                 CpuAllocationMode::SoftCpuSets if owner != ControlOwner::AdaptiveEngine => {
@@ -460,7 +496,15 @@ impl CpuAllocationManager {
                 if zone_role.is_some() {
                     zone_failure = ZoneAllocationFailure::Degraded;
                 }
-                return false;
+                let pending = episode_key.is_some_and(|key| {
+                    self.release_failed_episode_placement(
+                        coordinator,
+                        &key,
+                        action_log,
+                        &mut failures,
+                    )
+                });
+                return (false, pending);
             }
 
             let request = match target.mode {
@@ -469,6 +513,19 @@ impl CpuAllocationManager {
                 },
                 CpuAllocationMode::HardAffinity => CpuAllocationRequest::HardAffinity {
                     selection: target.selection.clone(),
+                },
+                CpuAllocationMode::PreserveHardAffinity => {
+                    CpuAllocationRequest::PreserveHardAffinity {
+                        selection: target.selection.clone(),
+                    }
+                }
+                CpuAllocationMode::ReduceAffinity {
+                    processors_to_remove,
+                    preserve_custom_affinity,
+                } => CpuAllocationRequest::ReduceAffinity {
+                    selection: target.selection.clone(),
+                    processors_to_remove,
+                    preserve_custom_affinity,
                 },
             };
             let claim = CpuAllocationClaim {
@@ -482,12 +539,22 @@ impl CpuAllocationManager {
                 request,
                 balancing_generation: None,
             };
-            match coordinator.apply_policy_claim(
-                &mut inventory,
-                topology,
-                claim,
-                allow_cross_session_process_control,
-            ) {
+            let outcome = if episode {
+                coordinator.apply_adaptive_episode_claim(
+                    &mut inventory,
+                    topology,
+                    claim,
+                    allow_cross_session_process_control,
+                )
+            } else {
+                coordinator.apply_policy_claim(
+                    &mut inventory,
+                    topology,
+                    claim,
+                    allow_cross_session_process_control,
+                )
+            };
+            match outcome {
                 Ok(CpuAllocationApplyOutcome::Applied) => {
                     effective = true;
                     if zone_role.is_some() || self.zone_generation.is_empty() {
@@ -498,10 +565,15 @@ impl CpuAllocationManager {
                         Some(target.process_id),
                         target.process_name,
                         ActionLogResult::Applied,
-                        format!(
-                            "{role}: allowed {} logical CPUs.",
-                            target.selection.processors().len()
-                        ),
+                        match target.mode {
+                            CpuAllocationMode::ReduceAffinity { processors_to_remove, .. } => {
+                                format!("{role}: reduced the original affinity by up to {processors_to_remove} logical CPUs.")
+                            }
+                            _ => format!(
+                                "{role}: allowed {} logical CPUs.",
+                                target.selection.processors().len()
+                            ),
+                        },
                     );
                 }
                 Ok(CpuAllocationApplyOutcome::Unchanged) => {
@@ -584,13 +656,22 @@ impl CpuAllocationManager {
                     );
                 }
             }
-            effective
+            let pending = !effective
+                && episode_key.is_some_and(|key| {
+                    self.release_failed_episode_placement(
+                        coordinator,
+                        &key,
+                        action_log,
+                        &mut failures,
+                    )
+                });
+            (effective, pending)
         };
         let mut active_targets = BTreeSet::new();
         let mut background_count = 0;
         for target in background.into_iter().filter(|_| attempt_zones) {
             let key = cpu_allocation_target_key(&target);
-            if apply(target, Some("Dynamic Resource Zones background")) {
+            if apply(target, Some("Dynamic Resource Zones background")).0 {
                 background_count += 1;
                 active_targets.insert(key);
             }
@@ -600,7 +681,7 @@ impl CpuAllocationManager {
         if background_count > 0 {
             for target in foreground {
                 let key = cpu_allocation_target_key(&target);
-                if apply(target, Some("Dynamic Resource Zones foreground")) {
+                if apply(target, Some("Dynamic Resource Zones foreground")).0 {
                     foreground_count += 1;
                     active_targets.insert(key);
                 }
@@ -613,12 +694,19 @@ impl CpuAllocationManager {
         let mut fallback_count = 0;
         if zone_counts.is_none() {
             active_targets.clear();
-            for target in targets {
-                active_targets.insert(cpu_allocation_target_key(&target));
-                fallback_count += usize::from(apply(target, None));
+            for target in targets.into_iter().filter(|_| !episode_cleanup_pending) {
+                let key = cpu_allocation_target_key(&target);
+                let (applied, cleanup_pending) = apply(target, None);
+                if applied || episode_limit.is_none() {
+                    active_targets.insert(key);
+                }
+                fallback_count += usize::from(applied);
+                if cleanup_pending || episode_limit == Some(fallback_count) {
+                    break;
+                }
             }
         }
-        if inventory.failed() {
+        if inventory.failed() && episode_limit.is_none() {
             active_targets.extend(desired_keys);
         }
         active_targets.retain(|key| !unresolved_targets.contains(key));
@@ -647,12 +735,13 @@ impl CpuAllocationManager {
         CpuAllocationGeneration {
             snapshot: CpuAllocationSnapshot {
                 enabled: true,
+                observation_paused: false,
+                waiting_for_power_source: false,
                 scanned_processes,
                 adjusted_processes: coordinator.policy_managed_process_count(owner),
                 skipped_processes,
                 failed_processes: failures.count,
                 auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
-                message,
                 last_error: failures.last_error,
             },
             zone_counts,
@@ -661,12 +750,105 @@ impl CpuAllocationManager {
         }
     }
 
+    fn release_failed_episode_placement<P: CpuAllocationPlatform>(
+        &mut self,
+        coordinator: &mut CpuAllocationCoordinator<P>,
+        key: &ProcessTargetKey,
+        action_log: &mut ActionLog,
+        failures: &mut CpuAllocationFailures,
+    ) -> bool {
+        let (release, pending) = coordinator.release_adaptive_episode_placement(key);
+        self.merge_release_summary(
+            release,
+            ControlOwner::AdaptiveEngine,
+            action_log,
+            "CPU Pressure Restraint processor placement was unconfirmed",
+            failures,
+        );
+        pending
+    }
+
+    pub(crate) fn pause_for_power_source<P: CpuAllocationPlatform>(
+        &mut self,
+        coordinator: &mut CpuAllocationCoordinator<P>,
+        owner: ControlOwner,
+        action_log: &mut ActionLog,
+    ) -> CpuAllocationSnapshot {
+        self.status_after_release = None;
+        self.release_snapshot(
+            coordinator,
+            owner,
+            CpuAllocationSnapshot {
+                enabled: true,
+                observation_paused: true,
+                waiting_for_power_source: true,
+                ..Default::default()
+            },
+            "Windows power source is unavailable",
+            action_log,
+        )
+    }
+
+    pub(crate) fn take_settled_release_status<P: CpuAllocationPlatform>(
+        &mut self,
+        coordinator: &CpuAllocationCoordinator<P>,
+        owner: ControlOwner,
+    ) -> Option<CpuAllocationSnapshot> {
+        if self.status_after_release.is_some()
+            && coordinator.policy_managed_process_count(owner) == 0
+        {
+            return self.status_after_release.take();
+        }
+        None
+    }
+
     fn disabled_snapshot<P: CpuAllocationPlatform>(
         &mut self,
         coordinator: &mut CpuAllocationCoordinator<P>,
         owner: ControlOwner,
         enabled: bool,
-        message: &str,
+        reason: &str,
+        action_log: &mut ActionLog,
+    ) -> CpuAllocationSnapshot {
+        self.release_snapshot(
+            coordinator,
+            owner,
+            CpuAllocationSnapshot {
+                enabled,
+                ..Default::default()
+            },
+            reason,
+            action_log,
+        )
+    }
+
+    fn paused_snapshot(
+        &mut self,
+        coordinator: &mut CpuAllocationCoordinator,
+        owner: ControlOwner,
+        reason: &str,
+        observation_error: Option<String>,
+        action_log: &mut ActionLog,
+    ) -> CpuAllocationSnapshot {
+        self.release_snapshot(
+            coordinator,
+            owner,
+            CpuAllocationSnapshot {
+                enabled: true,
+                observation_paused: true,
+                last_error: observation_error,
+                ..Default::default()
+            },
+            reason,
+            action_log,
+        )
+    }
+
+    fn release_snapshot<P: CpuAllocationPlatform>(
+        &mut self,
+        coordinator: &mut CpuAllocationCoordinator<P>,
+        owner: ControlOwner,
+        mut snapshot: CpuAllocationSnapshot,
         reason: &str,
         action_log: &mut ActionLog,
     ) -> CpuAllocationSnapshot {
@@ -679,26 +861,17 @@ impl CpuAllocationManager {
             &mut failures,
         );
         self.failure_suppression.clear();
-        CpuAllocationSnapshot {
-            enabled,
-            failed_processes: failures.count,
-            message: message.to_owned(),
-            last_error: failures.last_error,
-            ..Default::default()
+        if let Some(error) = failures.last_error {
+            if matches!(
+                owner,
+                ControlOwner::CpuSetsSoft | ControlOwner::ProcessorAffinityHard
+            ) {
+                // The release error takes precedence until this static owner has settled.
+                self.status_after_release = Some(snapshot.clone());
+            }
+            snapshot.failed_processes = failures.count;
+            snapshot.last_error = Some(error);
         }
-    }
-
-    fn paused_snapshot(
-        &mut self,
-        coordinator: &mut CpuAllocationCoordinator,
-        owner: ControlOwner,
-        message: String,
-        reason: &str,
-        action_log: &mut ActionLog,
-    ) -> CpuAllocationSnapshot {
-        let mut snapshot =
-            self.disabled_snapshot(coordinator, owner, true, &message, reason, action_log);
-        snapshot.enabled = true;
         snapshot
     }
 
@@ -866,6 +1039,7 @@ pub(crate) fn cpu_allocation_action_log_context(
             "Processor Affinity (Hard)",
         ),
         ControlOwner::AdaptiveEngine => (ActionLogFeature::AdaptiveEngine, "Adaptive Engine"),
+        ControlOwner::CpuLimiter => (ActionLogFeature::CpuLimiter, "CPU Limiter"),
         ControlOwner::InstanceBalancing => {
             (ActionLogFeature::InstanceBalancing, "Instance Balancing")
         }
@@ -932,22 +1106,10 @@ fn cpu_allocation_request_label(
     }
     match request {
         CpuAllocationRequest::SoftCpuSets { .. } => "CPU Sets (Soft)",
-        CpuAllocationRequest::HardAffinity { .. } => "Processor Affinity (Hard)",
-    }
-}
-
-impl Default for CpuAllocationSnapshot {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            scanned_processes: 0,
-            adjusted_processes: 0,
-            skipped_processes: 0,
-            failed_processes: 0,
-            auto_excluded_processes: Vec::new(),
-            message: "CPU allocation disabled.".to_owned(),
-            last_error: None,
-        }
+        CpuAllocationRequest::HardAffinity { .. }
+        | CpuAllocationRequest::PreserveHardAffinity { .. } => "Processor Affinity (Hard)",
+        CpuAllocationRequest::ReduceAffinity { .. } => "Reduce affinity (Hard)",
+        CpuAllocationRequest::AffinityLimit { .. } => "CPU Limiter",
     }
 }
 
@@ -1017,29 +1179,6 @@ pub fn logical_processor_no_smt_mask(processors: &[LogicalProcessorInfo]) -> u64
 
 pub fn has_multiple_processor_groups() -> bool {
     active_processor_group_count() > 1
-}
-
-fn cpu_allocation_message(mode: CpuAllocationMode) -> String {
-    match mode {
-        CpuAllocationMode::SoftCpuSets => "CPU Sets (Soft) active.".to_owned(),
-        CpuAllocationMode::HardAffinity => {
-            processor_affinity_hard_message_for_group_count(active_processor_group_count())
-        }
-    }
-}
-
-fn processor_affinity_hard_message_for_group_count(group_count: u16) -> String {
-    if group_count > 1 {
-        "Processor Affinity (Hard) active. Multi-group CPU detected: new allocations require an app assigned only to processor group 0. Other or uncertain group assignments are unavailable."
-            .to_owned()
-    } else {
-        "Processor Affinity (Hard) active.".to_owned()
-    }
-}
-
-fn active_processor_group_count() -> u16 {
-    // SAFETY: GetActiveProcessorGroupCount takes no arguments and has no caller requirements.
-    unsafe { GetActiveProcessorGroupCount() }
 }
 
 pub(crate) fn processor_topology() -> Result<crate::cpu_topology::CpuTopology, String> {
@@ -1135,18 +1274,52 @@ fn processor_kind(
     }
 }
 
+fn enabled_rule_process_names(rules: &[CpuAllocationRule]) -> HashSet<String> {
+    rules
+        .iter()
+        .filter(|rule| cpu_allocation_rule_is_active(rule))
+        .filter_map(|rule| Path::new(rule.executable_path.trim_start()).file_name())
+        .filter_map(|name| name.to_str())
+        .map(str::to_ascii_lowercase)
+        .collect()
+}
+
+fn process_name_may_match(
+    names: &HashSet<String>,
+    unicode_names: &[&str],
+    process_name: &str,
+) -> bool {
+    if names.contains(&process_name.to_ascii_lowercase()) {
+        return true;
+    }
+    if process_name.is_ascii() {
+        unicode_names
+            .iter()
+            .any(|name| unicode_case_match(name, process_name))
+    } else {
+        names
+            .iter()
+            .any(|name| unicode_case_match(name, process_name))
+    }
+}
+
 fn matching_rule<'a>(
     rules: &'a [CpuAllocationRule],
     executable_path: &Path,
 ) -> Option<&'a CpuAllocationRule> {
     rules.iter().find(|rule| {
         cpu_allocation_rule_is_active(rule)
-            && same_executable_path(Path::new(&rule.executable_path), executable_path)
+            && same_executable_path(
+                Path::new(rule.executable_path.trim_start()),
+                executable_path,
+            )
     })
 }
 
 fn cpu_allocation_rule_is_active(rule: &CpuAllocationRule) -> bool {
-    rule.enabled && rule.has_cpu_selection() && Path::new(rule.executable_path.trim()).is_absolute()
+    rule.enabled
+        && rule.has_cpu_selection()
+        && Path::new(rule.executable_path.trim_start()).is_absolute()
 }
 
 fn cpu_allocation_observation_requirements(rules: &[CpuAllocationRule]) -> (bool, bool) {
@@ -1156,7 +1329,8 @@ fn cpu_allocation_observation_requirements(rules: &[CpuAllocationRule]) -> (bool
         .iter()
         .filter(|rule| cpu_allocation_rule_is_active(rule))
     {
-        needs_foreground |= rule.focus_selection != rule.visible_window_selection;
+        needs_foreground |= rule.focus_selection != rule.visible_window_selection
+            || rule.focus_selection != rule.background_selection;
         needs_visible_windows |= rule.visible_window_selection != rule.background_selection;
     }
     (needs_foreground, needs_visible_windows)
@@ -1177,6 +1351,7 @@ fn cpu_allocation_rule_selection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::foreground::ProcessInfo;
 
     #[test]
     fn zoning_declines_unknown_multigroup_and_unrepresentable_domains() {
@@ -1219,7 +1394,7 @@ mod tests {
             },
             CpuAllocationRule {
                 enabled: true,
-                executable_path: r" C:\Apps\Worker\Worker.EXE ".to_owned(),
+                executable_path: r" C:\Apps\Worker\Worker.EXE".to_owned(),
                 focus_selection: crate::cpu_topology::test_selection(0b001),
                 visible_window_selection: crate::cpu_topology::test_selection(0b010),
                 background_selection: crate::cpu_topology::test_selection(0b100),
@@ -1230,6 +1405,52 @@ mod tests {
         assert!(matching_rule(&rules, Path::new(r"C:\Apps\Browser\browser.exe")).is_none());
         assert!(matching_rule(&rules, Path::new(r"C:\Apps\Backup\backup.exe")).is_none());
         assert!(matching_rule(&rules, Path::new(r"D:\Other\worker.exe")).is_none());
+
+        let literal_rules = [CpuAllocationRule {
+            executable_path: r"C:\Apps\Worker\Worker.EXE ".to_owned(),
+            ..rules[2].clone()
+        }];
+        assert!(matching_rule(&literal_rules, Path::new(r"c:\apps\worker\worker.exe")).is_none());
+        assert!(
+            matching_rule(&literal_rules, Path::new(&literal_rules[0].executable_path)).is_some()
+        );
+    }
+
+    #[test]
+    fn process_name_prefilter_allows_trimmed_and_unicode_rule_spellings() {
+        let rule = |path: &str| CpuAllocationRule {
+            enabled: true,
+            executable_path: path.to_owned(),
+            focus_selection: crate::cpu_topology::test_selection(1),
+            visible_window_selection: crate::cpu_topology::test_selection(1),
+            background_selection: crate::cpu_topology::test_selection(1),
+        };
+        let rules = [
+            rule(r" C:\Apps\Worker.EXE"),
+            rule("C:\\Apps\\worker.exe\u{3000}"),
+            rule(r"C:\Apps\éditeur.exe"),
+            rule(r"C:\Apps\ leading.exe"),
+        ];
+        let names = enabled_rule_process_names(&rules);
+        let unicode_names = names
+            .iter()
+            .map(String::as_str)
+            .filter(|name| !name.is_ascii())
+            .collect::<Vec<_>>();
+        for name in [
+            "worker.exe",
+            "Éditeur.exe",
+            " leading.exe",
+            "worker.exe\u{3000}",
+        ] {
+            assert!(process_name_may_match(&names, &unicode_names, name));
+        }
+        assert!(!process_name_may_match(
+            &names,
+            &unicode_names,
+            "different.exe"
+        ));
+        assert!(matching_rule(&rules, Path::new(r"D:\Other\éditeur.exe")).is_none());
     }
 
     #[test]
@@ -1267,7 +1488,7 @@ mod tests {
         for (focus, visible, background, expected) in [
             (1, 1, 1, (false, false)),
             (2, 1, 1, (true, false)),
-            (1, 1, 2, (false, true)),
+            (1, 1, 2, (true, true)),
             (2, 1, 2, (true, true)),
         ] {
             let rule = CpuAllocationRule {
@@ -1278,6 +1499,70 @@ mod tests {
                 background_selection: crate::cpu_topology::test_selection(background),
             };
             assert_eq!(cpu_allocation_observation_requirements(&[rule]), expected);
+        }
+    }
+
+    #[test]
+    fn changed_foreground_identity_pauses_both_allocation_modes() {
+        let foreground_process = ProcessInfo {
+            id: std::process::id(),
+            creation_time: Some(0),
+            parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_service_account: None,
+            is_critical: None,
+            can_set_information: false,
+            name: "test process".to_owned(),
+            image_path: None,
+        };
+        for (owner, mode, feature) in [
+            (
+                ControlOwner::CpuSetsSoft,
+                CpuAllocationMode::SoftCpuSets,
+                ActionLogFeature::CpuSetsSoft,
+            ),
+            (
+                ControlOwner::ProcessorAffinityHard,
+                CpuAllocationMode::HardAffinity,
+                ActionLogFeature::ProcessorAffinityHard,
+            ),
+        ] {
+            let mut observations =
+                CycleObservations::with_processes(vec![foreground_process.clone()])
+                    .with_foreground_source(|| Some(std::process::id()));
+            let mut manager = CpuAllocationManager::with_action_log_feature(feature);
+            let mut coordinator = CpuAllocationCoordinator::default();
+            let mut action_log = ActionLog::default();
+            let mut settings = CpuAllocationSettings {
+                enabled: true,
+                rules: vec![CpuAllocationRule {
+                    enabled: true,
+                    executable_path: r"C:\Apps\Worker\worker.exe".to_owned(),
+                    focus_selection: crate::cpu_topology::test_selection(1),
+                    visible_window_selection: crate::cpu_topology::test_selection(2),
+                    background_selection: crate::cpu_topology::test_selection(2),
+                }],
+            };
+            let mut update = |settings: &CpuAllocationSettings| {
+                manager.update(
+                    &mut coordinator,
+                    owner,
+                    settings,
+                    (mode, feature),
+                    true,
+                    true,
+                    &mut observations,
+                    &mut action_log,
+                )
+            };
+
+            assert!(update(&settings).observation_paused);
+
+            settings.rules[0].focus_selection = settings.rules[0].background_selection.clone();
+            let independent = update(&settings);
+            assert!(!independent.observation_paused);
+            assert_eq!(independent.scanned_processes, 1);
         }
     }
 
@@ -1462,17 +1747,6 @@ mod tests {
         assert!(first.newly_suppressed);
         assert!(second.suppressed);
         assert!(!second.newly_suppressed);
-    }
-
-    #[test]
-    fn processor_affinity_hard_message_warns_on_multiple_processor_groups() {
-        assert_eq!(
-            processor_affinity_hard_message_for_group_count(1),
-            "Processor Affinity (Hard) active."
-        );
-        let message = processor_affinity_hard_message_for_group_count(2);
-        assert!(message.contains("Multi-group CPU detected"));
-        assert!(message.contains("only to processor group 0"));
     }
 
     #[test]

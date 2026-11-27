@@ -6,18 +6,17 @@ pub use active_window::{
     shell_window_mouse_pressed, top_level_window_process_ids, visible_window_process_ids,
 };
 pub use process_list::{
-    contains_process_name, executable_path_key, for_each_process_id, is_foreground_process,
-    list_process_candidates, list_processes, list_processes_with_paths, open_process_location,
-    open_process_properties, process_count_label, process_executable_path, process_failure_key,
-    process_is_critical, process_matches_executable_path, process_session_id,
-    process_tree_action_targets, same_executable_path, same_process_name, sample_process_resources,
-    should_ignore_foreground_process, unique_app_names, ProcessActionTarget,
+    contains_process_name, executable_path_key, is_foreground_process, list_process_candidates,
+    list_process_ids, list_processes_with_paths, open_process_location, open_process_properties,
+    process_count_label, process_executable_path, process_failure_key,
+    process_matches_executable_path, process_session_id, process_tree_action_targets,
+    same_executable_path, same_process_name, sample_process_resources, ProcessActionTarget,
     ProcessActionTargetError, ProcessCandidateInfo, ProcessInfo, ProcessResourceSample,
     ProcessResourceSampling, ProtectedProcesses, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
 };
 pub(crate) use process_list::{
-    ensure_process_action_target_access_on_handle, process_handle_matches_executable_path,
+    ensure_process_action_target_access_on_handle, executable_grouping_key,
     process_runs_as_service_account_from_handle, query_process_image_path, ProcessActionAccess,
 };
 

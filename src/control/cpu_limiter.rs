@@ -11,6 +11,7 @@ use crate::{
         process::{ProcessControlError, ProcessTargetKey},
         suspension::{SuspensionController, SuspensionError, SuspensionTarget},
     },
+    foreground::ProcessInfo,
     platform::windows::{
         cpu_limiter::{CommandEvent, HighResolutionTimer},
         thread_suspension::{self, ThreadSuspensionError},
@@ -120,6 +121,18 @@ impl CpuLimiterBackend {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CpuLimiterActivation {
+    Job(u8),
+    AncestorJob(u8),
+    ThreadFallback(u8),
+}
+
+pub(crate) enum CpuLimiterTargetObservation {
+    Active(CpuLimiterActivation),
+    ReleasePending,
+}
+
 struct WorkerTarget {
     target: CpuLimiterTarget,
     backend: CpuLimiterBackend,
@@ -135,6 +148,36 @@ struct WorkerState {
     failures: Vec<CpuLimiterFailure>,
     fatal_error: Option<String>,
     shutdown: bool,
+}
+
+impl WorkerState {
+    fn prune_covered_targets(
+        &mut self,
+        observed_processes: Option<&BTreeMap<u32, &ProcessInfo>>,
+    ) -> Vec<ProcessTargetKey> {
+        let mut expired = Vec::new();
+        self.covered_targets.retain(|child, owner| {
+            if !self
+                .targets
+                .get(owner)
+                .is_some_and(|target| target.backend.is_job())
+            {
+                return false;
+            }
+            let possibly_live = observed_processes.is_none_or(|processes| {
+                processes.get(&child.id).is_some_and(|process| {
+                    process
+                        .creation_time
+                        .is_none_or(|time| time == child.creation_time)
+                })
+            });
+            if !possibly_live && !self.targets.contains_key(child) {
+                expired.push(child.clone());
+            }
+            possibly_live
+        });
+        expired
+    }
 }
 
 fn should_use_thread_fallback(error: &SuspensionError) -> bool {
@@ -198,16 +241,32 @@ impl CpuLimiterController {
     }
 
     pub(crate) fn replace_targets(&mut self, targets: Vec<CpuLimiterTarget>) -> Result<(), String> {
-        let now = Instant::now();
-        let requested_keys = targets
-            .iter()
-            .map(|target| target.suspension_target.key())
-            .collect::<BTreeSet<_>>();
+        self.replace_targets_with_inventory(targets, None)
+            .map(|_| ())
+    }
+
+    pub(crate) fn replace_targets_with_inventory(
+        &mut self,
+        targets: Vec<CpuLimiterTarget>,
+        observed_processes: Option<&BTreeMap<u32, &ProcessInfo>>,
+    ) -> Result<Vec<ProcessTargetKey>, String> {
         let mut state = self
             .state
             .lock()
             .map_err(|_| "CPU Limiter worker state is unavailable.".to_owned())?;
         let fatal_error = state.fatal_error.clone();
+        if targets.is_empty() && state.targets.is_empty() {
+            return match fatal_error {
+                Some(error) => Err(error),
+                None => Ok(state.prune_covered_targets(observed_processes)),
+            };
+        }
+
+        let now = Instant::now();
+        let requested_keys = targets
+            .iter()
+            .map(|target| target.suspension_target.key())
+            .collect::<BTreeSet<_>>();
         let removed_keys = state
             .targets
             .keys()
@@ -253,15 +312,7 @@ impl CpuLimiterController {
                 }
             }
         }
-        let managed_job_keys = state
-            .targets
-            .iter()
-            .filter(|(_key, target)| target.backend.is_job())
-            .map(|(key, _target)| key.clone())
-            .collect::<BTreeSet<_>>();
-        state
-            .covered_targets
-            .retain(|_target, owner| managed_job_keys.contains(owner));
+        let expired = state.prune_covered_targets(observed_processes);
         for target in targets {
             let key = target.suspension_target.key();
             if retained_covered_owner(&state, &key).is_some() {
@@ -362,7 +413,8 @@ impl CpuLimiterController {
         }
         drop(suspension);
         drop(state);
-        self.command_event.signal()
+        self.command_event.signal()?;
+        Ok(expired)
     }
 
     pub(crate) fn drain_failures(&mut self) -> Result<Vec<CpuLimiterFailure>, String> {
@@ -383,18 +435,72 @@ impl CpuLimiterController {
             .map_err(|_| "CPU Limiter worker state is unavailable.".to_owned())
     }
 
-    pub(crate) fn fallback_target_keys(&self) -> Result<BTreeSet<ProcessTargetKey>, String> {
+    pub(crate) fn covers_target(
+        &self,
+        target: &SuspensionTarget,
+        allow_cross_session_process_control: bool,
+    ) -> Result<bool, String> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| "CPU Limiter worker state is unavailable.".to_owned())?;
+        let mut jobs = state
+            .targets
+            .values()
+            .filter(|owner| owner.backend.is_job())
+            .peekable();
+        if jobs.peek().is_none() {
+            return Ok(false);
+        }
+        let mut suspension = self
+            .suspension
+            .lock()
+            .map_err(|_| "CPU Limiter suspension state is unavailable.".to_owned())?;
+        for owner in jobs {
+            if suspension
+                .cpu_limiter_job_contains(
+                    &owner.target.suspension_target,
+                    target,
+                    allow_cross_session_process_control,
+                )
+                .map_err(|error| error.to_string())?
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    pub(crate) fn target_observations(
+        &self,
+    ) -> Result<BTreeMap<ProcessTargetKey, CpuLimiterTargetObservation>, String> {
         self.state
             .lock()
             .map(|state| {
-                state
-                    .targets
-                    .iter()
-                    .filter(|(_key, target)| {
-                        !target.retiring && matches!(target.backend, CpuLimiterBackend::Thread(_))
-                    })
-                    .map(|(key, _target)| key.clone())
-                    .collect()
+                let mut observations = BTreeMap::new();
+                // A retained ancestor takes precedence over a direct target for the same key.
+                for (key, target, covered) in worker_managed_targets(&state) {
+                    observations.insert(key.clone(), observe_worker_target(target, covered));
+                }
+                observations
+            })
+            .map_err(|_| "CPU Limiter worker state is unavailable.".to_owned())
+    }
+
+    #[cfg(any(test, feature = "runtime-benchmark"))]
+    pub(crate) fn target_activation(
+        &self,
+        key: &ProcessTargetKey,
+    ) -> Result<Option<CpuLimiterActivation>, String> {
+        self.state
+            .lock()
+            .map(|state| {
+                let covered_owner = retained_covered_owner(&state, key);
+                let target = state.targets.get(covered_owner.unwrap_or(key))?;
+                match observe_worker_target(target, covered_owner.is_some()) {
+                    CpuLimiterTargetObservation::Active(activation) => Some(activation),
+                    CpuLimiterTargetObservation::ReleasePending => None,
+                }
             })
             .map_err(|_| "CPU Limiter worker state is unavailable.".to_owned())
     }
@@ -405,10 +511,21 @@ impl CpuLimiterController {
             .map_or(true, |state| !state.targets.is_empty())
     }
 
+    pub(crate) fn release_in_progress(&self) -> bool {
+        self.state.lock().is_ok_and(|state| {
+            state.fatal_error.is_none()
+                && !state.targets.is_empty()
+                && state.targets.values().all(|target| target.retiring)
+        })
+    }
+
     pub(crate) fn shutdown(&mut self) -> Result<(), String> {
         let mut errors = Vec::new();
         if let Ok(mut state) = self.state.lock() {
             if !state.shutdown {
+                if let Some(error) = &state.fatal_error {
+                    errors.push(error.clone());
+                }
                 if let Ok(mut suspension) = self.suspension.lock() {
                     let keys = state.targets.keys().cloned().collect::<Vec<_>>();
                     for key in keys {
@@ -422,7 +539,8 @@ impl CpuLimiterController {
                             Ok(true) => {
                                 state.targets.remove(&key);
                             }
-                            Ok(false) => {}
+                            // Failed Job releases stay with the shared SuspensionController.
+                            Ok(false) | Err(CpuLimiterTargetError::Job(_)) => {}
                             Err(error) => errors.push(error.to_string()),
                         }
                     }
@@ -477,36 +595,47 @@ where
 }
 
 fn effective_managed_target_keys(state: &WorkerState) -> BTreeSet<ProcessTargetKey> {
-    let mut keys = state.targets.keys().cloned().collect::<BTreeSet<_>>();
-    keys.extend(
-        state
-            .covered_targets
-            .iter()
-            .filter(|(_target, owner)| {
-                state
-                    .targets
-                    .get(*owner)
-                    .is_some_and(|target| target.backend.is_job())
-            })
-            .map(|(target, _owner)| target.clone()),
-    );
-    keys
+    worker_managed_targets(state)
+        .map(|(key, _, _)| key.clone())
+        .collect()
 }
 
-fn retained_covered_owner(
+fn worker_managed_targets(
     state: &WorkerState,
-    target: &ProcessTargetKey,
-) -> Option<ProcessTargetKey> {
+) -> impl Iterator<Item = (&ProcessTargetKey, &WorkerTarget, bool)> {
     state
-        .covered_targets
-        .get(target)
-        .filter(|owner| {
-            state
-                .targets
-                .get(*owner)
-                .is_some_and(|target| target.backend.is_job())
-        })
-        .cloned()
+        .targets
+        .iter()
+        .map(|(key, target)| (key, target, false))
+        .chain(state.covered_targets.iter().filter_map(|(key, owner)| {
+            let target = state.targets.get(owner)?;
+            target.backend.is_job().then_some((key, target, true))
+        }))
+}
+
+fn retained_covered_owner<'a>(
+    state: &'a WorkerState,
+    target: &ProcessTargetKey,
+) -> Option<&'a ProcessTargetKey> {
+    state.covered_targets.get(target).filter(|owner| {
+        state
+            .targets
+            .get(*owner)
+            .is_some_and(|target| target.backend.is_job())
+    })
+}
+
+fn observe_worker_target(target: &WorkerTarget, covered: bool) -> CpuLimiterTargetObservation {
+    if target.retiring {
+        return CpuLimiterTargetObservation::ReleasePending;
+    }
+    let percent = target.target.allowed_cpu_time_percent;
+    let activation = match (&target.backend, covered) {
+        (CpuLimiterBackend::Job, true) => CpuLimiterActivation::AncestorJob(percent),
+        (CpuLimiterBackend::Job, false) => CpuLimiterActivation::Job(percent),
+        (CpuLimiterBackend::Thread(_), _) => CpuLimiterActivation::ThreadFallback(percent),
+    };
+    CpuLimiterTargetObservation::Active(activation)
 }
 
 impl Drop for CpuLimiterController {
@@ -789,6 +918,10 @@ mod tests {
             Ok(target.process.id == 2)
         }
 
+        fn job_has_no_active_processes(&self, _handle: &Self::Handle) -> bool {
+            false
+        }
+
         fn begin_freeze(
             &mut self,
             _identity: &ProcessIdentity,
@@ -827,6 +960,37 @@ mod tests {
             allow_cross_session_process_control: true,
             ancestor_process_ids,
         }
+    }
+
+    #[test]
+    fn empty_refresh_prunes_orphaned_coverage_without_accessing_suspension() {
+        let owner = target(1, Vec::new()).suspension_target.key();
+        let child = target(2, vec![1]).suspension_target.key();
+        let mut controller = CpuLimiterController {
+            suspension: Arc::new(Mutex::new(SuspensionController::default())),
+            state: Arc::new(Mutex::new(WorkerState {
+                covered_targets: BTreeMap::from([(child, owner)]),
+                ..Default::default()
+            })),
+            command_event: CommandEvent::new().unwrap(),
+            worker: None,
+        };
+        assert!(catch_unwind(AssertUnwindSafe(|| {
+            let _guard = controller.suspension.lock().unwrap();
+            panic!("test suspension lock poison");
+        }))
+        .is_err());
+
+        assert_eq!(controller.replace_targets(Vec::new()), Ok(()));
+        {
+            let mut state = controller.state.lock().unwrap();
+            assert!(state.covered_targets.is_empty());
+            state.fatal_error = Some("worker failed".to_owned());
+        }
+        assert_eq!(
+            controller.replace_targets(Vec::new()),
+            Err("worker failed".to_owned())
+        );
     }
 
     #[test]
@@ -929,7 +1093,7 @@ mod tests {
         let owner = target(1, Vec::new());
         let owner_key = owner.suspension_target.key();
         let child_key = target(2, vec![1]).suspension_target.key();
-        let state = WorkerState {
+        let mut state = WorkerState {
             targets: BTreeMap::from([(
                 owner_key.clone(),
                 WorkerTarget {
@@ -948,7 +1112,29 @@ mod tests {
             effective_managed_target_keys(&state),
             BTreeSet::from([owner_key.clone(), child_key.clone()])
         );
-        assert_eq!(retained_covered_owner(&state, &child_key), Some(owner_key));
+        assert_eq!(retained_covered_owner(&state, &child_key), Some(&owner_key));
+        let pending_keys = worker_managed_targets(&state)
+            .filter(|(_, target, covered)| {
+                matches!(
+                    observe_worker_target(target, *covered),
+                    CpuLimiterTargetObservation::ReleasePending
+                )
+            })
+            .map(|(key, _, _)| key.clone())
+            .collect::<BTreeSet<_>>();
+        assert!(state.prune_covered_targets(None).is_empty());
+        assert_eq!(
+            pending_keys,
+            BTreeSet::from([owner_key.clone(), child_key.clone()])
+        );
+        assert_eq!(retained_covered_owner(&state, &child_key), Some(&owner_key));
+        assert_eq!(
+            state
+                .prune_covered_targets(Some(&BTreeMap::new()))
+                .as_slice(),
+            std::slice::from_ref(&child_key)
+        );
+        assert!(retained_covered_owner(&state, &child_key).is_none());
     }
 
     #[test]
@@ -979,8 +1165,8 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "creates and restores a disposable process in an incompatible foreign Job Object"]
-    fn foreign_job_uses_thread_fallback_and_restores() -> Result<(), String> {
+    #[ignore = "suspends and restores only an owned disposable process; run in Windows integration QA"]
+    fn named_job_mismatch_uses_thread_fallback_and_restores() -> Result<(), String> {
         use std::{
             os::windows::process::CommandExt,
             path::PathBuf,
@@ -988,11 +1174,11 @@ mod tests {
         };
 
         use crate::{
+            backend::crash_recovery::suspension_job_name,
             foreground::capture_process_action_target,
             platform::windows::{job, thread_suspension},
         };
 
-        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
         struct DisposableProcess(Child);
@@ -1008,17 +1194,13 @@ mod tests {
             .map(PathBuf::from)
             .ok_or_else(|| "SystemRoot is unavailable.".to_owned())?
             .join(r"System32\PING.EXE");
-        let spawn = |creation_flags| {
-            Command::new(&executable_path)
-                .args(["-t", "127.0.0.1"])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .creation_flags(creation_flags)
-                .spawn()
-        };
-        let child = spawn(CREATE_BREAKAWAY_FROM_JOB | CREATE_NO_WINDOW)
-            .or_else(|_| spawn(CREATE_NO_WINDOW))
+        let child = Command::new(&executable_path)
+            .args(["-n", "15", "127.0.0.1"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
             .map_err(|error| format!("Could not start the disposable process: {error}"))?;
         let child = DisposableProcess(child);
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -1044,27 +1226,19 @@ mod tests {
             allow_cross_session_process_control: true,
             ancestor_process_ids: Vec::new(),
         };
-        let (_identity, process) = crate::control::process::open_process_for_thread_snapshot(
+        let (identity, process) = crate::control::process::open_process_for_thread_snapshot(
             &suspension_target.process,
             true,
         )
         .map_err(|error| error.to_string())?;
-        if job::process_is_in_job(&process, None) != Some(false) {
-            return Err(
-                "The test host prevents a disposable child from breaking away; run this ignored test outside that Job Object."
-                    .to_owned(),
-            );
+        // Keep the exact suspension job name occupied by an empty job for this test.
+        let name = suspension_job_name(identity.id, identity.creation_time);
+        let reserved_job = job::create_job(&name).map_err(|error| format!("{error:?}"))?;
+        if reserved_job.already_existed
+            || job::process_is_in_job(&process, Some(&reserved_job.handle)) != Some(false)
+        {
+            return Err("Could not reserve an empty suspension job for the test.".to_owned());
         }
-        let foreign_job = job::create_job(&format!(
-            "Local\\Winderust.CpuLimiter.ForeignTest.{}.{}",
-            std::process::id(),
-            child.0.id()
-        ))
-        .map_err(|error| format!("{error:?}"))?;
-        job::set_ui_restriction_for_test(&foreign_job.handle)
-            .map_err(|error| format!("{error:?}"))?;
-        job::assign_process(&foreign_job.handle, &process, child.0.id())
-            .map_err(|error| format!("Could not assign the foreign test job: {error:?}"))?;
 
         let baseline = thread_suspension::capture_threads(process.raw())
             .map_err(|error| format!("{error:?}"))?
@@ -1086,9 +1260,10 @@ mod tests {
 
         let mut controller = CpuLimiterController::new(Arc::clone(&suspension))?;
         controller.replace_targets(vec![limiter_target])?;
-        assert!(controller
-            .fallback_target_keys()?
-            .contains(&suspension_target.key()));
+        assert!(matches!(
+            controller.target_activation(&suspension_target.key())?,
+            Some(CpuLimiterActivation::ThreadFallback(1))
+        ));
 
         let deadline = Instant::now() + Duration::from_secs(2);
         let mut observed_frozen = false;

@@ -1,6 +1,6 @@
 use super::*;
 use crate::platform::windows::priority_efficiency::{
-    POWER_IGNORE_TIMER_RESOLUTION, PRIORITY_NORMAL,
+    POWER_IGNORE_TIMER_RESOLUTION, PRIORITY_ABOVE_NORMAL, PRIORITY_NORMAL,
 };
 use std::sync::mpsc::{channel, RecvTimeoutError};
 
@@ -57,6 +57,140 @@ fn retry_watcher(
     )
     .unwrap();
     (watcher, reports)
+}
+
+#[test]
+fn tray_priority_tracks_saved_policy_without_reapplying_eco_qos() {
+    let platform = SharedPlatform::new();
+    let baseline = {
+        let mut state = lock_unpoisoned(&platform.platform);
+        state.snapshot.priority_class = PRIORITY_ABOVE_NORMAL;
+        state.snapshot
+    };
+    let (mut watcher, _reports) = retry_watcher(
+        platform.clone(),
+        Duration::from_secs(5),
+        Duration::from_secs(1),
+    );
+    let request = watcher.request();
+    request.set_preserve_priority_in_tray(true);
+    request.set_hidden_mode(true);
+    let tray_power = {
+        let state = lock_unpoisoned(&platform.platform);
+        assert_eq!(state.priority_writes, 0);
+        assert_ne!(
+            state.snapshot.power_throttling.state_mask & POWER_EXECUTION_SPEED,
+            0
+        );
+        state.snapshot.power_throttling
+    };
+
+    request.set_preserve_priority_in_tray(false);
+    assert_eq!(
+        lock_unpoisoned(&platform.platform).snapshot.priority_class,
+        PRIORITY_IDLE
+    );
+    request.set_preserve_priority_in_tray(true);
+    {
+        let state = lock_unpoisoned(&platform.platform);
+        assert_eq!(state.snapshot.priority_class, baseline.priority_class);
+        assert_eq!(state.snapshot.power_throttling, tray_power);
+        assert_eq!(state.power_writes, 1);
+    }
+
+    request.set_hidden_mode(false);
+    assert_eq!(lock_unpoisoned(&platform.platform).snapshot, baseline);
+    watcher.shutdown().unwrap();
+}
+
+#[test]
+fn tray_policy_restores_priority_and_eco_qos_after_external_timer_change() {
+    let mut controller = SelfPowerController::with_platform(FakePlatform::new());
+    let baseline = controller.platform.snapshot;
+    controller.set_hidden_mode(true).unwrap();
+    let mut external_power = controller.platform.snapshot.power_throttling;
+    external_power.control_mask |= POWER_IGNORE_TIMER_RESOLUTION;
+    external_power.state_mask |= POWER_IGNORE_TIMER_RESOLUTION;
+    controller.platform.snapshot.power_throttling = external_power;
+
+    controller.preserve_priority_in_tray = true;
+    controller.reconcile().unwrap();
+    assert_eq!(
+        controller.platform.snapshot,
+        SelfPowerState {
+            power_throttling: external_power,
+            ..baseline
+        },
+    );
+    controller.shutdown().unwrap();
+    assert_eq!(
+        controller.platform.snapshot,
+        SelfPowerState {
+            power_throttling: PowerThrottlingState {
+                control_mask: baseline.power_throttling.control_mask
+                    | POWER_IGNORE_TIMER_RESOLUTION,
+                state_mask: baseline.power_throttling.state_mask | POWER_IGNORE_TIMER_RESOLUTION,
+                ..baseline.power_throttling
+            },
+            ..baseline
+        },
+    );
+}
+
+#[test]
+fn showing_window_preserves_external_execution_speed_change() {
+    let mut controller = SelfPowerController::with_platform(FakePlatform::new());
+    let baseline = controller.platform.snapshot;
+    controller.set_hidden_mode(true).unwrap();
+    let external_power = PowerThrottlingState {
+        control_mask: 0,
+        state_mask: 0,
+        ..baseline.power_throttling
+    };
+    controller.platform.snapshot.power_throttling = external_power;
+
+    controller.reconcile().unwrap();
+    assert_eq!(
+        controller.platform.snapshot.power_throttling,
+        power_throttling_enabled_state(external_power),
+    );
+    controller.set_hidden_mode(false).unwrap();
+    assert_eq!(
+        controller.platform.snapshot,
+        SelfPowerState {
+            power_throttling: external_power,
+            ..baseline
+        },
+    );
+}
+
+#[test]
+#[ignore = "requires an isolated Windows test process because priority and EcoQoS are process-wide"]
+fn native_tray_priority_policy_restores_captured_state() -> Result<(), String> {
+    let mut platform = WindowsSelfPowerPlatform;
+    let baseline = platform.query()?;
+    let mut watcher = SelfPowerRetryWatcher::start(true, Arc::new(|_| {}))?;
+    let request = watcher.request();
+
+    request.set_hidden_mode(true);
+    let hidden_with_policy = platform.query()?;
+    request.set_preserve_priority_in_tray(false);
+    let hidden_without_policy = platform.query()?;
+    watcher.shutdown()?;
+    let restored = platform.query()?;
+
+    assert_eq!(hidden_with_policy.priority_class, baseline.priority_class);
+    assert!(same_power_state(
+        hidden_with_policy.power_throttling,
+        power_throttling_enabled_state(baseline.power_throttling),
+    ));
+    assert_eq!(hidden_without_policy.priority_class, PRIORITY_IDLE);
+    assert!(same_power_state(
+        hidden_without_policy.power_throttling,
+        hidden_with_policy.power_throttling,
+    ));
+    assert!(same_snapshot(restored, baseline));
+    Ok(())
 }
 
 #[test]

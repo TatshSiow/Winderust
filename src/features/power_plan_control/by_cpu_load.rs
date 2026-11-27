@@ -1,6 +1,14 @@
 use std::time::Instant;
 
-use crate::config::{ByCpuLoadRule, ByCpuLoadSettings, CpuUsageComparison};
+use crate::config::{ByCpuLoadRule, ByCpuLoadSettings, ByCpuLoadStability, CpuUsageComparison};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ByCpuLoadMatch {
+    Condition,
+    MinimumHold,
+    ReleaseThreshold,
+    Else,
+}
 
 #[derive(Debug, Clone)]
 pub struct ByCpuLoadDecision {
@@ -8,7 +16,13 @@ pub struct ByCpuLoadDecision {
     pub rule_name: String,
     pub power_plan_guid: String,
     pub usage_percent: f32,
-    pub is_else: bool,
+    pub selection: ByCpuLoadMatch,
+}
+
+impl ByCpuLoadDecision {
+    pub(crate) fn is_else(&self) -> bool {
+        self.selection == ByCpuLoadMatch::Else
+    }
 }
 
 #[derive(Debug)]
@@ -71,7 +85,8 @@ impl ByCpuLoadScheduler {
         }
     }
 
-    pub fn current_decision(
+    #[cfg(test)]
+    fn current_decision(
         &mut self,
         settings: &ByCpuLoadSettings,
         usage_percent: Option<f32>,
@@ -79,10 +94,20 @@ impl ByCpuLoadScheduler {
         self.current_decision_at(settings, usage_percent, Instant::now())
     }
 
+    #[cfg(test)]
     pub(crate) fn current_decision_at(
         &mut self,
         settings: &ByCpuLoadSettings,
         usage_percent: Option<f32>,
+        now: Instant,
+    ) -> Option<ByCpuLoadDecision> {
+        self.current_decision_for_sample_at(settings, usage_percent.map(|usage| (usage, now)), now)
+    }
+
+    pub(crate) fn current_decision_for_sample_at(
+        &mut self,
+        settings: &ByCpuLoadSettings,
+        sample: Option<(f32, Instant)>,
         now: Instant,
     ) -> Option<ByCpuLoadDecision> {
         if !settings.enabled || settings.rules.is_empty() {
@@ -90,8 +115,8 @@ impl ByCpuLoadScheduler {
             return None;
         }
 
-        let Some(usage_percent) =
-            usage_percent.filter(|usage| usage.is_finite() && (0.0..=100.0).contains(usage))
+        let Some((usage_percent, sampled_at)) =
+            sample.filter(|(usage, _)| usage.is_finite() && (0.0..=100.0).contains(usage))
         else {
             self.reset();
             return None;
@@ -101,18 +126,24 @@ impl ByCpuLoadScheduler {
             self.last_rules.clone_from(&settings.rules);
         }
         self.matched_since.resize(settings.rules.len(), None);
-        if self.active_rule.as_ref().is_some_and(|active| {
+        let retained_match = self.active_rule.as_ref().and_then(|active| {
             let rule = &settings.rules[active.index];
-            !rule.stability.as_ref().is_some_and(|stability| {
-                now.saturating_duration_since(active.since).as_secs()
-                    < stability.minimum_hold_seconds
-                    || matches_exit_condition(rule, usage_percent)
-            })
-        }) {
+            let stability = rule.stability.as_ref()?;
+            let selection = if matches_exit_condition(rule.comparison, stability, usage_percent) {
+                ByCpuLoadMatch::ReleaseThreshold
+            } else if now.saturating_duration_since(active.since).as_secs()
+                < stability.minimum_hold_seconds
+            {
+                ByCpuLoadMatch::MinimumHold
+            } else {
+                return None;
+            };
+            Some((active.index, selection))
+        });
+        if retained_match.is_none() {
             self.clear_active_rule();
         }
-        let active_index = self.active_rule.as_ref().map(|active| active.index);
-        let mut else_decision = None;
+        let mut else_rule = None;
         let mut matching_decision = None;
 
         for (index, rule) in settings.rules.iter().enumerate() {
@@ -121,8 +152,8 @@ impl ByCpuLoadScheduler {
                 continue;
             }
 
-            if else_decision.is_none() {
-                else_decision = else_decision_for_rule(rule).map(|decision| (index, decision));
+            if else_rule.is_none() {
+                else_rule = else_plan_for_rule(rule).map(|plan| (index, rule, plan));
             }
 
             if rule.is_else() {
@@ -132,45 +163,60 @@ impl ByCpuLoadScheduler {
 
             let qualified = if rule.matches_usage(usage_percent) {
                 let matched_since = self.matched_since[index].get_or_insert(now);
-                now.saturating_duration_since(*matched_since).as_secs() >= rule.duration_seconds
+                sampled_at
+                    .saturating_duration_since(*matched_since)
+                    .as_secs()
+                    >= rule.duration_seconds
             } else {
                 self.matched_since[index] = None;
                 false
             };
 
-            if (qualified || active_index == Some(index)) && matching_decision.is_none() {
-                if let Some(power_plan_guid) = rule.power_plan_guid.clone() {
+            if matching_decision.is_none() {
+                let selection = if qualified {
+                    Some(ByCpuLoadMatch::Condition)
+                } else {
+                    retained_match
+                        .filter(|&(active_index, _)| index == active_index)
+                        .map(|(_, selection)| selection)
+                };
+                if let Some((selection, power_plan_guid)) =
+                    selection.zip(rule.power_plan_guid.as_ref())
+                {
                     matching_decision = Some(ByCpuLoadDecision {
                         rule_index: index,
                         rule_name: rule.name.clone(),
-                        power_plan_guid,
+                        power_plan_guid: power_plan_guid.clone(),
                         usage_percent,
-                        is_else: false,
+                        selection,
                     });
                 }
             }
         }
 
         matching_decision.or_else(|| {
-            else_decision.map(
-                |(rule_index, (rule_name, power_plan_guid))| ByCpuLoadDecision {
-                    rule_index,
-                    rule_name,
-                    power_plan_guid,
-                    usage_percent,
-                    is_else: true,
+            else_rule.map(|(rule_index, rule, plan)| ByCpuLoadDecision {
+                rule_index,
+                rule_name: if rule.else_enabled {
+                    format!("{} else", rule.name)
+                } else {
+                    rule.name.clone()
                 },
-            )
+                power_plan_guid: plan.to_owned(),
+                usage_percent,
+                selection: ByCpuLoadMatch::Else,
+            })
         })
     }
 }
 
-fn matches_exit_condition(rule: &ByCpuLoadRule, usage_percent: f32) -> bool {
-    let Some(stability) = rule.stability.as_ref() else {
-        return false;
-    };
+fn matches_exit_condition(
+    comparison: CpuUsageComparison,
+    stability: &ByCpuLoadStability,
+    usage_percent: f32,
+) -> bool {
     let lower = f32::from(stability.exit_threshold_percent.get());
-    match rule.comparison {
+    match comparison {
         CpuUsageComparison::AtOrAbove => usage_percent >= lower,
         CpuUsageComparison::AtOrBelow => usage_percent <= lower,
         CpuUsageComparison::Between => stability
@@ -180,19 +226,14 @@ fn matches_exit_condition(rule: &ByCpuLoadRule, usage_percent: f32) -> bool {
     }
 }
 
-fn else_decision_for_rule(rule: &crate::config::ByCpuLoadRule) -> Option<(String, String)> {
+fn else_plan_for_rule(rule: &ByCpuLoadRule) -> Option<&str> {
     if rule.else_enabled {
-        return Some((
-            format!("{} else", rule.name),
-            rule.else_power_plan_guid.clone()?,
-        ));
+        rule.else_power_plan_guid.as_deref()
+    } else if rule.is_else() {
+        rule.power_plan_guid.as_deref()
+    } else {
+        None
     }
-
-    if rule.is_else() {
-        return Some((rule.name.clone(), rule.power_plan_guid.clone()?));
-    }
-
-    None
 }
 
 #[cfg(test)]

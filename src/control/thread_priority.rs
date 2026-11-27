@@ -800,23 +800,17 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
         }
     }
 
-    pub(crate) fn policy_managed_process_names(&self) -> Vec<String> {
-        self.managed
-            .iter()
-            .filter(|(_, managed)| managed.owner.is_automatic())
-            .map(|(identity, _)| identity.process.name.clone())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect()
-    }
-
     pub(crate) fn policy_managed_process_count(&self) -> usize {
-        self.managed
-            .iter()
-            .filter(|(_, managed)| managed.owner.is_automatic())
-            .map(|(identity, _)| identity.process.key())
-            .collect::<BTreeSet<_>>()
-            .len()
+        // Thread identities sort by exact process identity first.
+        let mut previous = None;
+        let mut count = 0;
+        for (identity, managed) in &self.managed {
+            if managed.owner.is_automatic() && previous != Some(&identity.process) {
+                previous = Some(&identity.process);
+                count += 1;
+            }
+        }
+        count
     }
 
     pub(crate) fn has_managed_state(&self) -> bool {
@@ -985,13 +979,13 @@ fn priority_is_preserved(
 pub(crate) fn current_process_thread_priority(
     target: &ProcessActionTarget,
     allow_cross_session_process_control: bool,
+    inventory: &mut ThreadInventory,
 ) -> Result<Option<ProcessThreadPrioritySetting>, String> {
     let mut platform = WindowsThreadPriorityPlatform;
     let target = ProcessControlTarget::from_action_target(target);
     let (identity, process) = platform
         .open_process(&target, allow_cross_session_process_control)
         .map_err(|error| error.to_string())?;
-    let mut inventory = ThreadInventory::default();
     let thread_ids = inventory
         .ids(&mut platform, identity.id)
         .map_err(|error| error.to_string())?;
@@ -1394,6 +1388,7 @@ mod tests {
             .platform
             .fail_next(FakeFailure::IdentityUnavailable);
         assert_eq!(controller.release_all_policy().failures.len(), 2);
+        assert_eq!(controller.policy_managed_process_count(), 1);
         let due = controller.next_release_retry.unwrap();
         for failure in [FakeFailure::IdentityUnavailable, FakeFailure::Inventory] {
             controller.platform.fail_next(failure);
@@ -1434,6 +1429,7 @@ mod tests {
         let now = due - Duration::from_millis(1);
         assert_eq!(controller.retry_pending_releases(now).restored_threads, 0);
         assert_eq!(controller.retry_pending_releases(due).restored_threads, 1);
+        assert_eq!(controller.policy_managed_process_count(), 0);
         assert_eq!(controller.platform.process.threads[&100].priority, 0);
         assert_eq!(
             controller.platform.process.threads[&101].priority,
@@ -2543,8 +2539,11 @@ mod tests {
                 Err(error) => return Err(error.to_string()),
             }
         };
-        let baseline = current_process_thread_priority(&target, true)?
-            .ok_or_else(|| "Disposable process started with mixed thread priorities.".to_owned())?;
+        let baseline =
+            current_process_thread_priority(&target, true, &mut ThreadInventory::default())?
+                .ok_or_else(|| {
+                    "Disposable process started with mixed thread priorities.".to_owned()
+                })?;
         let expected = if baseline == ProcessThreadPrioritySetting::BelowNormal {
             ProcessThreadPrioritySetting::AboveNormal
         } else {
@@ -2556,12 +2555,12 @@ mod tests {
             .apply_process_list_action(&target, expected, true)
             .map_err(|error| error.to_string())?;
         assert_eq!(
-            current_process_thread_priority(&target, true)?,
+            current_process_thread_priority(&target, true, &mut ThreadInventory::default())?,
             Some(expected)
         );
         controller.shutdown()?;
         assert_eq!(
-            current_process_thread_priority(&target, true)?,
+            current_process_thread_priority(&target, true, &mut ThreadInventory::default())?,
             Some(baseline)
         );
         Ok(())

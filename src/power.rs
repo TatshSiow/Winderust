@@ -3,9 +3,11 @@ pub(crate) mod powercfg;
 
 pub(crate) use plan::{
     adaptive_power_profile_transition, AdaptivePowerBoostValues, AdaptivePowerDemand,
-    AdaptivePowerProfile, AdvancedPowerPlanTuningSourceValues, AdvancedPowerPlanTuningValues,
-    EffectivePowerMode, PowerPlan, PowerPlanPersonality, ProcessorBoostMode, ProcessorPowerPreset,
-    ProcessorPowerSourceValues, ProcessorPowerValues, ProcessorSchedulingPolicy,
+    AdaptivePowerProfile, AdvancedPowerPlanTuningReadback, AdvancedPowerPlanTuningSourceReadback,
+    AdvancedPowerPlanTuningSourceValues, AdvancedPowerPlanTuningValues, EditableTuningValues,
+    EffectivePowerMode, EnergyPerformancePreference, PowerPlan, PowerPlanPersonality,
+    PowerSettingReadback, ProcessorBoostMode, ProcessorPowerPreset, ProcessorPowerSourceValues,
+    ProcessorPowerValues, ProcessorSchedulingPolicy,
 };
 #[cfg(test)]
 pub(crate) use powercfg::ProcessorPowerApplyStage;
@@ -13,5 +15,5 @@ pub(crate) use powercfg::{
     active_plan, apply_processor_power_values, apply_processor_power_values_staged, delete_plan,
     duplicate_adaptive_plan, initialize_adaptive_plan, list_plans, read_plan_personality,
     read_processor_power_values, restore_stale_adaptive_plans, set_active,
-    EffectivePowerModeMonitor, ProcessorPowerApplyError,
+    EffectivePowerModeMonitor, ProcessorPowerApplyError, ADAPTIVE_PLAN_NAME,
 };

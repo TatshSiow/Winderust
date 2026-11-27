@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::backend::startup::{self, StartupRegistrationError};
 use crate::config::{self, PowerSourceProfile, Settings};
-use crate::foreground::{executable_path_key, same_executable_path};
+use crate::foreground::{process_list::normalize_path_slashes, same_executable_path};
 
 pub(crate) type SettingsResult<T> = Result<T, SettingsCoordinatorError>;
 
@@ -269,11 +269,12 @@ impl SettingsCoordinator {
         Ok(next_revision)
     }
 
-    fn import_toml_from(
+    fn import_toml_from<T>(
         &mut self,
         path: &Path,
         draft: &mut SettingsDraft,
-    ) -> SettingsResult<SettingsRevision> {
+        prepare: impl FnOnce(&Settings) -> Result<T, String>,
+    ) -> SettingsResult<(SettingsRevision, T)> {
         let mut imported = self
             .storage
             .import(path)
@@ -282,6 +283,7 @@ impl SettingsCoordinator {
             .validate()
             .map_err(SettingsCoordinatorError::Import)?;
         imported.sync_shared_settings_to_battery();
+        let prepared = prepare(&imported).map_err(SettingsCoordinatorError::Import)?;
         self.storage
             .save(&imported)
             .map_err(SettingsCoordinatorError::Save)?;
@@ -293,7 +295,7 @@ impl SettingsCoordinator {
         draft.value = imported;
         draft.mark_changed();
         self.refresh_runtime_settings_snapshot(draft);
-        Ok(next_revision)
+        Ok((next_revision, prepared))
     }
 
     fn cancel(&mut self, draft: &mut SettingsDraft) {
@@ -364,6 +366,13 @@ impl SettingsEditor {
         )
     }
 
+    pub(crate) fn saved_language() -> config::AppLanguage {
+        ConfigStorage
+            .load()
+            .map(|settings| settings.general.language)
+            .unwrap_or_default()
+    }
+
     #[cfg(any(test, feature = "render-smoke"))]
     pub(crate) fn with_settings(settings: Settings) -> Self {
         let (coordinator, draft) =
@@ -383,32 +392,19 @@ impl SettingsEditor {
         self.selected_power_source = profile;
     }
 
+    pub(crate) fn selected_power_source(&self) -> PowerSourceProfile {
+        self.selected_power_source
+    }
+
     pub(crate) fn global(&self) -> &Settings {
         &self.draft.value
     }
 
-    pub(crate) fn edit_global(&mut self, edit: impl FnOnce(&mut Settings)) {
+    pub(crate) fn edit_global<T>(&mut self, edit: impl FnOnce(&mut Settings) -> T) -> T {
         self.draft.mark_changed();
-        edit(&mut self.draft.value);
+        let result = edit(&mut self.draft.value);
         self.draft.value.sync_shared_settings_to_battery();
-    }
-
-    pub(crate) fn edit_with_presets(&mut self, edit: impl FnOnce(&mut Settings)) {
-        self.draft.value.sync_shared_settings_to_battery();
-        edit(self);
-        // Preset collections are shared even when tuning the battery profile.
-        if self.selected_power_source == PowerSourceProfile::OnBattery {
-            let root = &mut self.draft.value;
-            if let Some(battery) = root.on_battery.as_mut() {
-                root.adaptive_engine_presets
-                    .clone_from(&battery.adaptive_engine_presets);
-                root.cpu_allocation_presets
-                    .clone_from(&battery.cpu_allocation_presets);
-                root.advanced_power_plan_tuning_presets
-                    .clone_from(&battery.advanced_power_plan_tuning_presets);
-            }
-        }
-        self.draft.value.sync_shared_settings_to_battery();
+        result
     }
 
     pub(crate) fn runtime_settings_snapshot(&mut self) -> RuntimeSettingsSnapshot {
@@ -421,6 +417,16 @@ impl SettingsEditor {
         field: fn(&mut Settings) -> &mut bool,
         enabled: bool,
     ) -> SettingsResult<bool> {
+        self.patch_feature_profile(profile, |settings| {
+            set_enabled_value(field(settings), enabled)
+        })
+    }
+
+    pub(crate) fn patch_feature_profile(
+        &mut self,
+        profile: PowerSourceProfile,
+        apply: impl Fn(&mut Settings) -> bool,
+    ) -> SettingsResult<bool> {
         self.coordinator.apply_runtime_patch(
             &mut self.draft,
             self.coordinator.persisted_revision,
@@ -431,53 +437,21 @@ impl SettingsEditor {
                     PowerSourceProfile::PluggedIn => settings,
                     PowerSourceProfile::OnBattery => settings.battery_profile_mut(),
                 };
-                set_enabled_value(field(settings), enabled)
+                apply(settings)
             },
         )
     }
 
-    pub(crate) fn set_watchdog_enabled(&mut self, enabled: bool) -> SettingsResult<bool> {
+    pub(crate) fn set_shared_feature_enabled(
+        &mut self,
+        field: fn(&mut Settings) -> &mut bool,
+        enabled: bool,
+    ) -> SettingsResult<bool> {
         self.coordinator.apply_runtime_patch(
             &mut self.draft,
             self.coordinator.persisted_revision,
             |settings| {
-                let changed = set_enabled_value(&mut settings.watchdog.enabled, enabled);
-                settings.sync_shared_settings_to_battery();
-                changed
-            },
-        )
-    }
-
-    pub(crate) fn set_keep_running_enabled(&mut self, enabled: bool) -> SettingsResult<bool> {
-        self.coordinator.apply_runtime_patch(
-            &mut self.draft,
-            self.coordinator.persisted_revision,
-            |settings| {
-                let changed = set_enabled_value(&mut settings.keep_running.enabled, enabled);
-                settings.sync_shared_settings_to_battery();
-                changed
-            },
-        )
-    }
-
-    pub(crate) fn set_instance_limits_enabled(&mut self, enabled: bool) -> SettingsResult<bool> {
-        self.coordinator.apply_runtime_patch(
-            &mut self.draft,
-            self.coordinator.persisted_revision,
-            |settings| {
-                let changed = set_enabled_value(&mut settings.instance_limits.enabled, enabled);
-                settings.sync_shared_settings_to_battery();
-                changed
-            },
-        )
-    }
-
-    pub(crate) fn set_instance_balancing_enabled(&mut self, enabled: bool) -> SettingsResult<bool> {
-        self.coordinator.apply_runtime_patch(
-            &mut self.draft,
-            self.coordinator.persisted_revision,
-            |settings| {
-                let changed = set_enabled_value(&mut settings.instance_balancing.enabled, enabled);
+                let changed = set_enabled_value(field(settings), enabled);
                 settings.sync_shared_settings_to_battery();
                 changed
             },
@@ -511,12 +485,15 @@ impl SettingsEditor {
         Ok(self.reconcile_startup_registration())
     }
 
-    pub(crate) fn import_toml_from(
+    pub(crate) fn import_toml_from<T>(
         &mut self,
         path: &Path,
-    ) -> SettingsResult<PersistentSettingsOutcome> {
-        let _ = self.coordinator.import_toml_from(path, &mut self.draft)?;
-        Ok(self.reconcile_startup_registration())
+        prepare: impl FnOnce(&Settings) -> Result<T, String>,
+    ) -> SettingsResult<(PersistentSettingsOutcome, T)> {
+        let (_, prepared) = self
+            .coordinator
+            .import_toml_from(path, &mut self.draft, prepare)?;
+        Ok((self.reconcile_startup_registration(), prepared))
     }
 
     pub(crate) fn cancel(&mut self) {
@@ -618,7 +595,7 @@ fn apply_auto_exclusion_patch_to_profile(
         &patch.app_suspension,
         false,
         app_suspension_rule,
-        |rule| &rule.executable_path,
+        |rule| Some(rule.executable_path.as_str()),
         |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
     );
     changed |= apply_auto_exclusion_paths(
@@ -626,7 +603,7 @@ fn apply_auto_exclusion_patch_to_profile(
         &patch.cpu_sets_soft,
         false,
         cpu_allocation_rule,
-        |rule| &rule.executable_path,
+        |rule| Some(rule.executable_path.as_str()),
         |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
     );
     changed |= apply_auto_exclusion_paths(
@@ -634,7 +611,7 @@ fn apply_auto_exclusion_patch_to_profile(
         &patch.processor_affinity_hard,
         false,
         cpu_allocation_rule,
-        |rule| &rule.executable_path,
+        |rule| Some(rule.executable_path.as_str()),
         |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
     );
     changed |= apply_auto_exclusion_paths(
@@ -642,15 +619,15 @@ fn apply_auto_exclusion_patch_to_profile(
         &patch.cpu_limiter,
         false,
         cpu_limiter_rule,
-        |rule| &rule.executable_path,
+        |rule| Some(rule.executable_path.as_str()),
         |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
     );
     changed |= apply_auto_exclusion_paths(
         &mut settings.adaptive_engine_process.custom_rules,
         &patch.adaptive_engine_process,
         true,
-        process_exclusion_rule,
-        |rule| &rule.executable_path,
+        |path| config::AdaptiveEngineExclusionRule::exact_path(path),
+        |rule| rule.selector.exact_path(),
         |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
     );
     changed |= apply_auto_exclusion_paths(
@@ -658,7 +635,7 @@ fn apply_auto_exclusion_patch_to_profile(
         &patch.io_priority,
         true,
         process_exclusion_rule,
-        |rule| &rule.executable_path,
+        |rule| Some(rule.executable_path.as_str()),
         |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
     );
     changed |= apply_auto_exclusion_paths(
@@ -666,7 +643,7 @@ fn apply_auto_exclusion_patch_to_profile(
         &patch.process_priority,
         true,
         process_exclusion_rule,
-        |rule| &rule.executable_path,
+        |rule| Some(rule.executable_path.as_str()),
         |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
     );
     changed |= apply_auto_exclusion_paths(
@@ -674,7 +651,7 @@ fn apply_auto_exclusion_patch_to_profile(
         &patch.thread_priority,
         true,
         process_exclusion_rule,
-        |rule| &rule.executable_path,
+        |rule| Some(rule.executable_path.as_str()),
         |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
     );
     changed |= apply_auto_exclusion_paths(
@@ -682,7 +659,7 @@ fn apply_auto_exclusion_patch_to_profile(
         &patch.dynamic_priority_boost,
         true,
         process_exclusion_rule,
-        |rule| &rule.executable_path,
+        |rule| Some(rule.executable_path.as_str()),
         |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
     );
     changed |= apply_auto_exclusion_paths(
@@ -690,7 +667,7 @@ fn apply_auto_exclusion_patch_to_profile(
         &patch.gpu_priority,
         true,
         process_exclusion_rule,
-        |rule| &rule.executable_path,
+        |rule| Some(rule.executable_path.as_str()),
         |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
     );
     changed |= apply_auto_exclusion_paths(
@@ -698,7 +675,7 @@ fn apply_auto_exclusion_patch_to_profile(
         &patch.memory_priority,
         true,
         process_exclusion_rule,
-        |rule| &rule.executable_path,
+        |rule| Some(rule.executable_path.as_str()),
         |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
     );
     changed |= apply_auto_exclusion_paths(
@@ -706,7 +683,7 @@ fn apply_auto_exclusion_patch_to_profile(
         &patch.memory_trim,
         true,
         process_exclusion_rule,
-        |rule| &rule.executable_path,
+        |rule| Some(rule.executable_path.as_str()),
         |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
     );
     changed
@@ -717,25 +694,26 @@ fn apply_auto_exclusion_paths<T>(
     incoming: &[String],
     enabled_value: bool,
     new_rule: impl Fn(&str) -> T,
-    executable_path: impl Fn(&T) -> &str,
+    executable_path: impl Fn(&T) -> Option<&str>,
     set_enabled: impl Fn(&mut T, bool) -> bool,
 ) -> bool {
     let mut changed = false;
 
     for incoming_path in incoming {
-        let path = executable_path_key(Path::new(incoming_path));
-        if !Path::new(&path).is_absolute() {
+        let path = normalize_path_slashes(incoming_path);
+        let candidate = Path::new(path.as_ref());
+        if !candidate.is_absolute() {
             continue;
         }
-        if let Some(rule) = rules
-            .iter_mut()
-            .find(|rule| same_executable_path(Path::new(executable_path(*rule)), Path::new(&path)))
-        {
+        if let Some(rule) = rules.iter_mut().find(|rule| {
+            executable_path(*rule)
+                .is_some_and(|path| same_executable_path(Path::new(path.trim_start()), candidate))
+        }) {
             changed |= set_enabled(rule, enabled_value);
             continue;
         }
 
-        let mut created = new_rule(&path);
+        let mut created = new_rule(path.as_ref());
         let _ = set_enabled(&mut created, enabled_value);
         rules.push(created);
         changed = true;
@@ -777,6 +755,7 @@ fn cpu_limiter_rule(path: &str) -> crate::config::CpuLimiterRule {
         focus_allowed_cpu_time_percent: 50,
         visible_window_allowed_cpu_time_percent: 50,
         background_allowed_cpu_time_percent: 50,
+        affinity_limit: None,
     }
 }
 
@@ -794,6 +773,7 @@ pub fn runtime_settings_for(current: &Settings, persisted: &Settings) -> Setting
     projected.general.enabled = persisted.general.enabled;
     projected.advanced = current.advanced.clone();
     projected.adaptive_engine_presets.clear();
+    projected.adaptive_processor_power_presets.clear();
     projected.cpu_allocation_presets.clear();
     projected.advanced_power_plan_tuning_presets.clear();
     projected.sync_shared_settings_to_battery();

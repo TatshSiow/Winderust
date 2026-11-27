@@ -38,7 +38,10 @@ fn unrelated_owner_releases_preserve_the_pending_cleanup_deadline() {
         assert_eq!(controller.next_release_retry, Some(due));
     }
     controller.platform.deny_query = false;
-    assert_eq!(controller.retry_pending_releases(due).restored_processes, 1);
+    assert_eq!(
+        controller.retry_pending_releases(due).restored_by_owner,
+        BTreeMap::from([(MemoryPriorityReleaseOwner::MemoryPriority, 1)])
+    );
     assert_eq!(controller.platform.processes[&7].value, 5);
     assert!(controller.release_retry_delay(due).is_none());
 }

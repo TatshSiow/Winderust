@@ -13,6 +13,7 @@ use std::{
 
 use super::*;
 
+mod adaptive;
 mod instance_balancing;
 
 #[derive(Clone)]
@@ -405,6 +406,10 @@ fn multi_group_soft_selection_hands_off_and_restores_exact_baselines() {
     assert_eq!(process_state(&coordinator).cpu_sets, vec![100, 900, 963]);
     assert_eq!(process_state(&coordinator).affinity, 0b1111);
     assert_eq!(
+        coordinator.policy_managed_process_count(ControlOwner::CpuSetsSoft),
+        1
+    );
+    assert_eq!(
         coordinator
             .apply_policy_claim(
                 &mut CpuSetInventory::default(),
@@ -435,6 +440,14 @@ fn multi_group_soft_selection_hands_off_and_restores_exact_baselines() {
     assert_eq!(
         handoff.applications[0].owner,
         ControlOwner::ProcessorAffinityHard
+    );
+    assert_eq!(
+        coordinator.policy_managed_process_count(ControlOwner::CpuSetsSoft),
+        0
+    );
+    assert_eq!(
+        coordinator.policy_managed_process_count(ControlOwner::ProcessorAffinityHard),
+        1
     );
     assert_eq!(process_state(&coordinator).cpu_sets, vec![88, 89]);
     assert_eq!(process_state(&coordinator).affinity, 3);
@@ -577,6 +590,103 @@ fn allocation_target(id: u32, mask: u64, hard: bool) -> crate::cpu_allocation::C
     }
 }
 
+#[test]
+fn episode_placement_admits_a_real_restriction_past_an_external_matching_mask() {
+    use crate::cpu_allocation::CpuAllocationManager;
+
+    let mut coordinator = coordinator();
+    let mut second = process_state(&coordinator);
+    second.identity = identity(43, 7);
+    {
+        let mut state = coordinator.platform.state.borrow_mut();
+        state.processes.get_mut(&42).unwrap().affinity = 3;
+        state.processes.insert(43, second);
+    }
+    let topology = test_topology();
+    let mut manager =
+        CpuAllocationManager::with_action_log_feature(ActionLogFeature::AdaptiveEngine);
+    let mut log = ActionLog::default();
+    let generation = manager.reconcile_targets(
+        &mut coordinator,
+        Ok(&topology),
+        ControlOwner::AdaptiveEngine,
+        vec![
+            allocation_target(42, 3, true),
+            allocation_target(43, 3, true),
+        ],
+        Some(1),
+        None,
+        2,
+        true,
+        &mut log,
+    );
+    assert_eq!(generation.fallback_count, 1);
+    assert_eq!(
+        coordinator
+            .adaptive_episode_placement_processes()
+            .map(|process| process.id)
+            .collect::<Vec<_>>(),
+        [43]
+    );
+    manager.reconcile_empty_generation(&mut coordinator, ControlOwner::AdaptiveEngine, 2, &mut log);
+    let state = coordinator.platform.state.borrow();
+    assert_eq!(state.processes[&42].affinity, 3);
+    assert_eq!(state.processes[&43].affinity, 15);
+}
+
+#[test]
+fn episode_placement_needs_fresh_qualification_after_higher_owner_releases() {
+    let mut coordinator = coordinator();
+    let topology = test_topology();
+    let mut inventory = CpuSetInventory::default();
+    let episode = claim(
+        ControlOwner::AdaptiveEngine,
+        CpuAllocationRequest::HardAffinity {
+            selection: test_selection(3),
+        },
+        7,
+    );
+    assert_eq!(
+        coordinator
+            .apply_adaptive_episode_claim(&mut inventory, Ok(&topology), episode.clone(), true)
+            .unwrap(),
+        CpuAllocationApplyOutcome::Applied
+    );
+    assert_eq!(process_state(&coordinator).affinity, 3);
+    coordinator
+        .apply_policy_claim(
+            &mut inventory,
+            Ok(&topology),
+            claim(
+                ControlOwner::ProcessorAffinityHard,
+                CpuAllocationRequest::HardAffinity {
+                    selection: test_selection(12),
+                },
+                7,
+            ),
+            true,
+        )
+        .unwrap();
+    assert!(coordinator
+        .adaptive_episode_placement_processes()
+        .next()
+        .is_none());
+    assert_eq!(
+        coordinator
+            .apply_adaptive_episode_claim(&mut inventory, Ok(&topology), episode, true)
+            .unwrap(),
+        CpuAllocationApplyOutcome::Shadowed
+    );
+    coordinator.release_all_policy(ControlOwner::ProcessorAffinityHard);
+    let summary = coordinator.reconcile_pending(Ok(&topology), true, true);
+    assert!(summary.applications.is_empty());
+    assert!(coordinator
+        .adaptive_episode_placement_processes()
+        .next()
+        .is_none());
+    assert_eq!(process_state(&coordinator).affinity, 15);
+}
+
 fn changed_topology() -> CpuTopology {
     let original = test_topology();
     let mut processors = original.processors().to_vec();
@@ -641,8 +751,8 @@ fn stale_selection_restores_its_allocation_without_suppressing_apps_or_releasing
             ControlOwner::CpuSetsSoft,
             vec![allocation_target(42, 1, false)],
             None,
+            None,
             2,
-            String::new(),
             true,
             &mut log,
         );
@@ -1259,8 +1369,8 @@ fn mapping_failure_is_shared_without_suppressing_apps_or_losing_assignments() {
             ControlOwner::CpuSetsSoft,
             targets(),
             None,
+            None,
             2,
-            String::new(),
             true,
             log,
         )
@@ -1355,8 +1465,8 @@ fn zone_generation_orders_background_first_and_preserves_handoff_baselines() {
         ControlOwner::AdaptiveEngine,
         fallback(),
         None,
+        None,
         2,
-        String::new(),
         true,
         &mut log,
     );
@@ -1372,9 +1482,9 @@ fn zone_generation_orders_background_first_and_preserves_handoff_baselines() {
         Ok(&test_topology()),
         ControlOwner::AdaptiveEngine,
         fallback(),
+        None,
         zones(),
         2,
-        String::new(),
         true,
         &mut log,
     );
@@ -1397,9 +1507,9 @@ fn zone_generation_orders_background_first_and_preserves_handoff_baselines() {
         Ok(&test_topology()),
         ControlOwner::AdaptiveEngine,
         fallback(),
+        None,
         zones(),
         2,
-        String::new(),
         true,
         &mut log,
     );
@@ -1421,8 +1531,8 @@ fn zone_generation_orders_background_first_and_preserves_handoff_baselines() {
         ControlOwner::AdaptiveEngine,
         fallback(),
         None,
+        None,
         2,
-        String::new(),
         true,
         &mut log,
     );
@@ -1436,8 +1546,8 @@ fn zone_generation_orders_background_first_and_preserves_handoff_baselines() {
         ControlOwner::AdaptiveEngine,
         Vec::new(),
         None,
+        None,
         2,
-        String::new(),
         true,
         &mut log,
     );
@@ -1502,12 +1612,12 @@ fn failed_or_shadowed_background_never_narrows_foreground() {
             Ok(&test_topology()),
             ControlOwner::AdaptiveEngine,
             Vec::new(),
+            None,
             Some((
                 vec![allocation_target(42, 1, false)],
                 vec![allocation_target(43, 14, false)],
             )),
             2,
-            String::new(),
             true,
             &mut ActionLog::default(),
         );
@@ -1555,6 +1665,7 @@ fn partial_foreground_failure_withdraws_successful_zone_roles() {
         Ok(&test_topology()),
         ControlOwner::AdaptiveEngine,
         vec![allocation_target(42, 3, true)],
+        None,
         Some((
             vec![allocation_target(42, 1, false)],
             vec![
@@ -1563,7 +1674,6 @@ fn partial_foreground_failure_withdraws_successful_zone_roles() {
             ],
         )),
         3,
-        String::new(),
         true,
         &mut ActionLog::default(),
     );
@@ -2104,6 +2214,111 @@ fn external_affinity_break_is_relinquished_without_overwrite() {
         .events
         .iter()
         .any(|event| event == "forget-affinity:7"));
+}
+
+#[test]
+fn affinity_limit_intersects_the_current_mask_and_preserves_an_external_change() {
+    let mut coordinator = coordinator();
+    let topology = test_topology();
+    let mut inventory = CpuSetInventory::default();
+    let request = claim(
+        ControlOwner::CpuLimiter,
+        CpuAllocationRequest::AffinityLimit {
+            selection: test_selection(0b0011),
+        },
+        7,
+    );
+    let set_affinity = |coordinator: &CpuAllocationCoordinator<FakePlatform>, affinity| {
+        coordinator
+            .platform
+            .state
+            .borrow_mut()
+            .processes
+            .get_mut(&42)
+            .unwrap()
+            .affinity = affinity;
+    };
+    set_affinity(&coordinator, 0b0110);
+    assert_eq!(
+        coordinator
+            .apply_policy_claim(&mut inventory, Ok(&topology), request.clone(), true)
+            .unwrap(),
+        CpuAllocationApplyOutcome::Applied
+    );
+    assert_eq!(process_state(&coordinator).affinity, 0b0010);
+    assert_eq!(
+        coordinator.effective_affinity_limit_count(&request.target.key()),
+        Some(1)
+    );
+    set_affinity(&coordinator, 0b0101);
+    assert_eq!(
+        coordinator
+            .apply_policy_claim(&mut inventory, Ok(&topology), request, true)
+            .unwrap(),
+        CpuAllocationApplyOutcome::NoUsableTarget
+    );
+    assert!(coordinator
+        .release_all_policy(ControlOwner::CpuLimiter)
+        .failures
+        .is_empty());
+    assert_eq!(process_state(&coordinator).affinity, 0b0101);
+    assert!(!coordinator.has_managed_state());
+}
+
+#[test]
+fn affinity_limit_yields_to_external_cpu_sets_and_explicit_placement() {
+    let mut coordinator = coordinator();
+    let topology = test_topology();
+    let mut inventory = CpuSetInventory::default();
+    let request = claim(
+        ControlOwner::CpuLimiter,
+        CpuAllocationRequest::AffinityLimit {
+            selection: test_selection(0b0011),
+        },
+        7,
+    );
+    coordinator
+        .platform
+        .state
+        .borrow_mut()
+        .processes
+        .get_mut(&42)
+        .unwrap()
+        .cpu_sets = vec![102];
+    assert_eq!(
+        coordinator
+            .apply_policy_claim(&mut inventory, Ok(&topology), request.clone(), true)
+            .unwrap(),
+        CpuAllocationApplyOutcome::NoUsableTarget
+    );
+    assert_eq!(process_state(&coordinator).affinity, 0b1111);
+    assert_eq!(process_state(&coordinator).cpu_sets, vec![102]);
+    assert!(coordinator
+        .release_all_policy(ControlOwner::CpuLimiter)
+        .failures
+        .is_empty());
+    coordinator
+        .apply_policy_claim(
+            &mut inventory,
+            Ok(&topology),
+            claim(
+                ControlOwner::CpuSetsSoft,
+                CpuAllocationRequest::SoftCpuSets {
+                    selection: test_selection(0b1000),
+                },
+                7,
+            ),
+            true,
+        )
+        .unwrap();
+    assert_eq!(
+        coordinator
+            .apply_policy_claim(&mut inventory, Ok(&topology), request, true)
+            .unwrap(),
+        CpuAllocationApplyOutcome::Shadowed
+    );
+    assert_eq!(process_state(&coordinator).affinity, 0b1111);
+    assert_eq!(process_state(&coordinator).cpu_sets, vec![103]);
 }
 
 #[test]
@@ -2742,7 +2957,7 @@ fn cpu_allocation_live_apply_and_clean_release() -> Result<(), String> {
         .ok_or_else(|| "SystemRoot is unavailable.".to_owned())?;
     executable_path.push(r"System32\PING.EXE");
     let child = Command::new(&executable_path)
-        .args(["-t", "127.0.0.1"])
+        .args(["-n", "30", "127.0.0.1"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -2826,6 +3041,7 @@ fn cpu_allocation_live_apply_and_clean_release() -> Result<(), String> {
                 .0,
             baseline_affinity
         );
+        println!("Processor Affinity (Hard) applied and restored in processor group 0.");
     }
 
     let (_, process) = coordinator
@@ -2837,6 +3053,56 @@ fn cpu_allocation_live_apply_and_clean_release() -> Result<(), String> {
         .query_cpu_sets(&process)
         .map_err(|error| error.to_string())?;
     normalize_cpu_set_ids(&mut baseline_cpu_sets);
+    if baseline_cpu_sets.is_empty()
+        && topology.groups().len() == 1
+        && topology.groups()[0].number == 0
+        && topology.groups()[0].active_mask == system_affinity as u64
+        && available_affinity.count_ones() > 1
+    {
+        let reduced = CpuAllocationClaim {
+            target: target.clone(),
+            owner: ControlOwner::AdaptiveEngine,
+            balancing_generation: None,
+            request: CpuAllocationRequest::ReduceAffinity {
+                selection: CpuSelection::from_group_zero_mask(&topology, system_affinity as u64)
+                    .map_err(|error| error.to_string())?,
+                processors_to_remove: 1,
+                preserve_custom_affinity: false,
+            },
+        };
+        let mut inventory = CpuSetInventory::default();
+        for expected in [
+            CpuAllocationApplyOutcome::Applied,
+            CpuAllocationApplyOutcome::Unchanged,
+        ] {
+            assert_eq!(
+                coordinator
+                    .apply_policy_claim(&mut inventory, Ok(&topology), reduced.clone(), true)
+                    .map_err(|error| error.to_string())?,
+                expected
+            );
+            let observed = coordinator
+                .platform
+                .query_affinity(&process)
+                .map_err(|error| error.to_string())?
+                .0;
+            assert_eq!(observed & baseline_affinity, observed);
+            assert_eq!(observed.count_ones(), available_affinity.count_ones() - 1);
+        }
+        let released = coordinator.release_all_policy(ControlOwner::AdaptiveEngine);
+        if let Some(failure) = released.failures.first() {
+            return Err(failure.error.to_string());
+        }
+        assert_eq!(
+            coordinator
+                .platform
+                .query_affinity(&process)
+                .map_err(|error| error.to_string())?
+                .0,
+            baseline_affinity
+        );
+        println!("Adaptive Engine affinity reduced and restored in processor group 0.");
+    }
     let mut per_group = BTreeMap::new();
     for record in coordinator
         .platform
@@ -2846,15 +3112,22 @@ fn cpu_allocation_live_apply_and_clean_release() -> Result<(), String> {
         let processor = record.processor();
         per_group.entry(processor.group).or_insert(processor);
     }
-    if per_group.is_empty() {
-        return Err("CPU Set inventory is empty.".to_owned());
-    }
+    let active_groups: Vec<_> = topology.groups().iter().map(|group| group.number).collect();
+    let inventory_groups: Vec<_> = per_group.keys().copied().collect();
+    assert_eq!(
+        inventory_groups, active_groups,
+        "CPU Set inventory must cover every active processor group"
+    );
     let selection = CpuSelection::bind(&topology, per_group.into_values().collect())
         .map_err(|error| error.to_string())?;
     let mut expected_cpu_sets = CpuSetInventory::default()
         .ids(&mut coordinator.platform, selection.processors())
         .map_err(|error| error.to_string())?;
     normalize_cpu_set_ids(&mut expected_cpu_sets);
+    assert_ne!(
+        expected_cpu_sets, baseline_cpu_sets,
+        "the worker must start with different CPU Sets to verify a placement change"
+    );
     coordinator
         .apply_policy_claim(
             &mut CpuSetInventory::default(),
@@ -2892,6 +3165,7 @@ fn cpu_allocation_live_apply_and_clean_release() -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     normalize_cpu_set_ids(&mut observed);
     assert_eq!(observed, baseline_cpu_sets);
+    println!("CPU Sets (Soft) applied and restored for processor groups {active_groups:?}.");
     Ok(())
 }
 

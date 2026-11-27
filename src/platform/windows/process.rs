@@ -1,9 +1,12 @@
 use windows_sys::Win32::{
-    Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, STILL_ACTIVE},
+    Foundation::{
+        ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, STILL_ACTIVE, WAIT_FAILED, WAIT_OBJECT_0,
+        WAIT_TIMEOUT,
+    },
     System::Threading::{
-        GetCurrentProcessId, GetExitCodeProcess, OpenProcess, PROCESS_CREATE_PROCESS,
-        PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
-        PROCESS_SET_QUOTA, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+        GetCurrentProcessId, GetExitCodeProcess, OpenProcess, WaitForSingleObject,
+        PROCESS_CREATE_PROCESS, PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
+        PROCESS_SET_INFORMATION, PROCESS_SET_QUOTA, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
     },
 };
 
@@ -43,6 +46,19 @@ pub(crate) fn exit_confirmed(process: &WinHandle) -> Result<bool, ProcessOperati
     }
     // STILL_ACTIVE is also a possible explicit exit code, so it cannot confirm termination.
     Ok(exit_code != STILL_ACTIVE as u32)
+}
+
+pub(crate) fn poll_exit(process: &WinHandle) -> Result<bool, ProcessOperationError> {
+    // SAFETY: The caller holds an owned process handle opened with PROCESS_SYNCHRONIZE.
+    match unsafe { WaitForSingleObject(process.raw(), 0) } {
+        WAIT_OBJECT_0 => Ok(true),
+        WAIT_TIMEOUT => Ok(false),
+        WAIT_FAILED => Err(ProcessOperationError::capture("WaitForSingleObject")),
+        status => Err(ProcessOperationError::Failed {
+            operation: "WaitForSingleObject returned an unexpected status",
+            code: status,
+        }),
+    }
 }
 
 pub(crate) fn open(process_id: u32, access: ProcessAccess) -> Result<WinHandle, ProcessOpenError> {

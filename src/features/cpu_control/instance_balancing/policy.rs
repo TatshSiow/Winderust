@@ -56,6 +56,15 @@ impl Policy {
         now: Instant,
     ) -> Result<Option<Vec<Assignment>>, PlanError> {
         self.check_topology(topology)?;
+        if self.active
+            && self
+                .candidate
+                .as_ref()
+                .is_some_and(|(accepted, _)| accepted == cohort)
+        {
+            // The accepted plan is stable for this exact topology and cohort.
+            return Ok(Some(self.previous.clone()));
+        }
         let mut allowed = cohort
             .members
             .first()
@@ -83,9 +92,6 @@ impl Policy {
                 return Ok(None);
             }
         };
-        if self.active {
-            return Ok(Some(desired));
-        }
         if now.saturating_duration_since(since) < Duration::from_secs(1)
             || self.last_apply.is_some_and(|previous| {
                 now.saturating_duration_since(previous) < Duration::from_secs(5)

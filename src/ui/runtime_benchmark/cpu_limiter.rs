@@ -28,7 +28,7 @@ use crate::{
             CpuAllocationApplyOutcome, CpuAllocationClaim, CpuAllocationCoordinator,
             CpuAllocationRequest, CpuSetInventory,
         },
-        cpu_limiter::{CpuLimiterController, CpuLimiterTarget},
+        cpu_limiter::{CpuLimiterActivation, CpuLimiterController, CpuLimiterTarget},
         process::{open_process_for_set_information, ControlOwner},
         suspension::{SuspensionController, SuspensionTarget},
     },
@@ -43,7 +43,6 @@ use crate::{
     },
     power,
     win_util::WinHandle,
-    SingleInstanceGuard,
 };
 
 const WARMUP: Duration = Duration::from_secs(2);
@@ -110,9 +109,7 @@ fn run(path: &Path) -> Result<(), String> {
     if !path.is_dir() {
         return Err("Benchmark directory does not exist".to_owned());
     }
-    let _guard = SingleInstanceGuard::acquire(false).ok_or_else(|| {
-        "Close Winderust before benchmarking; another instance owns the runtime".to_owned()
-    })?;
+    let _guard = super::acquire_benchmark_session()?;
     let topology = windows_cpu_allocation::topology::query().map_err(|e| format!("{e:?}"))?;
     if topology.groups().len() != 1 || topology.groups()[0].number != 0 {
         return Err(
@@ -372,7 +369,10 @@ fn run_case(
                     ancestor_process_ids: Vec::new(),
                 }])?;
                 check_limiter(&mut limiter, &target)?;
-                if limiter.fallback_target_keys()?.contains(&target.key()) {
+                if matches!(
+                    limiter.target_activation(&target.key())?,
+                    Some(CpuLimiterActivation::ThreadFallback(_))
+                ) {
                     "exact-thread fallback"
                 } else {
                     "job freeze"
@@ -579,7 +579,7 @@ fn cleanup_case(
             if let Err(error) = suspension.shutdown() {
                 errors.push(error);
             }
-            if suspension.is_frozen_target(target) {
+            if suspension.is_frozen_target(&target.key()) {
                 errors.push("Worker remains frozen after CPU Limiter shutdown".to_owned());
             }
         }

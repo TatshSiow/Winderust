@@ -1,38 +1,156 @@
 use super::*;
 
 #[test]
+fn unfinished_interrupt_capture_reports_an_error_after_cleanup() {
+    use crate::backend::interrupt_timing::InterruptTimingError;
+
+    let path = Path::new("interrupt-timing.json");
+    assert!(finish_interrupt_capture(path, None, false).is_ok());
+    let error = "Benchmark ended before Interrupt Timing completed";
+    assert_eq!(
+        finish_interrupt_capture(path, None, true),
+        Err(error.to_owned())
+    );
+
+    let (capture, outcome) = InterruptTimingCapture::expired_for_test();
+    outcome.send(Err(InterruptTimingError::Cancelled)).unwrap();
+    assert_eq!(
+        finish_interrupt_capture(path, Some(capture), true),
+        Err(error.to_owned())
+    );
+
+    let (capture, outcome) = InterruptTimingCapture::expired_for_test();
+    outcome
+        .send(Err(InterruptTimingError::Cleanup(
+            "trace still active".into(),
+        )))
+        .unwrap();
+    assert_eq!(
+        finish_interrupt_capture(path, Some(capture), true),
+        Err("Interrupt Timing cleanup failed: trace still active".into())
+    );
+}
+
+#[test]
+fn benchmark_stop_exports_a_report_that_arrives_during_cleanup() {
+    use crate::backend::interrupt_timing::InterruptTimingReport;
+
+    let path = std::env::temp_dir().join(format!(
+        "winderust-benchmark-interrupt-timing-{}.json",
+        std::process::id()
+    ));
+    let report = InterruptTimingReport {
+        capture_start: None,
+        events_lost: 1,
+        buffers_lost: 0,
+        invalid_intervals: 0,
+        incomplete_intervals: 0,
+        invalid_image_records: 0,
+        unresolved_attribution: 0,
+        modules: Vec::new(),
+        per_cpu: None,
+        timeline: std::array::from_fn(|_| Default::default()),
+    };
+    let (capture, outcome) = InterruptTimingCapture::expired_for_test();
+    outcome.send(Ok(report.clone())).unwrap();
+    finish_interrupt_capture(&path, Some(capture), true).unwrap();
+    let exported: InterruptTimingReport =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(report, exported);
+    fs::remove_file(&path).unwrap();
+
+    let (mut capture, outcome) = InterruptTimingCapture::expired_for_test();
+    assert!(matches!(
+        capture.poll(),
+        Some(CaptureUpdate::CleanupPending(_))
+    ));
+    outcome.send(Ok(report)).unwrap();
+    finish_interrupt_capture(&path, Some(capture), false).unwrap();
+    assert!(!path.exists());
+}
+
+#[test]
 fn benchmark_cases_change_only_the_named_tuning() {
     let speed = settings_for("Speed").unwrap();
     let mut expected = Settings::default();
     apply_built_in_adaptive_engine_preset(&mut expected, BuiltInAdaptiveEnginePreset::Speed);
     expected.adaptive_engine.enabled = true;
+    expected.adaptive_engine.adaptive_processor_power_enabled = true;
+    expected.adaptive_engine.base_processor_policy =
+        power::ProcessorPowerValues::new_with_boost_mode(
+            100,
+            25,
+            100,
+            100,
+            power::ProcessorBoostMode::Aggressive,
+        );
     assert_eq!(speed, expected);
-    expected
-        .adaptive_engine_process
-        .thread_priority
-        .foreground_priority = ProcessThreadPrioritySetting::Default;
-    assert_eq!(settings_for("SpeedThreadDefault").unwrap(), expected);
-    expected.adaptive_engine.processor_power_policy_enabled = false;
-    assert_eq!(
-        settings_for("SpeedThreadDefaultPowerOff").unwrap(),
-        expected
-    );
+    expected.adaptive_engine.adaptive_processor_power_enabled = false;
+    assert_eq!(settings_for("SpeedPowerOff").unwrap(), expected);
     assert!(!settings_for("Default").unwrap().general.enabled);
     assert_eq!(
         settings_for("DefaultPCores").unwrap(),
         settings_for("Default").unwrap()
     );
-    assert!(
-        settings_for("SpeedRestraint")
-            .unwrap()
-            .adaptive_engine_process
-            .cpu_pressure_restraint_enabled
-    );
+    expected.adaptive_engine.adaptive_processor_power_enabled = true;
+    expected
+        .adaptive_engine_process
+        .limit_background_processors_enabled = false;
+    assert_eq!(settings_for("SpeedRestraint").unwrap(), expected);
     assert!(settings_for("unknown").is_err());
+
+    for (case, preset) in [
+        ("PowerSavePowerOff", BuiltInAdaptiveEnginePreset::PowerSave),
+        ("BalancedPowerOff", BuiltInAdaptiveEnginePreset::Balanced),
+        (
+            "PerformancePowerOff",
+            BuiltInAdaptiveEnginePreset::Performance,
+        ),
+    ] {
+        let mut expected = Settings::default();
+        apply_built_in_adaptive_engine_preset(&mut expected, preset);
+        expected.adaptive_engine.enabled = true;
+        assert_eq!(settings_for(case).unwrap(), expected);
+    }
 }
 
 #[test]
-fn balanced_export_matches_the_canonical_preset_and_roundtrips() {
+fn runtime_readiness_only_requires_the_enabled_adaptive_policies() {
+    let mut settings = Settings::default();
+    let mut status = RuntimeStatusSnapshot::default();
+    assert!(runtime_ready(&settings, &status));
+
+    settings.adaptive_engine.adaptive_processor_power_enabled = true;
+    Arc::make_mut(&mut status.power_plan_status).owner = Some(PowerPlanOwner::OrdinaryAutomation);
+    assert!(!runtime_ready(&settings, &status));
+    Arc::make_mut(&mut status.power_plan_status).owner =
+        Some(PowerPlanOwner::AdaptiveProcessorPower);
+    assert!(runtime_ready(&settings, &status));
+
+    settings
+        .adaptive_engine_process
+        .cpu_pressure_restraint_enabled = true;
+    assert!(runtime_ready(&settings, &status));
+    settings.adaptive_engine.enabled = true;
+    assert!(!runtime_ready(&settings, &status));
+    Arc::make_mut(&mut status.feature_status)
+        .adaptive_engine_process
+        .enabled = true;
+    assert!(runtime_ready(&settings, &status));
+
+    Arc::make_mut(&mut status.power_plan_status).owner = None;
+    assert!(!runtime_ready(&settings, &status));
+    settings.adaptive_engine.adaptive_processor_power_enabled = false;
+    assert!(runtime_ready(&settings, &status));
+
+    Arc::make_mut(&mut status.feature_status)
+        .adaptive_engine_process
+        .observation_paused = true;
+    assert!(!runtime_ready(&settings, &status));
+}
+
+#[test]
+fn balanced_export_matches_the_process_preset_and_separate_power_tuning() {
     let path = std::env::temp_dir().join(format!(
         "winderust-benchmark-settings-{}-{}",
         std::process::id(),
@@ -45,26 +163,48 @@ fn balanced_export_matches_the_canonical_preset_and_roundtrips() {
     let mut expected = Settings::default();
     apply_built_in_adaptive_engine_preset(&mut expected, BuiltInAdaptiveEnginePreset::Balanced);
     expected.adaptive_engine.enabled = true;
+    expected.adaptive_engine.adaptive_processor_power_enabled = true;
+    BuiltInPreset::Balanced.apply(&mut expected.adaptive_engine, PowerSourceProfile::PluggedIn);
+    BuiltInPreset::Balanced.apply(
+        &mut expected.battery_profile_mut().adaptive_engine,
+        PowerSourceProfile::OnBattery,
+    );
     assert_eq!(export_settings(&path, "Balanced").unwrap(), expected);
+    assert!(
+        expected
+            .adaptive_engine_process
+            .cpu_pressure_restraint_enabled
+    );
     assert!(
         !expected
             .adaptive_engine_process
-            .cpu_pressure_restraint_enabled
+            .limit_background_processors_enabled
     );
 
     let host = std::env::current_exe().unwrap();
     fs::write(
         path.join("request.json"),
-        serde_json::to_vec(&serde_json::json!({ "benchmark_host_path": host })).unwrap(),
+        serde_json::to_vec(&serde_json::json!({
+            "benchmark_host_path": host,
+            "background_pressure_ac_boost_policy": 42,
+            "background_pressure_ac_boost_mode": "disabled"
+        }))
+        .unwrap(),
     )
     .unwrap();
+    let exclusion = AdaptiveEngineExclusionRule::exact_path(host.to_str().unwrap());
     expected
         .adaptive_engine_process
         .custom_rules
-        .push(ProcessExclusionRule {
-            executable_path: host.to_str().unwrap().to_owned(),
-            ..Default::default()
-        });
+        .push(exclusion.clone());
+    expected
+        .battery_profile_mut()
+        .adaptive_engine_process
+        .custom_rules
+        .push(exclusion);
+    let boost = &mut expected.adaptive_engine.background_pressure_profile;
+    boost.ac_policy = 42;
+    boost.ac_mode = power::ProcessorBoostMode::Disabled;
     assert_eq!(export_settings(&path, "Balanced").unwrap(), expected);
     assert_eq!(
         toml::from_str::<Settings>(&fs::read_to_string(path.join("settings.toml")).unwrap())
@@ -83,9 +223,11 @@ fn balanced_request_changes_only_explicit_overrides() {
     let mut settings = settings_for("Balanced").unwrap();
     let mut expected = settings.clone();
     let request: BenchmarkRequest = serde_json::from_value(serde_json::json!({
+        "adaptive_engine_enabled": false,
         "dynamic_resource_zones_enabled": true,
         "limit_background_processors_enabled": false,
         "cpu_pressure_restraint_enabled": true,
+        "restraint_energy_efficient_scheduling": true,
         "background_app_cpu_threshold_percent": 100,
         "maximum_restrained_apps": 32,
         "foreground_or_system_cpu_threshold_percent": 1,
@@ -93,13 +235,19 @@ fn balanced_request_changes_only_explicit_overrides() {
         "background_pressure_ac_boost_mode": "disabled"
     }))
     .unwrap();
-    let process = &mut expected.adaptive_engine_process;
-    process.dynamic_resource_zones_enabled = true;
-    process.limit_background_processors_enabled = false;
-    process.cpu_pressure_restraint_enabled = true;
-    process.background_app_cpu_threshold_percent = 100;
-    process.maximum_restrained_apps = 32;
-    process.foreground_or_system_cpu_threshold_percent = 1;
+    let expect_process_overrides = |profile: &mut Settings| {
+        profile.adaptive_engine.enabled = false;
+        let process = &mut profile.adaptive_engine_process;
+        process.dynamic_resource_zones_enabled = true;
+        process.limit_background_processors_enabled = false;
+        process.cpu_pressure_restraint_enabled = true;
+        process.restraint_energy_efficient_scheduling = true;
+        process.background_app_cpu_threshold_percent = 100;
+        process.maximum_restrained_apps = 32;
+        process.foreground_or_system_cpu_threshold_percent = 1;
+    };
+    expect_process_overrides(&mut expected);
+    expect_process_overrides(expected.battery_profile_mut());
     expected
         .adaptive_engine
         .background_pressure_profile
@@ -113,6 +261,10 @@ fn balanced_request_changes_only_explicit_overrides() {
         .apply(&mut settings)
         .unwrap();
     expected
+        .adaptive_engine_process
+        .cpu_pressure_restraint_enabled = false;
+    expected
+        .battery_profile_mut()
         .adaptive_engine_process
         .cpu_pressure_restraint_enabled = false;
     assert_eq!(settings, expected);

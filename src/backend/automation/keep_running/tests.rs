@@ -1,4 +1,5 @@
 use std::{
+    cell::{Cell, OnceCell, RefCell},
     sync::{Condvar, Mutex, OnceLock},
     time::Duration,
 };
@@ -13,9 +14,10 @@ struct State {
     committed: usize,
     disposed: usize,
     fail_cleanup: bool,
-    incomplete: bool,
+    incomplete_admission_scan: bool,
     scan_cost: u64,
     elapsed: u64,
+    arrival_on_fresh_scan: Option<ProcessTargetKey>,
 }
 fn state() -> &'static (Mutex<State>, Condvar) {
     static STATE: OnceLock<(Mutex<State>, Condvar)> = OnceLock::new();
@@ -44,46 +46,98 @@ fn key(id: u32, path: &str) -> ProcessTargetKey {
     )
     .key()
 }
+thread_local! {
+    static IDENTITY_READS: Cell<&'static [(&'static str, Option<&'static str>)]> = const { Cell::new(&[]) };
+    static CATALOG_CALLS: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+    static ACTION_IDENTITIES: RefCell<Vec<(ProcessActionTarget, &'static str)>> = const { RefCell::new(Vec::new()) };
+    static ACTION_READS: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+}
+
 struct Fake;
 struct Launch {
     key: ProcessTargetKey,
     accepted: bool,
 }
 impl Platform for Fake {
+    type Catalog = OnceCell<Vec<ProcessTargetKey>>;
     type Context = ();
     type Identity = String;
     type Member = ProcessTargetKey;
     type Launch = Launch;
     fn context() -> Result<(), Failure> {
+        let (contexts, identities) = ACTION_READS.get();
+        ACTION_READS.set((contexts + 1, identities));
         Ok(())
     }
     fn binding(_: &()) -> String {
         "desktop".into()
     }
     fn identity(rule: &KeepRunningRule) -> Result<String, Failure> {
-        Ok(rule.executable_path.clone())
+        match IDENTITY_READS
+            .get()
+            .iter()
+            .find(|(path, _)| *path == rule.executable_path)
+        {
+            Some((_, Some(identity))) => Ok((*identity).to_owned()),
+            Some((_, None)) => Err(Failure {
+                message: "temporary identity read failure".into(),
+                kind: FailureKind::Retryable,
+            }),
+            None => Ok(rule.executable_path.clone()),
+        }
+    }
+    fn action_identity(target: &ProcessActionTarget, _: &()) -> Result<String, Failure> {
+        let (contexts, identities) = ACTION_READS.get();
+        ACTION_READS.set((contexts, identities + 1));
+        ACTION_IDENTITIES.with_borrow(|targets| {
+            targets
+                .iter()
+                .find(|(verified, _)| verified == target)
+                .map(|(_, identity)| (*identity).to_owned())
+                .ok_or_else(|| Failure {
+                    kind: FailureKind::UnsupportedContext,
+                    message: "unverified action target".into(),
+                })
+        })
     }
     fn scan(
         rule: &KeepRunningRule,
         _: &(),
         exclude: Option<&ProcessTargetKey>,
+        catalog: Option<&Self::Catalog>,
     ) -> Result<Vec<ProcessTargetKey>, Failure> {
         let mut state = state().0.lock().unwrap();
         state.elapsed += state.scan_cost;
-        if state.incomplete {
-            return Err(Failure {
-                message: "incomplete scan".into(),
-                kind: FailureKind::Retryable,
-            });
-        }
-        Ok(state
-            .present
+        let present = if let Some(catalog) = catalog {
+            let (captures, scans) = CATALOG_CALLS.get();
+            CATALOG_CALLS.set((captures + usize::from(catalog.get().is_none()), scans + 1));
+            catalog.get_or_init(|| state.present.clone())
+        } else {
+            if let Some(member) = state.arrival_on_fresh_scan.take() {
+                state.present.push(member);
+            }
+            &state.present
+        };
+        Ok(present
             .iter()
             .filter(|member| {
                 Some(*member) != exclude && **member == key(member.id, &rule.executable_path)
             })
             .cloned()
             .collect())
+    }
+    fn scan_fresh(
+        rule: &KeepRunningRule,
+        context: &(),
+        exclude: Option<&ProcessTargetKey>,
+    ) -> Result<Vec<ProcessTargetKey>, Failure> {
+        if exclude.is_some() && state().0.lock().unwrap().incomplete_admission_scan {
+            return Err(Failure {
+                message: "incomplete admission scan".into(),
+                kind: FailureKind::Retryable,
+            });
+        }
+        Self::scan(rule, context, exclude, None)
     }
     fn key(member: &ProcessTargetKey) -> ProcessTargetKey {
         member.clone()
@@ -174,6 +228,58 @@ fn drain(
         !coordinator.has_pending(),
         "native ownership must be acknowledged"
     );
+}
+
+#[test]
+fn terminal_launch_failure_is_logged_before_another_observation() {
+    let path = r"C:\Apps\app.exe";
+    let settings = KeepRunningSettings {
+        enabled: true,
+        rules: vec![KeepRunningRule::new(path.into())],
+    };
+    let mut coordinator = Coordinator::<Fake>::default();
+    coordinator.sync_settings(&settings, true);
+    let owner = &mut coordinator.owners[0];
+    let context = DesktopBindingKey::new("desktop".into());
+    let member = key(1, path);
+    let start = Instant::now();
+    owner.policy.observe(
+        start,
+        Observation::Complete {
+            observed_at: start,
+            context: &context,
+            members: std::slice::from_ref(&member),
+        },
+    );
+    owner.policy.exited(start, &member);
+    let now = start + Duration::from_secs(1);
+    let PrepareDisposition::Prepare(ticket) = owner.policy.try_prepare(
+        now,
+        Observation::Complete {
+            observed_at: now,
+            context: &context,
+            members: &[],
+        },
+    ) else {
+        panic!("expected a launch attempt");
+    };
+
+    let mut log = ActionLog::default();
+    let message = "unsupported launch";
+    owner.launch_failed(
+        now,
+        &ticket,
+        Failure {
+            message: message.into(),
+            kind: FailureKind::UnsupportedContext,
+        },
+        &mut log,
+    );
+    let entries = log.entries();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].reason, message);
+    assert_eq!(entries[0].result, ActionLogResult::Failed);
+    assert!(matches!(owner.last_error, Some(RuleError::Recorded(_))));
 }
 
 #[test]
@@ -321,8 +427,26 @@ fn bounded_worker_routes_late_results_and_never_disposes_accepted_children() {
         );
         std::thread::yield_now();
     }
+    assert_eq!(
+        coordinator.owners[0].policy.state(),
+        KeepRunningState::Paused(PauseReason::CleanupUnconfirmed)
+    );
+    settings.rules[0].enabled = false;
+    coordinator.invalidate_settings(&PendingResets {
+        all: true,
+        ..PendingResets::default()
+    });
+    coordinator.sync_settings(&settings, true);
+    assert_eq!(
+        coordinator.owners[0]
+            .last_error
+            .as_ref()
+            .map(RuleError::message),
+        Some("cleanup unknown")
+    );
     assert!(coordinator.has_pending());
     settings.enabled = false;
+    settings.rules[0].enabled = true;
     tick(
         &mut coordinator,
         &settings,
@@ -362,30 +486,43 @@ fn bounded_worker_routes_late_results_and_never_disposes_accepted_children() {
     wait_for(|state| state.prepared == 1);
     edit(|state| {
         state.held = false;
-        state.incomplete = true;
+        state.incomplete_admission_scan = true;
     });
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !matches!(
-        coordinator.flight.as_ref().map(|flight| &flight.phase),
-        Some(Phase::Ready(_))
-    ) && Instant::now() < deadline
-    {
-        tick(
+    let unavailable = loop {
+        let snapshot = tick(
             &mut coordinator,
             &settings,
             now + Duration::from_secs(2),
             true,
         );
+        if matches!(
+            coordinator.flight.as_ref().map(|flight| &flight.phase),
+            Some(Phase::Ready(_))
+        ) {
+            break snapshot;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "fake worker did not become ready"
+        );
         std::thread::yield_now();
-    }
+    };
+    assert!(!unavailable.observation_known);
+    assert_eq!(
+        unavailable.last_error.as_deref(),
+        Some("incomplete admission scan")
+    );
     assert_eq!(state().0.lock().unwrap().committed, 0);
-    edit(|state| state.incomplete = false);
-    tick(
+    edit(|state| state.incomplete_admission_scan = false);
+    let recovered = tick(
         &mut coordinator,
         &settings,
         now + Duration::from_secs(2),
         false,
     );
+    assert!(recovered.observation_known);
+    assert!(recovered.last_error.is_none());
     assert_eq!(state().0.lock().unwrap().committed, 0);
     tick(
         &mut coordinator,
@@ -456,4 +593,384 @@ fn bounded_worker_routes_late_results_and_never_disposes_accepted_children() {
     );
     assert_eq!(state().0.lock().unwrap().committed, 0);
     assert_eq!(state().0.lock().unwrap().disposed, 1);
+    drop(coordinator);
+
+    // Ordinary rules share a catalog. A member appearing before reservation prevents a duplicate launch.
+    settings
+        .rules
+        .push(KeepRunningRule::new(r"C:\Apps\second.exe".into()));
+    let path = &settings.rules[0].executable_path;
+    edit(|state| {
+        *state = State {
+            present: vec![key(5, path)],
+            held: true,
+            ..State::default()
+        }
+    });
+    let mut coordinator = Coordinator::<Fake>::default();
+    CATALOG_CALLS.set((0, 0));
+    tick(&mut coordinator, &settings, now, true);
+    assert_eq!(CATALOG_CALLS.get(), (1, 2));
+    edit(|state| state.present.clear());
+    tick(&mut coordinator, &settings, now, true);
+    tick(
+        &mut coordinator,
+        &settings,
+        now + Duration::from_secs(1),
+        true,
+    );
+    wait_for(|state| state.prepared == 1);
+    let external = key(6, path);
+    edit(|state| {
+        state.held = false;
+        state.arrival_on_fresh_scan = Some(external.clone());
+    });
+    drain(
+        &mut coordinator,
+        &settings,
+        now + Duration::from_secs(2),
+        true,
+    );
+    let state = state().0.lock().unwrap();
+    assert_eq!((state.prepared, state.committed, state.disposed), (1, 0, 1));
+    assert_eq!(state.present, [external]);
+}
+
+#[test]
+fn path_resets_preserve_the_other_rules_pending_retry() {
+    let settings = KeepRunningSettings {
+        enabled: true,
+        rules: [r"C:\Apps\first.exe", r"C:\Apps\second.exe"]
+            .map(|path| KeepRunningRule::new(path.into()))
+            .into(),
+    };
+    let mut coordinator = Coordinator::<Fake>::default();
+    coordinator.sync_settings(&settings, true);
+    let now = Instant::now();
+    let context = DesktopBindingKey::new("desktop".into());
+    for (index, owner) in coordinator.owners.iter_mut().enumerate() {
+        let member = key(index as u32 + 1, &owner.rule.executable_path);
+        owner.policy.observe(
+            now,
+            Observation::Complete {
+                observed_at: now,
+                context: &context,
+                members: std::slice::from_ref(&member),
+            },
+        );
+        owner.policy.exited(now, &member);
+    }
+    let second = coordinator.owners[1].policy.state();
+    assert!(matches!(second, KeepRunningState::Retrying { .. }));
+    coordinator.invalidate_settings(&PendingResets {
+        paths: [settings.rules[0].executable_path.clone()].into(),
+        ..PendingResets::default()
+    });
+    coordinator.sync_settings(&settings, true);
+    assert_eq!(
+        coordinator.owners[0].policy.state(),
+        KeepRunningState::WaitingForApp
+    );
+    assert_eq!(coordinator.owners[1].policy.state(), second);
+}
+
+#[test]
+fn notify_only_edit_preserves_retry_and_reserves_exhaustion_once() {
+    let path = r"C:\Apps\app.exe";
+    let mut settings = KeepRunningSettings {
+        enabled: true,
+        rules: vec![KeepRunningRule::new(path.into())],
+    };
+    assert!(!settings.notifications_required());
+    let mut coordinator = Coordinator::<Fake>::default();
+    coordinator.sync_settings(&settings, true);
+    let start = Instant::now();
+    let context = DesktopBindingKey::new("desktop".into());
+    let member = key(1, path);
+    coordinator.owners[0].policy.observe(
+        start,
+        Observation::Complete {
+            observed_at: start,
+            context: &context,
+            members: std::slice::from_ref(&member),
+        },
+    );
+    coordinator.owners[0].policy.exited(start, &member);
+
+    let mut log = ActionLog::default();
+    for seconds in [1, 6, 36] {
+        let now = start + Duration::from_secs(seconds);
+        let owner = &mut coordinator.owners[0];
+        let PrepareDisposition::Prepare(ticket) = owner.policy.try_prepare(
+            now,
+            Observation::Complete {
+                observed_at: now,
+                context: &context,
+                members: &[],
+            },
+        ) else {
+            panic!("expected a launch attempt");
+        };
+        owner.policy.failed(now, &ticket, FailureKind::Retryable);
+        owner
+            .policy
+            .cleanup_ack(&ticket, CleanupOutcome::NoChildCreated);
+        if seconds == 1 {
+            let retry = owner.policy.state();
+            settings.rules[0].notify = true;
+            assert!(settings.notifications_required());
+            coordinator.sync_settings(&settings, true);
+            assert!(coordinator.owners[0].rule.notify);
+            assert_eq!(coordinator.owners[0].policy.state(), retry);
+            assert_eq!(coordinator.owners[0].policy.attempts(), 1);
+        }
+        if seconds < 36 {
+            coordinator.notify_retry_exhaustion(
+                |_| panic!("ordinary retries cannot request notifications"),
+                &mut log,
+            );
+        }
+    }
+    let mut reservations = 0;
+    for _ in 0..2 {
+        coordinator.notify_retry_exhaustion(
+            |rule| {
+                assert_eq!(rule, &settings.rules[0]);
+                reservations += 1;
+                false
+            },
+            &mut log,
+        );
+    }
+    assert_eq!(reservations, 1);
+    assert!(log.entries().is_empty());
+}
+
+#[test]
+fn resource_thresholds_actions_pause_armed_keep_running_until_resume() {
+    let path = r"C:\Apps\app.exe";
+    let settings = KeepRunningSettings {
+        enabled: true,
+        rules: vec![KeepRunningRule::new(path.into())],
+    };
+    let target = ProcessActionTarget {
+        id: 20,
+        name: "app.exe".into(),
+        executable_path: path.into(),
+        creation_time: 20,
+        session_id: Some(1),
+        is_service_account: Some(false),
+    };
+    let original = key(target.id, path);
+    let replacement = key(21, path);
+    let context = DesktopBindingKey::new("desktop".into());
+    let start = Instant::now();
+    let observation = |observed_at, members| Observation::Complete {
+        observed_at,
+        context: &context,
+        members,
+    };
+
+    // Terminate leaves no process. Restart leaves one verified replacement.
+    for remaining in [&[][..], std::slice::from_ref(&replacement)] {
+        let mut coordinator = Coordinator::<Fake>::default();
+        coordinator.sync_settings(&settings, true);
+        let policy = &mut coordinator.owners[0].policy;
+        policy.observe(start, observation(start, std::slice::from_ref(&original)));
+        assert_eq!(policy.state(), KeepRunningState::Armed);
+
+        coordinator.pause_targets(
+            std::slice::from_ref(&target),
+            PauseReason::ResourceThresholds,
+        );
+        let policy = &mut coordinator.owners[0].policy;
+        policy.exited(start, &original);
+        let now = start + Duration::from_secs(60);
+        assert!(matches!(
+            policy.try_prepare(now, observation(now, remaining)),
+            PrepareDisposition::Wait
+        ));
+        assert_eq!(
+            policy.state(),
+            KeepRunningState::Paused(PauseReason::ResourceThresholds)
+        );
+
+        coordinator.resume(path);
+        let state = coordinator.owners[0].policy.state();
+        if remaining.is_empty() {
+            assert!(matches!(state, KeepRunningState::Retrying { .. }));
+        } else {
+            assert_eq!(state, KeepRunningState::Armed);
+        }
+    }
+}
+
+#[test]
+fn stop_pauses_a_pinned_alias_only_from_verified_action_identity() {
+    let original = r"C:\Apps\original.exe";
+    let settings = KeepRunningSettings {
+        enabled: true,
+        rules: vec![KeepRunningRule::new(original.into())],
+    };
+    let target = |id, name: &str, path: &str| ProcessActionTarget {
+        id,
+        name: name.into(),
+        executable_path: path.into(),
+        creation_time: u64::from(id),
+        session_id: Some(1),
+        is_service_account: Some(false),
+    };
+    let literal = target(20, "original.exe", original);
+    let alias = target(21, "alias.exe", r"C:\Links\alias.exe");
+    let unrelated = target(22, "alias.exe", r"C:\Other\alias.exe");
+    let stale = ProcessActionTarget {
+        creation_time: alias.creation_time - 1,
+        ..alias.clone()
+    };
+    let foreign = ProcessActionTarget {
+        session_id: Some(2),
+        ..alias.clone()
+    };
+    ACTION_IDENTITIES.set(vec![
+        (alias.clone(), "shared-file-id"),
+        (unrelated.clone(), "different-file-id"),
+    ]);
+    let mut coordinator = Coordinator::<Fake>::default();
+    coordinator.sync_settings(&settings, true);
+    let owner = &mut coordinator.owners[0];
+    owner.identity = Some("shared-file-id".to_owned());
+    let now = Instant::now();
+    let member = key(1, original);
+    owner.policy.observe(
+        now,
+        Observation::Complete {
+            observed_at: now,
+            context: &DesktopBindingKey::new("desktop".into()),
+            members: std::slice::from_ref(&member),
+        },
+    );
+    owner.policy.exited(now, &member);
+
+    let reason = PauseReason::IntentionalStop;
+    let paused = KeepRunningState::Paused(reason);
+    ACTION_READS.set((0, 0));
+    coordinator.pause_targets(
+        std::slice::from_ref(&alias),
+        PauseReason::ResourceThresholds,
+    );
+    assert_eq!(ACTION_READS.get(), (0, 0));
+    assert!(matches!(
+        coordinator.owners[0].policy.state(),
+        KeepRunningState::Retrying { .. }
+    ));
+    coordinator.pause_targets(&[stale, foreign, unrelated.clone()], reason);
+    assert_eq!(ACTION_READS.get(), (1, 3));
+    assert!(matches!(
+        coordinator.owners[0].policy.state(),
+        KeepRunningState::Retrying { .. }
+    ));
+
+    ACTION_READS.set((0, 0));
+    coordinator.pause_targets(&[alias.clone(), unrelated], reason);
+    assert_eq!(coordinator.owners[0].policy.state(), paused);
+    assert_eq!(ACTION_READS.get(), (1, 1));
+
+    coordinator.resume(original);
+    ACTION_READS.set((0, 0));
+    coordinator.pause_targets(&[alias.clone(), literal], reason);
+    assert_eq!(coordinator.owners[0].policy.state(), paused);
+    assert_eq!(ACTION_READS.get(), (0, 0));
+
+    coordinator.resume(original);
+    let alias_key = key(alias.id, alias.executable_path.to_str().unwrap());
+    coordinator.owners[0]
+        .members
+        .insert(alias_key.clone(), alias_key);
+    ACTION_READS.set((0, 0));
+    coordinator.pause_targets(&[alias], reason);
+    assert_eq!(coordinator.owners[0].policy.state(), paused);
+    assert_eq!(ACTION_READS.get(), (0, 0));
+}
+
+#[test]
+fn verified_alias_diagnostic_requires_a_complete_conflict_free_scan_to_clear() {
+    const ORIGINAL: &str = r"C:\Keep Running Test\original.exe";
+    const ALIAS: &str = r"C:\Keep Running Test\alias.exe";
+    const CONFLICT: &str =
+        "Keep Running rules refer to the same executable; remove the duplicate rule.";
+    let mut settings = KeepRunningSettings {
+        enabled: true,
+        rules: [ORIGINAL, ALIAS]
+            .map(|path| KeepRunningRule::new(path.into()))
+            .into(),
+    };
+    let mut coordinator = Coordinator::<Fake>::default();
+    coordinator.sync_settings(&settings, true);
+    let now = Instant::now();
+    let context = DesktopBindingKey::new("desktop".into());
+    let member = key(31, ALIAS);
+    coordinator.owners[1].policy.observe(
+        now,
+        Observation::Complete {
+            observed_at: now,
+            context: &context,
+            members: std::slice::from_ref(&member),
+        },
+    );
+    coordinator.owners[1].policy.exited(now, &member);
+    let mut log = ActionLog::default();
+    let observe = |coordinator: &mut Coordinator<Fake>,
+                   settings: &KeepRunningSettings,
+                   watcher_active,
+                   log: &mut ActionLog| {
+        coordinator.tick(
+            settings,
+            true,
+            watcher_active,
+            |_, _, _, _, _| CommitDisposition::Deferred,
+            log,
+            || now,
+        )
+    };
+    IDENTITY_READS.set(&[(ORIGINAL, Some("original")), (ALIAS, Some("replacement"))]);
+    observe(&mut coordinator, &settings, true, &mut log);
+    IDENTITY_READS.set(&[
+        (ORIGINAL, Some("replacement")),
+        (ALIAS, Some("replacement")),
+    ]);
+    let paused = KeepRunningState::Paused(PauseReason::UnsupportedContext);
+    assert!(observe(&mut coordinator, &settings, true, &mut log)
+        .rules
+        .iter()
+        .all(|row| row.state == paused));
+    IDENTITY_READS.set(&[(ORIGINAL, None), (ALIAS, Some("replacement"))]);
+    coordinator.resume(ALIAS);
+    assert!(matches!(
+        coordinator.owners[1].policy.state(),
+        KeepRunningState::Retrying { .. }
+    ));
+    let status = observe(&mut coordinator, &settings, true, &mut log);
+    assert_eq!(status.rules[1].state, paused);
+    assert_eq!(status.rules[1].last_error.as_deref(), Some(CONFLICT));
+    assert_eq!(coordinator.owners[0].identity.as_deref(), Some("original"));
+
+    settings.rules.remove(0);
+    let unknown = observe(&mut coordinator, &settings, false, &mut log);
+    assert!(!unknown.observation_known);
+    assert_eq!(unknown.rules[0].last_error.as_deref(), Some(CONFLICT));
+
+    let resolved = observe(&mut coordinator, &settings, true, &mut log);
+    IDENTITY_READS.set(&[]);
+    assert!(resolved.observation_known);
+    assert_eq!(resolved.rules[0].state, paused);
+    assert!(resolved.rules[0].last_error.is_none());
+    assert!(resolved.last_error.is_none());
+    assert!(!coordinator.has_pending());
+    assert_eq!(
+        log.entries()
+            .iter()
+            .filter(|entry| entry.reason == CONFLICT)
+            .count(),
+        1
+    );
 }

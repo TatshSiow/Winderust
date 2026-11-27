@@ -1,12 +1,14 @@
 use crate::platform::windows::power_plan::{self as windows_power, PowerSetting};
 
 use super::{
-    AdvancedPowerPlanTuningSourceValues, AdvancedPowerPlanTuningValues, EffectivePowerMode,
-    PowerPlan, PowerPlanPersonality, ProcessorBoostMode, ProcessorPowerSourceValues,
-    ProcessorPowerValues, ProcessorSchedulingPolicy,
+    AdvancedPowerPlanTuningReadback, AdvancedPowerPlanTuningSourceReadback,
+    AdvancedPowerPlanTuningSourceValues, EditableTuningValues, EffectivePowerMode,
+    EnergyPerformancePreference, PowerPlan, PowerPlanPersonality, PowerSettingReadback,
+    ProcessorBoostMode, ProcessorPowerSourceValues, ProcessorPowerValues,
+    ProcessorSchedulingPolicy,
 };
 
-const ADAPTIVE_PLAN_NAME: &str = "Winderust Adaptive";
+pub(crate) const ADAPTIVE_PLAN_NAME: &str = "Winderust Adaptive";
 const ADAPTIVE_PLAN_DESCRIPTION_PREFIX: &str = "Winderust managed adaptive plan; restore=";
 
 #[derive(Debug)]
@@ -22,11 +24,20 @@ pub fn list_plans() -> Result<Vec<PowerPlan>, String> {
             let active = active_guid
                 .as_deref()
                 .is_some_and(|active_guid| active_guid.eq_ignore_ascii_case(&scheme.guid));
+            // The reserved name is selectable only when its description rules out ownership.
+            let managed_adaptive = scheme.name == ADAPTIVE_PLAN_NAME
+                && windows_power::read_scheme_description(&scheme.guid).map_or(
+                    true,
+                    |description| {
+                        managed_adaptive_restore_guid(&scheme.name, &description).is_some()
+                    },
+                );
 
             PowerPlan {
                 guid: scheme.guid,
                 name: scheme.name,
                 active,
+                managed_adaptive,
             }
         })
         .collect::<Vec<_>>();
@@ -43,6 +54,7 @@ pub fn active_plan() -> Result<PowerPlan, String> {
         guid: windows_power::active_scheme_guid()?,
         name: "Active power plan".to_owned(),
         active: true,
+        managed_adaptive: false,
     })
 }
 
@@ -183,6 +195,8 @@ pub(crate) enum ProcessorPowerApplyStage {
     BatteryPerformanceMinimum,
     AcPerformanceMaximum,
     BatteryPerformanceMaximum,
+    AcEnergyPerformancePreference,
+    BatteryEnergyPerformancePreference,
     AcBoostPolicy,
     BatteryBoostPolicy,
     AcBoostMode,
@@ -205,6 +219,10 @@ impl std::fmt::Display for ProcessorPowerApplyStage {
             Self::BatteryPerformanceMinimum => "write battery processor minimum",
             Self::AcPerformanceMaximum => "write A/C processor maximum",
             Self::BatteryPerformanceMaximum => "write battery processor maximum",
+            Self::AcEnergyPerformancePreference => "write A/C energy performance preference",
+            Self::BatteryEnergyPerformancePreference => {
+                "write battery energy performance preference"
+            }
             Self::AcBoostPolicy => "write A/C boost policy",
             Self::BatteryBoostPolicy => "write battery boost policy",
             Self::AcBoostMode => "write A/C boost mode",
@@ -222,119 +240,71 @@ impl std::fmt::Display for ProcessorPowerApplyStage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProcessorPowerApplyError {
-    stage: ProcessorPowerApplyStage,
-    source: String,
+pub(crate) enum ProcessorPowerApplyError {
+    PlanUnavailable,
+    Stage {
+        stage: ProcessorPowerApplyStage,
+        detail: String,
+    },
 }
 
 impl ProcessorPowerApplyError {
-    pub(crate) fn at(stage: ProcessorPowerApplyStage, source: String) -> Self {
-        Self { stage, source }
+    pub(crate) fn at(stage: ProcessorPowerApplyStage, detail: String) -> Self {
+        Self::Stage { stage, detail }
     }
 
-    #[cfg(test)]
     pub(crate) fn stage(&self) -> ProcessorPowerApplyStage {
-        self.stage
+        match self {
+            Self::PlanUnavailable => ProcessorPowerApplyStage::ValidatePlan,
+            Self::Stage { stage, .. } => *stage,
+        }
     }
 }
 
 impl std::fmt::Display for ProcessorPowerApplyError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "Failed to {}: {}", self.stage, self.source)
+        match self {
+            Self::PlanUnavailable => formatter.write_str(
+                "Failed to validate plan: The selected plan is unavailable for persistent tuning.",
+            ),
+            Self::Stage { stage, detail } => write!(formatter, "Failed to {stage}: {detail}"),
+        }
     }
 }
 
 impl std::error::Error for ProcessorPowerApplyError {}
 
+pub(crate) fn validate_tuning_plan(guid: &str) -> Result<(), ProcessorPowerApplyError> {
+    if list_plans()
+        .map_err(|detail| {
+            ProcessorPowerApplyError::at(ProcessorPowerApplyStage::ValidatePlan, detail)
+        })?
+        .iter()
+        .any(|plan| !plan.managed_adaptive && plan.guid.eq_ignore_ascii_case(guid))
+    {
+        Ok(())
+    } else {
+        Err(ProcessorPowerApplyError::PlanUnavailable)
+    }
+}
+
 pub fn apply_processor_power_values(
     guid: &str,
     values: ProcessorPowerSourceValues,
 ) -> Result<(), String> {
-    apply_processor_power_values_staged(guid, values.normalized().into())
+    apply_processor_power_values_staged(guid, values.normalized().into(), None)
         .map_err(|error| error.to_string())
 }
 
 pub(crate) fn apply_processor_power_values_staged(
     guid: &str,
     values: AdvancedPowerPlanTuningSourceValues,
+    previous: Option<AdvancedPowerPlanTuningSourceValues>,
 ) -> Result<(), ProcessorPowerApplyError> {
     validate_plan_guid(guid).map_err(|error| {
         ProcessorPowerApplyError::at(ProcessorPowerApplyStage::ValidatePlan, error)
     })?;
-    let values = values.normalized();
-
-    write_processor_value(
-        guid,
-        PowerSetting::CoreParkingMinimum,
-        values.ac.processor.core_parking_min,
-        ProcessorPowerApplyStage::AcCoreParkingMinimum,
-        windows_power::write_ac_value,
-    )?;
-    write_processor_value(
-        guid,
-        PowerSetting::CoreParkingMinimum,
-        values.battery.processor.core_parking_min,
-        ProcessorPowerApplyStage::BatteryCoreParkingMinimum,
-        windows_power::write_dc_value,
-    )?;
-    write_processor_value(
-        guid,
-        PowerSetting::PerformanceMinimum,
-        values.ac.processor.performance_min,
-        ProcessorPowerApplyStage::AcPerformanceMinimum,
-        windows_power::write_ac_value,
-    )?;
-    write_processor_value(
-        guid,
-        PowerSetting::PerformanceMinimum,
-        values.battery.processor.performance_min,
-        ProcessorPowerApplyStage::BatteryPerformanceMinimum,
-        windows_power::write_dc_value,
-    )?;
-    write_processor_value(
-        guid,
-        PowerSetting::PerformanceMaximum,
-        values.ac.processor.performance_max,
-        ProcessorPowerApplyStage::AcPerformanceMaximum,
-        windows_power::write_ac_value,
-    )?;
-    write_processor_value(
-        guid,
-        PowerSetting::PerformanceMaximum,
-        values.battery.processor.performance_max,
-        ProcessorPowerApplyStage::BatteryPerformanceMaximum,
-        windows_power::write_dc_value,
-    )?;
-    write_processor_value(
-        guid,
-        PowerSetting::BoostPolicy,
-        values.ac.processor.boost_policy,
-        ProcessorPowerApplyStage::AcBoostPolicy,
-        windows_power::write_ac_value,
-    )?;
-    write_processor_value(
-        guid,
-        PowerSetting::BoostPolicy,
-        values.battery.processor.boost_policy,
-        ProcessorPowerApplyStage::BatteryBoostPolicy,
-        windows_power::write_dc_value,
-    )?;
-    write_processor_value(
-        guid,
-        PowerSetting::BoostMode,
-        values.ac.processor.boost_mode.power_value(),
-        ProcessorPowerApplyStage::AcBoostMode,
-        windows_power::write_ac_value,
-    )?;
-    write_processor_value(
-        guid,
-        PowerSetting::BoostMode,
-        values.battery.processor.boost_mode.power_value(),
-        ProcessorPowerApplyStage::BatteryBoostMode,
-        windows_power::write_dc_value,
-    )?;
-
-    write_scheduling_values(values, |battery, setting, value| {
+    write_tuning_values(values.normalized(), previous, |battery, setting, value| {
         if battery {
             windows_power::write_dc_value(guid, setting, value)
         } else {
@@ -360,17 +330,99 @@ fn reactivate_if_active(
     Ok(())
 }
 
-pub fn read_processor_power_values(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Class1CoreParkingValues {
+    pub(crate) ac: u32,
+    pub(crate) battery: u32,
+}
+
+pub(crate) fn read_class1_core_parking_values(
     guid: &str,
-) -> Result<AdvancedPowerPlanTuningSourceValues, String> {
+) -> Result<Class1CoreParkingValues, String> {
+    let setting = PowerSetting::Class1CoreParkingMinimum;
+    let read = |battery| {
+        let source = if battery { "battery" } else { "A/C" };
+        let value = windows_power::read_optional_value(guid, setting, battery)
+            .map_err(|error| format!("Unable to read {source} class 1 core parking: {error}"))?
+            .ok_or_else(|| format!("The {source} class 1 core parking setting is unavailable."))?;
+        if value > 100 {
+            return Err(format!(
+                "Class 1 core-parking minimum is outside 0–100: {value}."
+            ));
+        }
+        Ok(value)
+    };
+    Ok(Class1CoreParkingValues {
+        ac: read(false)?,
+        battery: read(true)?,
+    })
+}
+
+pub(crate) fn apply_class1_core_parking_values(
+    guid: &str,
+    values: Class1CoreParkingValues,
+    previous: Option<Class1CoreParkingValues>,
+) -> Result<(), String> {
+    let setting = PowerSetting::Class1CoreParkingMinimum;
+    let mut wrote_slot = false;
+    let write_result = write_class1_core_parking_values(values, previous, |battery, value| {
+        if battery {
+            windows_power::write_dc_value(guid, setting, value)?;
+        } else {
+            windows_power::write_ac_value(guid, setting, value)?;
+        }
+        wrote_slot = true;
+        Ok(())
+    });
+    let reactivation = if wrote_slot {
+        reactivate_if_active(guid, windows_power::active_scheme_guid, set_active)
+            .map_err(|error| error.to_string())
+    } else {
+        Ok(())
+    };
+    write_result.and(reactivation)
+}
+
+fn write_class1_core_parking_values(
+    values: Class1CoreParkingValues,
+    previous: Option<Class1CoreParkingValues>,
+    mut write: impl FnMut(bool, u32) -> Result<(), String>,
+) -> Result<(), String> {
+    let recovering = previous.is_none();
+    let mut sources = [
+        (false, values.ac, previous.map(|values| values.ac)),
+        (true, values.battery, previous.map(|values| values.battery)),
+    ];
+    if previous.is_some_and(|previous| previous.battery > values.battery) {
+        // Restore the battery slot before applying a new floor to the A/C slot.
+        sources.reverse();
+    }
+    let mut result = Ok(());
+    for (battery, value, previous) in sources {
+        if Some(value) != previous {
+            result = result.and(write(battery, value));
+            if !recovering && result.is_err() {
+                break;
+            }
+        }
+    }
+    result
+}
+
+pub(crate) fn read_processor_power_values(
+    guid: &str,
+) -> Result<AdvancedPowerPlanTuningReadback, String> {
     validate_plan_guid(guid)?;
-    Ok(AdvancedPowerPlanTuningSourceValues {
+    Ok(AdvancedPowerPlanTuningReadback {
         ac: read_tuning_source(guid, false)?,
         battery: read_tuning_source(guid, true)?,
     })
 }
 
-fn read_tuning_source(guid: &str, battery: bool) -> Result<AdvancedPowerPlanTuningValues, String> {
+fn read_tuning_source(
+    guid: &str,
+    battery: bool,
+) -> Result<AdvancedPowerPlanTuningSourceReadback, String> {
     let read = |setting| {
         if battery {
             windows_power::read_dc_value(guid, setting)
@@ -387,61 +439,122 @@ fn read_tuning_source(guid: &str, battery: bool) -> Result<AdvancedPowerPlanTuni
         }
         Ok(value)
     };
+    let read_optional = |setting| windows_power::read_optional_value(guid, setting, battery);
     let processor = ProcessorPowerValues::new_with_boost_mode(
         read_percent(PowerSetting::CoreParkingMinimum)?,
         read_percent(PowerSetting::PerformanceMinimum)?,
         read_percent(PowerSetting::PerformanceMaximum)?,
         read_percent(PowerSetting::BoostPolicy)?,
-        ProcessorBoostMode::from_power_value(read(PowerSetting::BoostMode)?)?,
+        PowerSettingReadback::from_optional_read(
+            read_optional(PowerSetting::BoostMode),
+            ProcessorBoostMode::from_power_value,
+        ),
     );
     let scheduling = |setting| {
-        windows_power::read_optional_value(guid, setting, battery)?
-            .map(ProcessorSchedulingPolicy::from_power_value)
-            .transpose()
+        PowerSettingReadback::from_optional_read(read_optional(setting), |value| {
+            ProcessorSchedulingPolicy::ALL.get(value as usize).copied()
+        })
     };
-    Ok(AdvancedPowerPlanTuningValues {
+    Ok(AdvancedPowerPlanTuningSourceReadback {
         processor,
-        scheduling_policy: scheduling(PowerSetting::SchedulingPolicy)?,
-        short_scheduling_policy: scheduling(PowerSetting::ShortSchedulingPolicy)?,
+        energy_performance_preference: PowerSettingReadback::from_optional_read(
+            read_optional(PowerSetting::EnergyPerformancePreference),
+            |value| EnergyPerformancePreference::try_from(value).ok(),
+        ),
+        scheduling_policy: scheduling(PowerSetting::SchedulingPolicy),
+        short_scheduling_policy: scheduling(PowerSetting::ShortSchedulingPolicy),
     })
 }
 
-fn write_scheduling_values(
+fn write_tuning_values(
     values: AdvancedPowerPlanTuningSourceValues,
+    previous: Option<AdvancedPowerPlanTuningSourceValues>,
     mut write: impl FnMut(bool, PowerSetting, u32) -> Result<(), String>,
 ) -> Result<(), ProcessorPowerApplyError> {
-    for (battery, setting, policy, stage) in [
-        (
-            false,
-            PowerSetting::SchedulingPolicy,
-            values.ac.scheduling_policy,
-            ProcessorPowerApplyStage::AcSchedulingPolicy,
-        ),
-        (
-            true,
-            PowerSetting::SchedulingPolicy,
-            values.battery.scheduling_policy,
-            ProcessorPowerApplyStage::BatterySchedulingPolicy,
-        ),
-        (
-            false,
-            PowerSetting::ShortSchedulingPolicy,
-            values.ac.short_scheduling_policy,
-            ProcessorPowerApplyStage::AcShortSchedulingPolicy,
-        ),
-        (
-            true,
-            PowerSetting::ShortSchedulingPolicy,
-            values.battery.short_scheduling_policy,
-            ProcessorPowerApplyStage::BatteryShortSchedulingPolicy,
-        ),
-    ] {
-        if let Some(policy) = policy {
-            write(battery, setting, policy.power_value())
-                .map_err(|error| ProcessorPowerApplyError::at(stage, error))?;
+    let mut write_setting = |setting,
+                             field: fn(EditableTuningValues) -> Option<u32>,
+                             ac_stage,
+                             battery_stage|
+     -> Result<(), ProcessorPowerApplyError> {
+        for (battery, current, previous, stage) in [
+            (false, values.ac, previous.map(|values| values.ac), ac_stage),
+            (
+                true,
+                values.battery,
+                previous.map(|values| values.battery),
+                battery_stage,
+            ),
+        ] {
+            if let Some(value) =
+                field(current).filter(|&value| Some(value) != previous.and_then(field))
+            {
+                write(battery, setting, value)
+                    .map_err(|error| ProcessorPowerApplyError::at(stage, error))?;
+            }
         }
-    }
-    Ok(())
+        Ok(())
+    };
+    write_setting(
+        PowerSetting::CoreParkingMinimum,
+        |values| Some(values.processor.core_parking_min),
+        ProcessorPowerApplyStage::AcCoreParkingMinimum,
+        ProcessorPowerApplyStage::BatteryCoreParkingMinimum,
+    )?;
+    write_setting(
+        PowerSetting::PerformanceMinimum,
+        |values| Some(values.processor.performance_min),
+        ProcessorPowerApplyStage::AcPerformanceMinimum,
+        ProcessorPowerApplyStage::BatteryPerformanceMinimum,
+    )?;
+    write_setting(
+        PowerSetting::PerformanceMaximum,
+        |values| Some(values.processor.performance_max),
+        ProcessorPowerApplyStage::AcPerformanceMaximum,
+        ProcessorPowerApplyStage::BatteryPerformanceMaximum,
+    )?;
+    write_setting(
+        PowerSetting::EnergyPerformancePreference,
+        |values| values.energy_performance_preference.map(u32::from),
+        ProcessorPowerApplyStage::AcEnergyPerformancePreference,
+        ProcessorPowerApplyStage::BatteryEnergyPerformancePreference,
+    )?;
+    write_setting(
+        PowerSetting::BoostPolicy,
+        |values| Some(values.processor.boost_policy),
+        ProcessorPowerApplyStage::AcBoostPolicy,
+        ProcessorPowerApplyStage::BatteryBoostPolicy,
+    )?;
+    write_setting(
+        PowerSetting::BoostMode,
+        |values| {
+            values
+                .processor
+                .boost_mode
+                .map(ProcessorBoostMode::power_value)
+        },
+        ProcessorPowerApplyStage::AcBoostMode,
+        ProcessorPowerApplyStage::BatteryBoostMode,
+    )?;
+    write_setting(
+        PowerSetting::SchedulingPolicy,
+        |values| {
+            values
+                .scheduling_policy
+                .map(ProcessorSchedulingPolicy::power_value)
+        },
+        ProcessorPowerApplyStage::AcSchedulingPolicy,
+        ProcessorPowerApplyStage::BatterySchedulingPolicy,
+    )?;
+    write_setting(
+        PowerSetting::ShortSchedulingPolicy,
+        |values| {
+            values
+                .short_scheduling_policy
+                .map(ProcessorSchedulingPolicy::power_value)
+        },
+        ProcessorPowerApplyStage::AcShortSchedulingPolicy,
+        ProcessorPowerApplyStage::BatteryShortSchedulingPolicy,
+    )
 }
 
 impl EffectivePowerModeMonitor {
@@ -460,16 +573,6 @@ fn validate_plan_guid(guid: &str) -> Result<(), String> {
     windows_power::is_valid_guid(guid)
         .then_some(())
         .ok_or_else(|| "Invalid power plan GUID.".to_owned())
-}
-
-fn write_processor_value(
-    guid: &str,
-    setting: PowerSetting,
-    value: u32,
-    stage: ProcessorPowerApplyStage,
-    write: fn(&str, PowerSetting, u32) -> Result<(), String>,
-) -> Result<(), ProcessorPowerApplyError> {
-    write(guid, setting, value).map_err(|error| ProcessorPowerApplyError::at(stage, error))
 }
 
 fn managed_adaptive_restore_guid<'a>(plan_name: &str, description: &'a str) -> Option<&'a str> {
@@ -492,17 +595,82 @@ mod tests {
     const RECOVERY_MANAGED: &str = "00000000-0000-0000-0000-000000000001";
     const RECOVERY_EXTERNAL: &str = "00000000-0000-0000-0000-000000000002";
 
+    #[test]
+    fn class1_parking_restores_the_previous_slot_before_raising_the_next_one() {
+        let ac = Class1CoreParkingValues {
+            ac: 90,
+            battery: 20,
+        };
+        let battery = Class1CoreParkingValues {
+            ac: 30,
+            battery: 80,
+        };
+        for (previous, next, expected) in [
+            (ac, battery, [(false, 30), (true, 80)]),
+            (battery, ac, [(true, 20), (false, 90)]),
+        ] {
+            let mut calls = Vec::new();
+            write_class1_core_parking_values(next, Some(previous), |battery, value| {
+                calls.push((battery, value));
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(calls, expected);
+        }
+    }
+
+    #[test]
+    fn class1_parking_recovery_attempts_both_baselines_after_a_slot_failure() {
+        let baseline = Class1CoreParkingValues {
+            ac: 30,
+            battery: 20,
+        };
+        for failed_battery in [false, true] {
+            let mut calls = Vec::new();
+            let result = write_class1_core_parking_values(baseline, None, |battery, value| {
+                calls.push((battery, value));
+                if battery == failed_battery {
+                    Err("injected class 1 parking write failure".to_owned())
+                } else {
+                    Ok(())
+                }
+            });
+            assert_eq!(calls, [(false, 30), (true, 20)]);
+            assert_eq!(
+                result.unwrap_err(),
+                "injected class 1 parking write failure"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "reads class 1 processor power settings from the active Windows plan"]
+    fn native_read_class1_core_parking_values() -> Result<(), String> {
+        let active = windows_power::active_scheme_guid()?;
+        let settings = read_class1_core_parking_values(&active)?;
+        let topology = crate::features::cpu_control::cpu_allocation::processor_topology()?;
+        let classes: std::collections::BTreeSet<_> = topology
+            .processors()
+            .iter()
+            .map(|processor| processor.efficiency_class)
+            .collect();
+        eprintln!("Windows processor efficiency classes {classes:?}; class 1 core parking A/C {}%, battery {}%", settings.ac, settings.battery);
+        Ok(())
+    }
+
     fn stale_plan_fixture(snapshot_active: bool) -> [PowerPlan; 2] {
         [
             PowerPlan {
                 guid: RECOVERY_ORIGINAL.to_owned(),
                 name: "Original".to_owned(),
                 active: !snapshot_active,
+                managed_adaptive: false,
             },
             PowerPlan {
                 guid: RECOVERY_MANAGED.to_owned(),
                 name: ADAPTIVE_PLAN_NAME.to_owned(),
                 active: snapshot_active,
+                managed_adaptive: true,
             },
         ]
     }
@@ -633,34 +801,52 @@ mod tests {
     }
 
     #[test]
-    fn scheduling_writes_preserve_unselected_policies_and_report_exact_failure_stage() {
-        let mut values: AdvancedPowerPlanTuningSourceValues = ProcessorPowerSourceValues::same(
-            ProcessorPowerValues::for_preset(ProcessorPowerPreset::Balanced),
+    fn tuning_writes_preserve_order_and_skip_unselected_optional_values() {
+        let adaptive: AdvancedPowerPlanTuningSourceValues = ProcessorPowerSourceValues::new(
+            ProcessorPowerValues::new_with_boost_mode(10, 20, 30, 40, ProcessorBoostMode::Enabled),
+            ProcessorPowerValues::new_with_boost_mode(
+                11,
+                21,
+                31,
+                41,
+                ProcessorBoostMode::EfficientEnabled,
+            ),
         )
         .into();
-        write_scheduling_values(values, |_, _, _| {
-            panic!("automatic tuning must preserve scheduling")
-        })
-        .unwrap();
+        let mut values = adaptive;
         values.ac.scheduling_policy = Some(ProcessorSchedulingPolicy::PerformanceProcessors);
         values.battery.scheduling_policy =
             Some(ProcessorSchedulingPolicy::PreferEfficiencyProcessors);
         values.ac.short_scheduling_policy = Some(ProcessorSchedulingPolicy::Automatic);
         values.battery.short_scheduling_policy = Some(ProcessorSchedulingPolicy::AllProcessors);
-        let expected = vec![
+        let expected = [
+            (false, PowerSetting::CoreParkingMinimum, 10),
+            (true, PowerSetting::CoreParkingMinimum, 11),
+            (false, PowerSetting::PerformanceMinimum, 20),
+            (true, PowerSetting::PerformanceMinimum, 21),
+            (false, PowerSetting::PerformanceMaximum, 30),
+            (true, PowerSetting::PerformanceMaximum, 31),
+            (false, PowerSetting::BoostPolicy, 40),
+            (true, PowerSetting::BoostPolicy, 41),
+            (false, PowerSetting::BoostMode, 1),
+            (true, PowerSetting::BoostMode, 3),
             (false, PowerSetting::SchedulingPolicy, 1),
             (true, PowerSetting::SchedulingPolicy, 4),
             (false, PowerSetting::ShortSchedulingPolicy, 5),
             (true, PowerSetting::ShortSchedulingPolicy, 0),
         ];
-        let mut calls = vec![];
-        write_scheduling_values(values, |battery, setting, value| {
-            calls.push((battery, setting, value));
-            Ok(())
-        })
-        .unwrap();
-        assert_eq!(calls, expected);
+        for (requested, expected) in [(adaptive, &expected[..10]), (values, &expected[..])] {
+            let mut calls = vec![];
+            write_tuning_values(requested, None, |battery, setting, value| {
+                calls.push((battery, setting, value));
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(calls, expected);
+        }
         for (failure, stage) in [
+            ProcessorPowerApplyStage::AcBoostMode,
+            ProcessorPowerApplyStage::BatteryBoostMode,
             ProcessorPowerApplyStage::AcSchedulingPolicy,
             ProcessorPowerApplyStage::BatterySchedulingPolicy,
             ProcessorPowerApplyStage::AcShortSchedulingPolicy,
@@ -670,7 +856,8 @@ mod tests {
         .enumerate()
         {
             let mut calls = vec![];
-            let error = write_scheduling_values(values, |battery, setting, value| {
+            let failure = failure + 8;
+            let error = write_tuning_values(values, None, |battery, setting, value| {
                 calls.push((battery, setting, value));
                 if calls.len() == failure + 1 {
                     Err("denied".into())
@@ -682,15 +869,56 @@ mod tests {
             assert_eq!(error.stage(), stage);
             assert_eq!(calls, expected[..=failure]);
         }
+        values.ac.processor.boost_mode = None;
         values.ac.scheduling_policy = None;
         values.battery.short_scheduling_policy = None;
         let mut calls = vec![];
-        write_scheduling_values(values, |battery, setting, value| {
+        write_tuning_values(values, None, |battery, setting, value| {
             calls.push((battery, setting, value));
             Ok(())
         })
         .unwrap();
-        assert_eq!(calls, vec![expected[1], expected[2]]);
+        assert_eq!(
+            calls,
+            [&expected[..8], &[expected[9], expected[11], expected[12]]].concat()
+        );
+    }
+
+    #[test]
+    fn reviewed_tuning_writes_only_changed_settings_and_reports_the_first_failure() {
+        let mut previous: AdvancedPowerPlanTuningSourceValues = ProcessorPowerSourceValues::same(
+            ProcessorPowerValues::new_with_boost_mode(10, 20, 30, 40, ProcessorBoostMode::Enabled),
+        )
+        .into();
+        previous.ac.scheduling_policy = Some(ProcessorSchedulingPolicy::Automatic);
+        let mut requested = previous;
+        requested.ac.processor.performance_max = 50;
+
+        let mut calls = vec![];
+        let mut write = |battery, setting, value| {
+            calls.push((battery, setting, value));
+            if battery {
+                Err("denied".into())
+            } else {
+                Ok(())
+            }
+        };
+        write_tuning_values(requested, Some(previous), &mut write).unwrap();
+        requested.battery.processor.performance_max = 60;
+        requested.ac.scheduling_policy = Some(ProcessorSchedulingPolicy::PerformanceProcessors);
+        let failed = write_tuning_values(requested, Some(previous), write).unwrap_err();
+        assert_eq!(
+            failed.stage(),
+            ProcessorPowerApplyStage::BatteryPerformanceMaximum
+        );
+        assert_eq!(
+            calls,
+            [
+                (false, PowerSetting::PerformanceMaximum, 50),
+                (false, PowerSetting::PerformanceMaximum, 50),
+                (true, PowerSetting::PerformanceMaximum, 60),
+            ]
+        );
     }
 
     #[test]

@@ -10,7 +10,7 @@ use super::process::{
     open_process_for_observation, ProcessControlError, ProcessControlTarget, ProcessTargetKey,
 };
 
-pub(crate) use native::{DisposeOutcome, ErrorKind, ExecutableIdentity};
+pub(crate) use native::{DisposeOutcome, ErrorKind, ExecutableIdentity, ProcessCatalog};
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum KeepRunningError {
@@ -49,12 +49,8 @@ impl DesktopContext {
 pub(crate) struct LaunchSpec(native::LaunchSpec);
 
 impl LaunchSpec {
-    pub(crate) fn new(
-        executable: &Path,
-        arguments: &str,
-        working_directory: &Path,
-    ) -> Result<Self, KeepRunningError> {
-        native::LaunchSpec::new(executable, arguments, working_directory)
+    pub(crate) fn new(executable: &Path, arguments: &str) -> Result<Self, KeepRunningError> {
+        native::LaunchSpec::new(executable, arguments)
             .map(Self)
             .map_err(Into::into)
     }
@@ -85,7 +81,7 @@ pub(crate) fn retain_member(
     target: &ProcessControlTarget,
     context: &DesktopContext,
 ) -> Result<Member, KeepRunningError> {
-    let (_, process) = open_process_for_observation(target)?;
+    let (_, process) = open_process_for_observation(target, false)?;
     if process_runs_as_service_account_from_handle(&process) != Some(false) {
         return Err(native::KeepRunningError::Unsupported(
             "Keep Running requires a verified non-service desktop app.",
@@ -99,15 +95,18 @@ pub(crate) fn retain_member(
     })
 }
 
-/// Fresh enumeration, distinct from cached cycle membership. Any plausible unverifiable match fails
-/// the observation instead of certifying absence. Callers exclude only their exact prepared child.
+/// A plausible unverifiable match fails the observation instead of certifying absence. Retained
+/// members must still match the scan's verified file identity. Pre-action callers use a fresh
+/// enumeration and exclude only their exact prepared child.
 pub(crate) fn scan_members(
     spec: &LaunchSpec,
     context: &DesktopContext,
     exclude: Option<&ProcessTargetKey>,
+    catalog: Option<&ProcessCatalog>,
 ) -> Result<Vec<Member>, KeepRunningError> {
+    let (identity, candidates) = native::matching_processes(&spec.0, catalog)?;
     let mut members = Vec::new();
-    for candidate in native::matching_processes(&spec.0)? {
+    for candidate in candidates {
         let target = ProcessControlTarget::automatic(
             candidate.id,
             candidate.name,
@@ -118,6 +117,15 @@ pub(crate) fn scan_members(
             continue;
         }
         members.push(retain_member(&target, context)?);
+    }
+    if members
+        .iter()
+        .any(|member| member.executable_identity() != &identity)
+    {
+        return Err(native::KeepRunningError::Unsupported(
+            "Keep Running executable identity changed during observation.",
+        )
+        .into());
     }
     Ok(members)
 }

@@ -2,7 +2,7 @@ use chrono::Weekday;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-use super::RuleTime;
+use super::{AdaptiveEngineExclusionRule, ExecutableSelector, RuleTime};
 
 use crate::cpu_topology::CpuSelection;
 use crate::foreground::same_executable_path;
@@ -15,12 +15,23 @@ use crate::rules::{
     DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
 };
 
+mod adaptive_processor_power;
+mod restraint_time_seconds;
 mod validation;
+
+pub use adaptive_processor_power::AdaptiveProcessorPowerPreset;
 
 pub const CHECK_INTERVAL_MIN_MS: u64 = 250;
 pub const CHECK_INTERVAL_MAX_MS: u64 = 60 * 1000;
 pub const ADAPTIVE_ENGINE_PROCESS_REACTION_INTERVAL_MIN_MS: u64 = 250;
 pub const ADAPTIVE_ENGINE_PROCESS_REACTION_INTERVAL_MAX_MS: u64 = 5_000;
+pub const ADAPTIVE_RESTRAINT_TRIGGER_MIN_MS: u64 = 250;
+pub const ADAPTIVE_RESTRAINT_TRIGGER_MAX_MS: u64 = 60_000;
+pub const ADAPTIVE_RESTRAINT_IDLE_MIN_SECONDS: u64 = 1;
+pub const ADAPTIVE_RESTRAINT_IDLE_MAX_SECONDS: u64 = 3_600;
+pub const ADAPTIVE_RESTRAINT_MAX_TIME_MS: u64 = 3_600_000;
+pub const ADAPTIVE_AFFINITY_REMOVAL_MAX: u8 = 63;
+pub(crate) const DEFAULT_ADAPTIVE_RESTRAINT_IDLE_TIMEOUT_SECONDS: u64 = 300;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
@@ -29,13 +40,15 @@ pub struct Settings {
     pub advanced: AdvancedSettings,
     pub adaptive_engine: AdaptiveEngineSettings,
     pub adaptive_engine_presets: Vec<AdaptiveEnginePreset>,
+    #[serde(default)]
+    pub adaptive_processor_power_presets: Vec<AdaptiveProcessorPowerPreset>,
     pub by_activity: ByActivitySettings,
     pub by_focus: ByFocusSettings,
     pub by_time: ByTimeSettings,
     #[serde(default)]
     pub by_cpu_load: ByCpuLoadSettings,
     #[serde(default)]
-    pub background_efficiency: BackgroundEfficiencySettings,
+    pub efficiency_mode: EfficiencyModeSettings,
     #[serde(default)]
     pub app_suspension: AppSuspensionSettings,
     #[serde(default)]
@@ -67,8 +80,9 @@ pub struct Settings {
     pub memory_priority: MemoryPrioritySettings,
     #[serde(default)]
     pub memory_trim: MemoryTrimSettings,
-    #[serde(default)]
-    pub watchdog: super::WatchdogSettings,
+    // Use the established settings table for existing Resource Thresholds rules.
+    #[serde(default, rename = "watchdog")]
+    pub resource_thresholds: super::ResourceThresholdsSettings,
     #[serde(default)]
     pub keep_running: super::KeepRunningSettings,
     #[serde(default)]
@@ -131,15 +145,42 @@ impl Settings {
         };
         battery.general = self.general.clone();
         battery.advanced = self.advanced.clone();
-        battery.watchdog = self.watchdog.clone();
+        battery.resource_thresholds = self.resource_thresholds.clone();
         battery.keep_running = self.keep_running.clone();
         battery.instance_limits = self.instance_limits.clone();
+        battery.app_suspension = self.app_suspension.clone();
+        battery.memory_trim = self.memory_trim.clone();
+        battery.sleep_prevention = self.sleep_prevention.clone();
         battery.instance_balancing = self.instance_balancing.clone();
         battery.adaptive_engine_presets = self.adaptive_engine_presets.clone();
+        battery.adaptive_processor_power_presets = self.adaptive_processor_power_presets.clone();
         battery.cpu_allocation_presets = self.cpu_allocation_presets.clone();
         battery.advanced_power_plan_tuning_presets =
             self.advanced_power_plan_tuning_presets.clone();
         battery.on_battery = None;
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PriorityChildProtectionSettings {
+    #[serde(default = "default_true")]
+    pub focused_app_children: bool,
+    #[serde(default = "default_true")]
+    pub visible_window_app_children: bool,
+}
+
+impl PriorityChildProtectionSettings {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+impl Default for PriorityChildProtectionSettings {
+    fn default() -> Self {
+        Self {
+            focused_app_children: true,
+            visible_window_app_children: true,
+        }
     }
 }
 
@@ -197,8 +238,12 @@ pub struct GeneralSettings {
     pub accent: AccentSettings,
     #[serde(default)]
     pub language: AppLanguage,
-    #[serde(default = "default_true")]
-    pub show_enabled_feature_counts_in_sidebar: bool,
+    // Keep the portable TOML key so a saved opt-out survives the move to the workspace row.
+    #[serde(
+        default = "default_true",
+        rename = "show_enabled_feature_counts_in_sidebar"
+    )]
+    pub show_enabled_feature_counts: bool,
     #[serde(default = "default_true")]
     pub show_feature_status_on_cards: bool,
     #[serde(default)]
@@ -209,6 +254,8 @@ pub struct GeneralSettings {
     pub restore_previous_power_plan: bool,
     #[serde(default)]
     pub search_hotkeys: super::SearchHotkeys,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_winderust_shortcut: Option<super::ShowWinderustShortcut>,
     pub check_interval_ms: u64,
 }
 
@@ -359,16 +406,32 @@ pub struct ByFocusSettings {
     pub rules: Vec<ByFocusRule>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ByFocusRule {
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
     pub name: String,
-    #[serde(default)]
-    pub executable_path: String,
+    #[serde(flatten)]
+    pub selector: ExecutableSelector,
     #[serde(default)]
     pub power_plan_guid: Option<String>,
+}
+
+impl ByFocusRule {
+    pub(crate) fn configured_plan(&self) -> Option<&str> {
+        self.power_plan_guid.as_deref().filter(|_| {
+            self.enabled
+                && match &self.selector {
+                    ExecutableSelector::ExactPath { executable_path } => {
+                        Path::new(executable_path.trim()).is_absolute()
+                    }
+                    ExecutableSelector::ExactName { executable_name } => {
+                        !executable_name.is_empty()
+                    }
+                }
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -387,6 +450,14 @@ pub struct ByTimeRule {
     pub end_time: RuleTime,
     #[serde(default)]
     pub power_plan_guid: Option<String>,
+}
+
+impl ByTimeRule {
+    pub(crate) fn configured_plan(&self) -> Option<&str> {
+        self.power_plan_guid
+            .as_deref()
+            .filter(|_| self.enabled && !self.days.is_empty() && self.start_time != self.end_time)
+    }
 }
 
 impl Default for ByTimeRule {
@@ -409,8 +480,13 @@ pub struct ByCpuLoadSettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BackgroundEfficiencySettings {
+pub struct EfficiencyModeSettings {
     pub enabled: bool,
+    #[serde(
+        default,
+        skip_serializing_if = "PriorityChildProtectionSettings::is_default"
+    )]
+    pub child_protection: PriorityChildProtectionSettings,
     #[serde(default = "default_true")]
     pub foreground_detection_enabled: bool,
     #[serde(default)]
@@ -422,19 +498,36 @@ pub struct BackgroundEfficiencySettings {
     #[serde(default = "default_true")]
     pub background_efficiency_mode: bool,
     #[serde(default)]
-    pub aggressiveness: BackgroundEfficiencyAggressiveness,
-    #[serde(default)]
-    pub custom_rules: Vec<BackgroundEfficiencyRule>,
+    pub custom_rules: Vec<EfficiencyModeRule>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AdaptiveEngineSettings {
     pub enabled: bool,
-    pub processor_power_policy_enabled: bool,
+    #[serde(default)]
+    pub adaptive_processor_power_enabled: bool,
     pub base_processor_policy: ProcessorPowerValues,
+    #[serde(default)]
+    pub restraint_core_parking_min: u8,
+    #[serde(default)]
+    pub restraint_core_parking_min_class1: u8,
     pub background_pressure_profile: AdaptivePowerBoostValues,
     pub focus_and_launch_profile: AdaptivePowerBoostValues,
+    // Previously saved tuning included this switch. Only the independent opt-in has an effect.
+    #[serde(
+        default,
+        rename = "processor_power_policy_enabled",
+        skip_serializing,
+        deserialize_with = "read_retired_processor_power_switch"
+    )]
+    _retired_processor_power_switch: (),
+}
+
+fn read_retired_processor_power_switch<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<(), D::Error> {
+    bool::deserialize(deserializer).map(drop)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -452,10 +545,13 @@ impl Default for AdaptiveEngineSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            processor_power_policy_enabled: true,
+            adaptive_processor_power_enabled: false,
             base_processor_policy: default_adaptive_engine_base_processor_policy(),
+            restraint_core_parking_min: 0,
+            restraint_core_parking_min_class1: 0,
             background_pressure_profile: default_adaptive_background_pressure_profile(),
             focus_and_launch_profile: default_adaptive_focus_and_launch_profile(),
+            _retired_processor_power_switch: (),
         }
     }
 }
@@ -474,7 +570,7 @@ const fn default_adaptive_focus_and_launch_profile() -> AdaptivePowerBoostValues
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BackgroundEfficiencyRule {
+pub struct EfficiencyModeRule {
     #[serde(default = "default_true")]
     pub enabled: bool,
     pub executable_path: String,
@@ -486,7 +582,7 @@ pub struct BackgroundEfficiencyRule {
     pub background_efficiency_mode: ProcessRuleMode,
 }
 
-impl BackgroundEfficiencyRule {
+impl EfficiencyModeRule {
     pub fn efficiency_mode_for(
         &self,
         focus: bool,
@@ -531,27 +627,27 @@ fn default_disabled_process_rule_mode() -> ProcessRuleMode {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum BackgroundEfficiencyAggressiveness {
-    #[default]
-    Safe,
-    Balanced,
-    Aggressive,
-}
-
-impl BackgroundEfficiencyAggressiveness {
-    pub const ALL: [Self; 3] = [Self::Safe, Self::Balanced, Self::Aggressive];
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum CpuAllocationMethod {
     #[default]
     CpuSetsSoft,
     ProcessorAffinityHard,
+    ReduceAffinity,
 }
 
 impl CpuAllocationMethod {
-    pub const ALL: [Self; 2] = [Self::CpuSetsSoft, Self::ProcessorAffinityHard];
+    pub const ALL: [Self; 3] = [
+        Self::CpuSetsSoft,
+        Self::ProcessorAffinityHard,
+        Self::ReduceAffinity,
+    ];
+
+    pub const fn uses_processor_selection(self) -> bool {
+        !matches!(self, Self::ReduceAffinity)
+    }
+
+    pub const fn is_hard_affinity(self) -> bool {
+        matches!(self, Self::ProcessorAffinityHard | Self::ReduceAffinity)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -592,6 +688,8 @@ impl BackgroundProcessorSelection {
 pub struct AppSuspensionSettings {
     pub enabled: bool,
     pub background_delay_seconds: u64,
+    #[serde(default = "default_true")]
+    pub auto_resume_when_focused: bool,
     #[serde(default)]
     pub temporary_thaw_enabled: bool,
     #[serde(default = "default_temporary_thaw_interval_seconds")]
@@ -977,6 +1075,37 @@ pub struct CpuLimiterRule {
     pub visible_window_allowed_cpu_time_percent: u8,
     #[serde(default = "default_cpu_limiter_allowed_cpu_time_percent")]
     pub background_allowed_cpu_time_percent: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub affinity_limit: Option<CpuLimiterAffinityLimit>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CpuLimiterAffinityLimit {
+    pub trigger_percent: u8,
+    pub sustain_seconds: u64,
+    pub selection: CpuSelection,
+}
+
+impl Default for CpuLimiterAffinityLimit {
+    fn default() -> Self {
+        Self {
+            trigger_percent: 25,
+            sustain_seconds: 5,
+            selection: CpuSelection::default(),
+        }
+    }
+}
+
+impl CpuLimiterAffinityLimit {
+    pub(crate) const TRIGGER_RANGE: std::ops::RangeInclusive<u8> = 1..=100;
+    pub(crate) const SUSTAIN_RANGE: std::ops::RangeInclusive<u64> = 1..=600;
+
+    pub(crate) fn is_valid(&self) -> bool {
+        Self::TRIGGER_RANGE.contains(&self.trigger_percent)
+            && Self::SUSTAIN_RANGE.contains(&self.sustain_seconds)
+            && !self.selection.is_empty()
+            && self.selection.processors().iter().all(|id| id.group == 0)
+    }
 }
 
 impl CpuLimiterRule {
@@ -1004,9 +1133,58 @@ pub struct ByRunningAppRule {
     pub enabled: bool,
     #[serde(default)]
     pub name: String,
-    pub executable_path: String,
+    #[serde(flatten)]
+    pub selector: ExecutableSelector,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub power_plan_guid: Option<String>,
+}
+
+impl ByRunningAppRule {
+    pub(crate) fn configured_plan(&self) -> Option<&str> {
+        self.power_plan_guid
+            .as_deref()
+            .filter(|_| self.enabled && !self.selector.value().trim().is_empty())
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdaptivePressureSource {
+    #[default]
+    Either,
+    System,
+    Foreground,
+    Both,
+}
+
+impl AdaptivePressureSource {
+    pub(crate) const fn supports_separate_foreground_threshold(self) -> bool {
+        matches!(self, Self::Either | Self::Both)
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdaptiveRestraintPriority {
+    #[default]
+    BelowNormal,
+    Idle,
+    ProcessorPlacementOnly,
+}
+
+impl AdaptiveRestraintPriority {
+    pub(crate) const fn is_placement_only(self) -> bool {
+        matches!(self, Self::ProcessorPlacementOnly)
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdaptiveRestraintIoPriority {
+    #[default]
+    Unchanged,
+    Low,
+    VeryLow,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1052,20 +1230,44 @@ pub struct AdaptiveEngineProcessSettings {
     pub background_memory_priority: ProcessMemoryPrioritySetting,
     pub cpu_pressure_restraint_enabled: bool,
     pub limit_background_processors_enabled: bool,
+    #[serde(default)]
+    pub limit_background_processors_during_restraint: bool,
     pub dynamic_resource_zones_enabled: bool,
     pub dynamic_resource_zone_settings: DynamicResourceZoneSettings,
     pub cpu_allocation_method: CpuAllocationMethod,
+    pub preserve_custom_affinity: bool,
+    pub restore_child_affinity: bool,
+    pub restore_affinity_before_managed_restart: bool,
+    pub processors_to_remove: u8,
     pub background_processor_selection: BackgroundProcessorSelection,
     pub processor_limit_percent: u8,
     pub specific_processors: CpuSelection,
+    pub pressure_source: AdaptivePressureSource,
+    pub exclude_service_hosts: bool,
     pub foreground_or_system_cpu_threshold_percent: u8,
+    pub foreground_cpu_threshold_percent: Option<u8>,
     pub background_app_cpu_threshold_percent: u8,
     pub cpu_recovery_threshold_percent: u8,
     pub reaction_time_ms: u64,
-    pub cpu_restraint_time_seconds: u64,
+    pub restraint_trigger_time_ms: u64,
+    pub pause_restraint_when_idle: bool,
+    pub restraint_idle_timeout_seconds: u64,
+    pub restraint_priority: AdaptiveRestraintPriority,
+    pub restraint_io_priority: AdaptiveRestraintIoPriority,
+    pub restraint_energy_efficient_scheduling: bool,
+    pub protect_focused_app: bool,
+    pub protect_focused_children: bool,
+    pub protect_non_normal_priority: bool,
+    #[serde(rename = "cpu_restraint_time_seconds", with = "restraint_time_seconds")]
+    pub minimum_restraint_time_ms: u64,
+    #[serde(
+        rename = "maximum_restraint_time_seconds",
+        with = "restraint_time_seconds"
+    )]
+    pub maximum_restraint_time_ms: u64,
     pub cpu_recovery_time_seconds: u64,
     pub maximum_restrained_apps: u8,
-    pub custom_rules: Vec<ProcessExclusionRule>,
+    pub custom_rules: Vec<AdaptiveEngineExclusionRule>,
 }
 
 #[derive(Deserialize)]
@@ -1111,21 +1313,62 @@ struct AdaptiveEngineProcessSettingsWire {
     pub background_memory_priority: ProcessMemoryPrioritySetting,
     pub cpu_pressure_restraint_enabled: bool,
     pub limit_background_processors_enabled: bool,
+    #[serde(default)]
+    pub limit_background_processors_during_restraint: bool,
     pub dynamic_resource_zones_enabled: bool,
     #[serde(default)]
     pub dynamic_resource_zone_settings: Option<DynamicResourceZoneSettings>,
     pub cpu_allocation_method: CpuAllocationMethod,
+    #[serde(default)]
+    pub preserve_custom_affinity: bool,
+    #[serde(default)]
+    pub restore_child_affinity: bool,
+    #[serde(default)]
+    pub restore_affinity_before_managed_restart: bool,
+    #[serde(default = "default_processors_to_remove")]
+    pub processors_to_remove: u8,
     pub background_processor_selection: BackgroundProcessorSelection,
     pub processor_limit_percent: u8,
     pub specific_processors: CpuSelection,
+    #[serde(default)]
+    pub pressure_source: AdaptivePressureSource,
+    #[serde(default)]
+    pub exclude_service_hosts: bool,
     pub foreground_or_system_cpu_threshold_percent: u8,
+    #[serde(default)]
+    pub foreground_cpu_threshold_percent: Option<u8>,
     pub background_app_cpu_threshold_percent: u8,
     pub cpu_recovery_threshold_percent: u8,
     pub reaction_time_ms: u64,
-    pub cpu_restraint_time_seconds: u64,
+    #[serde(default = "default_restraint_trigger_time_ms")]
+    pub restraint_trigger_time_ms: u64,
+    #[serde(default)]
+    pub pause_restraint_when_idle: bool,
+    #[serde(default = "default_restraint_idle_timeout_seconds")]
+    pub restraint_idle_timeout_seconds: u64,
+    #[serde(default)]
+    pub restraint_priority: AdaptiveRestraintPriority,
+    #[serde(default)]
+    pub restraint_io_priority: AdaptiveRestraintIoPriority,
+    #[serde(default)]
+    pub restraint_energy_efficient_scheduling: bool,
+    #[serde(default = "default_true")]
+    pub protect_focused_app: bool,
+    #[serde(default = "default_true")]
+    pub protect_focused_children: bool,
+    #[serde(default = "default_true")]
+    pub protect_non_normal_priority: bool,
+    #[serde(rename = "cpu_restraint_time_seconds", with = "restraint_time_seconds")]
+    pub minimum_restraint_time_ms: u64,
+    #[serde(
+        default,
+        rename = "maximum_restraint_time_seconds",
+        with = "restraint_time_seconds"
+    )]
+    pub maximum_restraint_time_ms: u64,
     pub cpu_recovery_time_seconds: u64,
     pub maximum_restrained_apps: u8,
-    pub custom_rules: Vec<ProcessExclusionRule>,
+    pub custom_rules: Vec<AdaptiveEngineExclusionRule>,
 }
 
 impl TryFrom<AdaptiveEngineProcessSettingsWire> for AdaptiveEngineProcessSettings {
@@ -1137,7 +1380,7 @@ impl TryFrom<AdaptiveEngineProcessSettingsWire> for AdaptiveEngineProcessSetting
             None => return Err("Dynamic Resource Zones requires an explicit dynamic_resource_zone_settings block. Disable dynamic_resource_zones_enabled or provide foreground_share_percent, background_processor_selection and specific_processors.".into()),
         };
         zones.validate(wire.dynamic_resource_zones_enabled)?;
-        Ok(Self {
+        let settings = Self {
             dynamic_resource_zone_settings: zones,
             process_priority_enabled: wire.process_priority_enabled,
             process_priority_foreground_detection_enabled: wire
@@ -1176,21 +1419,42 @@ impl TryFrom<AdaptiveEngineProcessSettingsWire> for AdaptiveEngineProcessSetting
             background_memory_priority: wire.background_memory_priority,
             cpu_pressure_restraint_enabled: wire.cpu_pressure_restraint_enabled,
             limit_background_processors_enabled: wire.limit_background_processors_enabled,
+            limit_background_processors_during_restraint: wire
+                .limit_background_processors_during_restraint,
             dynamic_resource_zones_enabled: wire.dynamic_resource_zones_enabled,
             cpu_allocation_method: wire.cpu_allocation_method,
+            preserve_custom_affinity: wire.preserve_custom_affinity,
+            restore_child_affinity: wire.restore_child_affinity,
+            restore_affinity_before_managed_restart: wire.restore_affinity_before_managed_restart,
+            processors_to_remove: wire.processors_to_remove,
             background_processor_selection: wire.background_processor_selection,
             processor_limit_percent: wire.processor_limit_percent,
             specific_processors: wire.specific_processors,
+            pressure_source: wire.pressure_source,
+            exclude_service_hosts: wire.exclude_service_hosts,
             foreground_or_system_cpu_threshold_percent: wire
                 .foreground_or_system_cpu_threshold_percent,
+            foreground_cpu_threshold_percent: wire.foreground_cpu_threshold_percent,
             background_app_cpu_threshold_percent: wire.background_app_cpu_threshold_percent,
             cpu_recovery_threshold_percent: wire.cpu_recovery_threshold_percent,
             reaction_time_ms: wire.reaction_time_ms,
-            cpu_restraint_time_seconds: wire.cpu_restraint_time_seconds,
+            restraint_trigger_time_ms: wire.restraint_trigger_time_ms,
+            pause_restraint_when_idle: wire.pause_restraint_when_idle,
+            restraint_idle_timeout_seconds: wire.restraint_idle_timeout_seconds,
+            restraint_priority: wire.restraint_priority,
+            restraint_io_priority: wire.restraint_io_priority,
+            restraint_energy_efficient_scheduling: wire.restraint_energy_efficient_scheduling,
+            protect_focused_app: wire.protect_focused_app,
+            protect_focused_children: wire.protect_focused_children,
+            protect_non_normal_priority: wire.protect_non_normal_priority,
+            minimum_restraint_time_ms: wire.minimum_restraint_time_ms,
+            maximum_restraint_time_ms: wire.maximum_restraint_time_ms,
             cpu_recovery_time_seconds: wire.cpu_recovery_time_seconds,
             maximum_restrained_apps: wire.maximum_restrained_apps,
             custom_rules: wire.custom_rules,
-        })
+        };
+        settings.validate_cpu_behaviour()?;
+        Ok(settings)
     }
 }
 
@@ -1232,6 +1496,11 @@ impl DynamicResourceZoneSettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IoPrioritySettings {
     pub enabled: bool,
+    #[serde(
+        default,
+        skip_serializing_if = "PriorityChildProtectionSettings::is_default"
+    )]
+    pub child_protection: PriorityChildProtectionSettings,
     #[serde(default = "default_true")]
     pub foreground_detection_enabled: bool,
     #[serde(default = "default_io_priority_foreground")]
@@ -1255,6 +1524,11 @@ pub struct IoPrioritySettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessPrioritySettings {
     pub enabled: bool,
+    #[serde(
+        default,
+        skip_serializing_if = "PriorityChildProtectionSettings::is_default"
+    )]
+    pub child_protection: PriorityChildProtectionSettings,
     #[serde(default = "default_true")]
     pub foreground_detection_enabled: bool,
     #[serde(default = "default_process_priority_foreground")]
@@ -1278,6 +1552,11 @@ pub struct ProcessPrioritySettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThreadPrioritySettings {
     pub enabled: bool,
+    #[serde(
+        default,
+        skip_serializing_if = "PriorityChildProtectionSettings::is_default"
+    )]
+    pub child_protection: PriorityChildProtectionSettings,
     #[serde(default = "default_true")]
     pub foreground_detection_enabled: bool,
     #[serde(default = "default_thread_priority_foreground")]
@@ -1301,6 +1580,11 @@ pub struct ThreadPrioritySettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DynamicPriorityBoostSettings {
     pub enabled: bool,
+    #[serde(
+        default,
+        skip_serializing_if = "PriorityChildProtectionSettings::is_default"
+    )]
+    pub child_protection: PriorityChildProtectionSettings,
     #[serde(default = "default_true")]
     pub foreground_detection_enabled: bool,
     #[serde(default = "default_dynamic_priority_boost_foreground")]
@@ -1318,6 +1602,11 @@ pub struct DynamicPriorityBoostSettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GpuPrioritySettings {
     pub enabled: bool,
+    #[serde(
+        default,
+        skip_serializing_if = "PriorityChildProtectionSettings::is_default"
+    )]
+    pub child_protection: PriorityChildProtectionSettings,
     #[serde(default = "default_true")]
     pub foreground_detection_enabled: bool,
     #[serde(default = "default_gpu_priority_foreground")]
@@ -1341,6 +1630,11 @@ pub struct GpuPrioritySettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryPrioritySettings {
     pub enabled: bool,
+    #[serde(
+        default,
+        skip_serializing_if = "PriorityChildProtectionSettings::is_default"
+    )]
+    pub child_protection: PriorityChildProtectionSettings,
     #[serde(default = "default_true")]
     pub foreground_detection_enabled: bool,
     #[serde(default = "default_memory_priority_foreground")]
@@ -1390,6 +1684,10 @@ pub struct SleepPreventionRule {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryTrimSettings {
     pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub exclude_foreground: bool,
+    #[serde(default)]
+    pub exclude_visible_windows: bool,
     #[serde(default = "default_memory_trim_system_memory_load_threshold_percent")]
     pub system_memory_load_threshold_percent: u8,
     #[serde(default = "default_memory_trim_process_working_set_threshold_mb")]
@@ -1913,17 +2211,19 @@ impl Default for Settings {
                 theme_mode: AppThemeMode::System,
                 accent: AccentSettings::default(),
                 language: AppLanguage::English,
-                show_enabled_feature_counts_in_sidebar: true,
+                show_enabled_feature_counts: true,
                 show_feature_status_on_cards: true,
                 animation_mode: AnimationMode::System,
                 pause_power_plan_switching_while_plugged_in: false,
                 restore_previous_power_plan: false,
                 search_hotkeys: super::SearchHotkeys::default(),
+                show_winderust_shortcut: None,
                 check_interval_ms: 1000,
             },
             advanced: AdvancedSettings::default(),
             adaptive_engine: AdaptiveEngineSettings::default(),
             adaptive_engine_presets: Vec::new(),
+            adaptive_processor_power_presets: Vec::new(),
             by_activity: ByActivitySettings {
                 enabled: false,
                 idle_timeout_seconds: 300,
@@ -1943,7 +2243,7 @@ impl Default for Settings {
                 }],
             },
             by_cpu_load: ByCpuLoadSettings::default(),
-            background_efficiency: BackgroundEfficiencySettings::default(),
+            efficiency_mode: EfficiencyModeSettings::default(),
             app_suspension: AppSuspensionSettings::default(),
             cpu_sets_soft: CpuAllocationSettings::default(),
             processor_affinity_hard: CpuAllocationSettings::default(),
@@ -1960,7 +2260,7 @@ impl Default for Settings {
             gpu_priority: GpuPrioritySettings::default(),
             memory_priority: MemoryPrioritySettings::default(),
             memory_trim: MemoryTrimSettings::default(),
-            watchdog: super::WatchdogSettings::default(),
+            resource_thresholds: super::ResourceThresholdsSettings::default(),
             keep_running: super::KeepRunningSettings::default(),
             instance_limits: super::InstanceLimitsSettings::default(),
             timer_resolution: TimerResolutionSettings::default(),
@@ -1996,7 +2296,7 @@ impl Default for InputDetectionSettings {
     }
 }
 
-const fn default_true() -> bool {
+pub(super) const fn default_true() -> bool {
     true
 }
 
@@ -2034,16 +2334,16 @@ impl Default for ByCpuLoadSettings {
     }
 }
 
-impl Default for BackgroundEfficiencySettings {
+impl Default for EfficiencyModeSettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            child_protection: PriorityChildProtectionSettings::default(),
             foreground_detection_enabled: default_true(),
             visible_window_detection_enabled: false,
             foreground_efficiency_mode: false,
             visible_window_efficiency_mode: false,
             background_efficiency_mode: true,
-            aggressiveness: BackgroundEfficiencyAggressiveness::Safe,
             custom_rules: Vec::new(),
         }
     }
@@ -2099,6 +2399,7 @@ const fn default_memory_priority_background() -> ProcessMemoryPrioritySetting {
 
 fn default_io_priority_settings() -> IoPrioritySettings {
     IoPrioritySettings {
+        child_protection: PriorityChildProtectionSettings::default(),
         enabled: false,
         foreground_detection_enabled: true,
         foreground_priority: ProcessIoPrioritySetting::Normal,
@@ -2114,6 +2415,7 @@ fn default_io_priority_settings() -> IoPrioritySettings {
 
 fn default_thread_priority_settings() -> ThreadPrioritySettings {
     ThreadPrioritySettings {
+        child_protection: PriorityChildProtectionSettings::default(),
         enabled: true,
         foreground_detection_enabled: true,
         foreground_priority: ProcessThreadPrioritySetting::Default,
@@ -2129,6 +2431,7 @@ fn default_thread_priority_settings() -> ThreadPrioritySettings {
 
 fn default_dynamic_priority_boost_settings() -> DynamicPriorityBoostSettings {
     DynamicPriorityBoostSettings {
+        child_protection: PriorityChildProtectionSettings::default(),
         enabled: true,
         foreground_detection_enabled: true,
         foreground_boost: ProcessDynamicPriorityBoostSetting::Enabled,
@@ -2141,6 +2444,7 @@ fn default_dynamic_priority_boost_settings() -> DynamicPriorityBoostSettings {
 
 fn default_gpu_priority_settings() -> GpuPrioritySettings {
     GpuPrioritySettings {
+        child_protection: PriorityChildProtectionSettings::default(),
         enabled: true,
         foreground_detection_enabled: true,
         foreground_priority: ProcessGpuPrioritySetting::Default,
@@ -2215,34 +2519,85 @@ impl NetworkThresholdUnit {
         }
     }
 
-    pub fn threshold_value_from_bytes(self, bytes: u64) -> f64 {
-        let bytes = bytes as f64;
+    const fn threshold_scale(self) -> u64 {
         match self {
-            Self::Bytes => bytes,
-            Self::Kilobytes => bytes / 1_000.0,
-            Self::Megabytes => bytes / 1_000_000.0,
-            Self::Gigabytes => bytes / 1_000_000_000.0,
+            Self::Bytes => 1,
+            Self::Kilobytes => 1_000,
+            Self::Megabytes => 1_000_000,
+            Self::Gigabytes => 1_000_000_000,
         }
     }
 
-    pub fn threshold_bytes_from_value(self, value: f64) -> u64 {
-        if !value.is_finite() || value <= 0.0 {
-            return 0;
+    pub(crate) fn format_threshold(self, bytes: u64) -> String {
+        let scale = self.threshold_scale();
+        let whole = bytes / scale;
+        let fraction = bytes % scale;
+        if fraction == 0 {
+            return whole.to_string();
         }
+        let width = scale.ilog10() as usize;
+        let fraction = format!("{fraction:0width$}");
+        format!("{whole}.{}", fraction.trim_end_matches('0'))
+    }
 
-        let bytes = match self {
-            Self::Bytes => value,
-            Self::Kilobytes => value * 1_000.0,
-            Self::Megabytes => value * 1_000_000.0,
-            Self::Gigabytes => value * 1_000_000_000.0,
+    pub(crate) fn parse_threshold(self, value: &str) -> Option<u64> {
+        let negative = value.starts_with('-');
+        let value = value.strip_prefix(['+', '-']).unwrap_or(value);
+        let (mantissa, exponent) = match value.split_once(['e', 'E']) {
+            Some((mantissa, exponent)) => (mantissa, threshold_exponent(exponent)?),
+            None => (value, 0),
         };
-
-        if bytes >= u64::MAX as f64 {
-            u64::MAX
-        } else {
-            bytes.ceil() as u64
+        let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+        let digits = whole.bytes().chain(fraction.bytes());
+        let len = whole.len() + fraction.len();
+        if len == 0 || !digits.clone().all(|digit| digit.is_ascii_digit()) {
+            return None;
         }
+        let leading_zeros = digits.clone().take_while(|&digit| digit == b'0').count();
+        if leading_zeros == len {
+            return Some(0);
+        }
+        if negative {
+            return None;
+        }
+
+        // Shift by the unit's decimal scale, then round any fractional byte up.
+        let point = (whole.len() as i64 - leading_zeros as i64)
+            .saturating_add(exponent)
+            .saturating_add(i64::from(self.threshold_scale().ilog10()));
+        if point <= 0 {
+            return Some(1);
+        }
+        if point > 19 {
+            return None;
+        }
+
+        let mut digits = digits.skip(leading_zeros);
+        let bytes = digits
+            .by_ref()
+            .chain(std::iter::repeat(b'0'))
+            .take(point as usize)
+            .try_fold(0_i64, |bytes, digit| {
+                bytes.checked_mul(10)?.checked_add(i64::from(digit - b'0'))
+            })?;
+        bytes
+            .checked_add(i64::from(digits.any(|digit| digit != b'0')))
+            .map(|bytes| bytes as u64)
     }
+}
+
+fn threshold_exponent(value: &str) -> Option<i64> {
+    let digits = value.strip_prefix(['+', '-']).unwrap_or(value);
+    if digits.is_empty() || !digits.bytes().all(|digit| digit.is_ascii_digit()) {
+        return None;
+    }
+    Some(value.parse().unwrap_or_else(|_| {
+        if value.starts_with('-') {
+            i64::MIN
+        } else {
+            i64::MAX
+        }
+    }))
 }
 
 impl Default for AppSuspensionSettings {
@@ -2250,6 +2605,7 @@ impl Default for AppSuspensionSettings {
         Self {
             enabled: false,
             background_delay_seconds: 300,
+            auto_resume_when_focused: true,
             temporary_thaw_enabled: false,
             temporary_thaw_interval_seconds: default_temporary_thaw_interval_seconds(),
             temporary_thaw_duration_seconds: default_temporary_thaw_duration_seconds(),
@@ -2272,6 +2628,18 @@ impl Default for CpuLimiterSettings {
             rules: Vec::new(),
         }
     }
+}
+
+const fn default_restraint_trigger_time_ms() -> u64 {
+    1_000
+}
+
+const fn default_restraint_idle_timeout_seconds() -> u64 {
+    DEFAULT_ADAPTIVE_RESTRAINT_IDLE_TIMEOUT_SECONDS
+}
+
+pub(crate) const fn default_processors_to_remove() -> u8 {
+    1
 }
 
 impl Default for AdaptiveEngineProcessSettings {
@@ -2307,17 +2675,35 @@ impl Default for AdaptiveEngineProcessSettings {
             background_memory_priority: ProcessMemoryPrioritySetting::Low,
             cpu_pressure_restraint_enabled: false,
             limit_background_processors_enabled: false,
+            limit_background_processors_during_restraint: false,
             dynamic_resource_zones_enabled: false,
             dynamic_resource_zone_settings: DynamicResourceZoneSettings::default(),
             cpu_allocation_method: CpuAllocationMethod::CpuSetsSoft,
+            preserve_custom_affinity: false,
+            restore_child_affinity: false,
+            restore_affinity_before_managed_restart: false,
+            processors_to_remove: default_processors_to_remove(),
             background_processor_selection: BackgroundProcessorSelection::LeastUsed,
             processor_limit_percent: 75,
             specific_processors: CpuSelection::default(),
+            pressure_source: AdaptivePressureSource::default(),
+            exclude_service_hosts: false,
             foreground_or_system_cpu_threshold_percent: 75,
+            foreground_cpu_threshold_percent: None,
             background_app_cpu_threshold_percent: 30,
             cpu_recovery_threshold_percent: 10,
             reaction_time_ms: 1_000,
-            cpu_restraint_time_seconds: 3,
+            restraint_trigger_time_ms: default_restraint_trigger_time_ms(),
+            pause_restraint_when_idle: false,
+            restraint_idle_timeout_seconds: default_restraint_idle_timeout_seconds(),
+            restraint_priority: AdaptiveRestraintPriority::default(),
+            restraint_io_priority: AdaptiveRestraintIoPriority::default(),
+            restraint_energy_efficient_scheduling: false,
+            protect_focused_app: true,
+            protect_focused_children: true,
+            protect_non_normal_priority: true,
+            minimum_restraint_time_ms: 3_000,
+            maximum_restraint_time_ms: 0,
             cpu_recovery_time_seconds: 6,
             maximum_restrained_apps: 4,
             custom_rules: Vec::new(),
@@ -2329,6 +2715,7 @@ impl Default for IoPrioritySettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            child_protection: PriorityChildProtectionSettings::default(),
             foreground_detection_enabled: default_true(),
             foreground_priority: default_io_priority_foreground(),
             visible_window_detection_enabled: false,
@@ -2346,6 +2733,7 @@ impl Default for ProcessPrioritySettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            child_protection: PriorityChildProtectionSettings::default(),
             foreground_detection_enabled: default_true(),
             foreground_priority: default_process_priority_foreground(),
             visible_window_detection_enabled: false,
@@ -2363,6 +2751,7 @@ impl Default for ThreadPrioritySettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            child_protection: PriorityChildProtectionSettings::default(),
             foreground_detection_enabled: default_true(),
             foreground_priority: default_thread_priority_foreground(),
             visible_window_detection_enabled: false,
@@ -2380,6 +2769,7 @@ impl Default for DynamicPriorityBoostSettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            child_protection: PriorityChildProtectionSettings::default(),
             foreground_detection_enabled: default_true(),
             foreground_boost: default_dynamic_priority_boost_foreground(),
             visible_window_detection_enabled: false,
@@ -2394,6 +2784,7 @@ impl Default for GpuPrioritySettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            child_protection: PriorityChildProtectionSettings::default(),
             foreground_detection_enabled: default_true(),
             foreground_priority: default_gpu_priority_foreground(),
             visible_window_detection_enabled: false,
@@ -2411,6 +2802,7 @@ impl Default for MemoryPrioritySettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            child_protection: PriorityChildProtectionSettings::default(),
             foreground_detection_enabled: default_true(),
             foreground_priority: default_memory_priority_foreground(),
             visible_window_detection_enabled: false,
@@ -2438,6 +2830,8 @@ impl Default for MemoryTrimSettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            exclude_foreground: true,
+            exclude_visible_windows: false,
             system_memory_load_threshold_percent:
                 default_memory_trim_system_memory_load_threshold_percent(),
             process_working_set_threshold_mb: default_memory_trim_process_working_set_threshold_mb(
@@ -2449,12 +2843,6 @@ impl Default for MemoryTrimSettings {
 }
 
 impl IoPrioritySettings {
-    pub fn contains_exclusion(&self, process_name: &str) -> bool {
-        self.exclusions
-            .iter()
-            .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
-    }
-
     pub fn override_for(
         &self,
         process_name: &str,
@@ -2468,12 +2856,6 @@ impl IoPrioritySettings {
 }
 
 impl ProcessPrioritySettings {
-    pub fn contains_exclusion(&self, process_name: &str) -> bool {
-        self.exclusions
-            .iter()
-            .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
-    }
-
     pub fn override_for(
         &self,
         process_name: &str,
@@ -2487,12 +2869,6 @@ impl ProcessPrioritySettings {
 }
 
 impl ThreadPrioritySettings {
-    pub fn contains_exclusion(&self, process_name: &str) -> bool {
-        self.exclusions
-            .iter()
-            .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
-    }
-
     pub fn override_for(
         &self,
         process_name: &str,
@@ -2506,12 +2882,6 @@ impl ThreadPrioritySettings {
 }
 
 impl DynamicPriorityBoostSettings {
-    pub fn contains_exclusion(&self, process_name: &str) -> bool {
-        self.exclusions
-            .iter()
-            .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
-    }
-
     pub fn override_for(
         &self,
         process_name: &str,
@@ -2525,12 +2895,6 @@ impl DynamicPriorityBoostSettings {
 }
 
 impl GpuPrioritySettings {
-    pub fn contains_exclusion(&self, process_name: &str) -> bool {
-        self.exclusions
-            .iter()
-            .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
-    }
-
     pub fn override_for(
         &self,
         process_name: &str,
@@ -2544,12 +2908,6 @@ impl GpuPrioritySettings {
 }
 
 impl MemoryPrioritySettings {
-    pub fn contains_exclusion(&self, process_name: &str) -> bool {
-        self.exclusions
-            .iter()
-            .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
-    }
-
     pub fn override_for(
         &self,
         process_name: &str,
@@ -2584,7 +2942,7 @@ where
 }
 
 impl TimerResolutionSettings {
-    pub fn desired_resolution_for_foreground(&self, process_name: &str) -> Option<(String, u32)> {
+    pub fn desired_resolution_for_foreground(&self, process_name: &str) -> Option<(&str, u32)> {
         self.rules
             .iter()
             .find(|rule| {
@@ -2592,7 +2950,7 @@ impl TimerResolutionSettings {
                     && !rule.executable_path.trim().is_empty()
                     && same_rule_executable_path(&rule.executable_path, process_name)
             })
-            .map(|rule| (rule.executable_path.clone(), rule.desired_100ns))
+            .map(|rule| (rule.executable_path.as_str(), rule.desired_100ns))
     }
 
     pub fn contains_rule_for(&self, process_name: &str) -> bool {
@@ -2663,8 +3021,8 @@ impl AppSuspensionSettings {
     }
 }
 
-impl BackgroundEfficiencySettings {
-    pub fn custom_rule_applies_efficiency_mode(&self, rule: &BackgroundEfficiencyRule) -> bool {
+impl EfficiencyModeSettings {
+    pub fn custom_rule_applies_efficiency_mode(&self, rule: &EfficiencyModeRule) -> bool {
         rule.background_efficiency_mode
             .resolve(self.background_efficiency_mode)
             || self.foreground_detection_enabled
@@ -2683,7 +3041,7 @@ impl BackgroundEfficiencySettings {
             .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
     }
 
-    pub fn custom_rule_for(&self, process_name: &str) -> Option<&BackgroundEfficiencyRule> {
+    pub fn custom_rule_for(&self, process_name: &str) -> Option<&EfficiencyModeRule> {
         self.custom_rules.iter().find(|rule| {
             rule.enabled && same_rule_executable_path(&rule.executable_path, process_name)
         })
@@ -2699,36 +3057,118 @@ impl CpuAllocationSettings {
 }
 
 impl AdaptiveEngineProcessSettings {
-    pub const fn background_efficiency_mode_for(&self, focus: bool, visible_window: bool) -> bool {
-        if focus && self.focus_process_background_efficiency_override_enabled {
-            self.focus_process_background_efficiency_mode
-        } else if visible_window && self.visible_window_background_efficiency_override_enabled {
-            self.visible_window_background_efficiency_mode
+    pub(crate) fn active_foreground_cpu_threshold(&self) -> Option<u8> {
+        if self
+            .pressure_source
+            .supports_separate_foreground_threshold()
+        {
+            self.foreground_cpu_threshold_percent
         } else {
-            self.background_efficiency_mode
+            None
         }
     }
 
-    pub fn custom_rule_enabled_for(&self, process_name: &str) -> bool {
+    /// Returns the effective system and foreground thresholds, in that order.
+    pub(crate) fn pressure_thresholds(&self) -> (u8, u8) {
+        let shared = self.foreground_or_system_cpu_threshold_percent.min(100);
+        let foreground = self
+            .active_foreground_cpu_threshold()
+            .unwrap_or(shared)
+            .min(100);
+        (shared, foreground)
+    }
+
+    pub(crate) const fn placement_only_restraint_enabled(&self) -> bool {
+        self.cpu_pressure_restraint_enabled && self.restraint_priority.is_placement_only()
+    }
+
+    pub(crate) const fn background_processor_limit_scoped(&self) -> bool {
+        self.limit_background_processors_during_restraint
+            || self.restraint_priority.is_placement_only()
+    }
+
+    pub(crate) const fn background_processor_limit_enabled(&self) -> bool {
+        if self.restraint_priority.is_placement_only() {
+            self.placement_only_restraint_enabled()
+        } else {
+            self.limit_background_processors_enabled
+                && (!self.background_processor_limit_scoped()
+                    || self.cpu_pressure_restraint_enabled)
+        }
+    }
+
+    pub(crate) const fn has_enabled_policies(&self) -> bool {
+        self.cpu_pressure_restraint_enabled
+            || self.background_processor_limit_enabled()
+            || self.dynamic_resource_zones_enabled
+    }
+
+    pub(crate) fn copy_cpu_behaviour_from(&mut self, tuning: &Self) {
+        self.cpu_pressure_restraint_enabled = tuning.cpu_pressure_restraint_enabled;
+        self.limit_background_processors_enabled = tuning.limit_background_processors_enabled;
+        self.limit_background_processors_during_restraint =
+            tuning.limit_background_processors_during_restraint;
+        self.dynamic_resource_zones_enabled = tuning.dynamic_resource_zones_enabled;
+        self.dynamic_resource_zone_settings = tuning.dynamic_resource_zone_settings.clone();
+        self.cpu_allocation_method = tuning.cpu_allocation_method;
+        self.preserve_custom_affinity = tuning.preserve_custom_affinity;
+        self.restore_child_affinity = tuning.restore_child_affinity;
+        self.restore_affinity_before_managed_restart =
+            tuning.restore_affinity_before_managed_restart;
+        self.processors_to_remove = tuning.processors_to_remove;
+        self.background_processor_selection = tuning.background_processor_selection;
+        self.processor_limit_percent = tuning.processor_limit_percent;
+        self.specific_processors = tuning.specific_processors.clone();
+        self.pressure_source = tuning.pressure_source;
+        self.exclude_service_hosts = tuning.exclude_service_hosts;
+        self.foreground_or_system_cpu_threshold_percent =
+            tuning.foreground_or_system_cpu_threshold_percent;
+        self.foreground_cpu_threshold_percent = tuning.foreground_cpu_threshold_percent;
+        self.background_app_cpu_threshold_percent = tuning.background_app_cpu_threshold_percent;
+        self.cpu_recovery_threshold_percent = tuning.cpu_recovery_threshold_percent;
+        self.reaction_time_ms = tuning.reaction_time_ms;
+        self.restraint_trigger_time_ms = tuning.restraint_trigger_time_ms;
+        self.pause_restraint_when_idle = tuning.pause_restraint_when_idle;
+        self.restraint_idle_timeout_seconds = tuning.restraint_idle_timeout_seconds;
+        self.restraint_priority = tuning.restraint_priority;
+        self.restraint_io_priority = tuning.restraint_io_priority;
+        self.restraint_energy_efficient_scheduling = tuning.restraint_energy_efficient_scheduling;
+        self.protect_focused_app = tuning.protect_focused_app;
+        self.protect_focused_children = tuning.protect_focused_children;
+        self.protect_non_normal_priority = tuning.protect_non_normal_priority;
+        self.minimum_restraint_time_ms = tuning.minimum_restraint_time_ms;
+        self.maximum_restraint_time_ms = tuning.maximum_restraint_time_ms;
+        self.cpu_recovery_time_seconds = tuning.cpu_recovery_time_seconds;
+        self.maximum_restrained_apps = tuning.maximum_restrained_apps;
+    }
+
+    pub(crate) fn excludes_executable_name(&self, name: &str) -> bool {
+        self.custom_rules
+            .iter()
+            .any(|rule| rule.enabled && rule.selector.matches_name(name))
+    }
+
+    pub(crate) fn excludes_executable_path(&self, path: &str) -> bool {
         self.custom_rules.iter().any(|rule| {
-            rule.enabled && same_rule_executable_path(&rule.executable_path, process_name)
+            rule.enabled
+                && rule
+                    .selector
+                    .exact_path()
+                    .is_some_and(|target| same_rule_executable_path(target, path))
         })
     }
 }
 
-fn same_rule_executable_path(left: &str, right: &str) -> bool {
-    let left = left.trim();
-    let right = right.trim();
-    !left.is_empty() && !right.is_empty() && same_executable_path(Path::new(left), Path::new(right))
+pub(crate) fn same_rule_executable_path(configured_path: &str, observed_path: &str) -> bool {
+    let configured_path = configured_path.trim_start();
+    !configured_path.is_empty()
+        && !observed_path.is_empty()
+        && same_executable_path(Path::new(configured_path), Path::new(observed_path))
 }
 
 impl InputDetectionSettings {
     pub const fn any_enabled(&self) -> bool {
         self.keyboard || self.mouse || self.controller
-    }
-
-    pub const fn keyboard_or_mouse_enabled(&self) -> bool {
-        self.keyboard || self.mouse
     }
 }
 
@@ -2743,18 +3183,6 @@ impl WeekdaySetting {
             Self::Sat,
             Self::Sun,
         ]
-    }
-
-    pub const fn short_label(self) -> &'static str {
-        match self {
-            Self::Mon => "Mon",
-            Self::Tue => "Tue",
-            Self::Wed => "Wed",
-            Self::Thu => "Thu",
-            Self::Fri => "Fri",
-            Self::Sat => "Sat",
-            Self::Sun => "Sun",
-        }
     }
 
     pub const fn from_chrono(day: Weekday) -> Self {

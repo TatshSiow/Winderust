@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    hash::{DefaultHasher, Hasher},
     mem::take,
 };
 
@@ -19,8 +20,10 @@ use super::process::{
 };
 use windows_cpu_allocation::CpuSetRecord;
 
+mod child_affinity;
 mod eligibility;
 mod instance_balancing;
+mod restart_affinity;
 pub(crate) use eligibility::EligibilityError as InstanceBalancingSelectionError;
 pub(crate) use instance_balancing::InstanceBalancingEligibilityError;
 
@@ -99,8 +102,23 @@ impl CpuSetInventory {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CpuAllocationRequest {
-    SoftCpuSets { selection: CpuSelection },
-    HardAffinity { selection: CpuSelection },
+    SoftCpuSets {
+        selection: CpuSelection,
+    },
+    HardAffinity {
+        selection: CpuSelection,
+    },
+    AffinityLimit {
+        selection: CpuSelection,
+    },
+    PreserveHardAffinity {
+        selection: CpuSelection,
+    },
+    ReduceAffinity {
+        selection: CpuSelection,
+        processors_to_remove: u8,
+        preserve_custom_affinity: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -354,8 +372,10 @@ pub(crate) struct CpuAllocationCoordinator<P: CpuAllocationPlatform = WindowsCpu
 {
     platform: P,
     claims: BTreeMap<ControlOwner, BTreeMap<ProcessTargetKey, CpuAllocationClaim>>,
+    adaptive_episode_keys: BTreeSet<ProcessTargetKey>,
     managed_affinity: BTreeMap<ProcessIdentity, ManagedValue<usize>>,
     managed_cpu_sets: BTreeMap<ProcessIdentity, ManagedValue<Vec<u32>>>,
+    child_affinity: child_affinity::ChildAffinityRestoration,
     pending_reconciliations: BTreeMap<ProcessTargetKey, PendingReconciliation>,
     next_apply_sequence: u64,
     instance_balancing: BTreeMap<ProcessIdentity, instance_balancing::GuardState>,
@@ -372,8 +392,10 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         Self {
             platform,
             claims: BTreeMap::new(),
+            adaptive_episode_keys: BTreeSet::new(),
             managed_affinity: BTreeMap::new(),
             managed_cpu_sets: BTreeMap::new(),
+            child_affinity: child_affinity::ChildAffinityRestoration::default(),
             pending_reconciliations: BTreeMap::new(),
             next_apply_sequence: 1,
             instance_balancing: BTreeMap::new(),
@@ -449,6 +471,12 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
             return Ok(CpuAllocationApplyOutcome::Shadowed);
         }
 
+        let withdraw_on_failure = owner == ControlOwner::InstanceBalancing
+            || matches!(
+                effective.request,
+                CpuAllocationRequest::PreserveHardAffinity { .. }
+                    | CpuAllocationRequest::ReduceAffinity { .. }
+            );
         let failed_claim = claim_fingerprint(&effective);
         let mut result = self.apply_effective_claim(
             inventory,
@@ -456,7 +484,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
             effective,
             allow_cross_session_process_control,
         );
-        if owner == ControlOwner::InstanceBalancing && result.is_err() {
+        if withdraw_on_failure && result.is_err() {
             if let Some(claims) = self.claims.get_mut(&owner) {
                 claims.remove(&key);
             }
@@ -504,8 +532,92 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
             }
         } else {
             self.pending_reconciliations.remove(&key);
+            if matches!(
+                result,
+                Ok(CpuAllocationApplyOutcome::Applied | CpuAllocationApplyOutcome::Unchanged)
+            ) {
+                if owner != ControlOwner::AdaptiveEngine {
+                    self.withdraw_adaptive_episode_claim(&key);
+                }
+                self.adaptive_episode_keys.remove(&key);
+            }
         }
         result
+    }
+
+    pub(crate) fn apply_adaptive_episode_claim(
+        &mut self,
+        inventory: &mut CpuSetInventory,
+        topology: Result<&CpuTopology, &str>,
+        claim: CpuAllocationClaim,
+        allow_cross_session_process_control: bool,
+    ) -> Result<CpuAllocationApplyOutcome, CpuAllocationApplyError> {
+        if claim.owner != ControlOwner::AdaptiveEngine {
+            return Err(ProcessControlError::Failed(
+                "Only Adaptive Engine can apply an episode-scoped CPU allocation.".to_owned(),
+            )
+            .into());
+        }
+        let key = claim.target.key();
+        let result = self.apply_policy_claim(
+            inventory,
+            topology,
+            claim,
+            allow_cross_session_process_control,
+        );
+        // Keep the exact generation key for unsettled writes until the shared restore settles.
+        self.adaptive_episode_keys.insert(key.clone());
+        if matches!(
+            result,
+            Ok(CpuAllocationApplyOutcome::Applied | CpuAllocationApplyOutcome::Unchanged)
+        ) && self.verified_adaptive_episode_placement(&key).is_none()
+        {
+            return Ok(CpuAllocationApplyOutcome::NoUsableTarget);
+        }
+        result
+    }
+
+    pub(crate) fn adaptive_episode_placement_processes(
+        &self,
+    ) -> impl Iterator<Item = &ProcessIdentity> + Clone {
+        self.adaptive_episode_keys
+            .iter()
+            .filter_map(|key| self.verified_adaptive_episode_placement(key))
+    }
+
+    pub(crate) fn verified_adaptive_episode_placement(
+        &self,
+        key: &ProcessTargetKey,
+    ) -> Option<&ProcessIdentity> {
+        if !self.adaptive_episode_keys.contains(key)
+            || self.pending_reconciliations.contains_key(key)
+            || self
+                .effective_claim(key)
+                .is_none_or(|claim| claim.owner != ControlOwner::AdaptiveEngine)
+        {
+            return None;
+        }
+        let owner = ControlOwner::AdaptiveEngine;
+        self.managed_affinity
+            .iter()
+            .find_map(|(identity, managed)| {
+                (managed.owner == owner
+                    && managed.confirmed
+                    && managed.expected != managed.baseline
+                    && identity.matches_target_key(key))
+                .then_some(identity)
+            })
+            .or_else(|| {
+                self.managed_cpu_sets
+                    .iter()
+                    .find_map(|(identity, managed)| {
+                        (managed.owner == owner
+                            && managed.confirmed
+                            && managed.expected != managed.baseline
+                            && identity.matches_target_key(key))
+                        .then_some(identity)
+                    })
+            })
     }
 
     fn apply_effective_claim(
@@ -559,13 +671,8 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
                     .collect();
                 self.apply_soft_claim(&identity, &process, claim.owner, desired, Some(expectation))
             }
-            ResolvedCpuAllocation::HardAffinity(mask) => self
-                .apply_hard_claim(
-                    &identity,
-                    &process,
-                    claim.owner,
-                    HardAffinityRequest::Exact(mask),
-                )
+            ResolvedCpuAllocation::HardAffinity(request) => self
+                .apply_hard_claim(&identity, &process, claim.owner, request)
                 .map_err(Into::into),
         }
     }
@@ -635,9 +742,65 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
     ) -> Result<CpuAllocationApplyOutcome, ProcessControlError> {
         self.platform.validate_group_zero_affinity(process)?;
         let (current, system) = self.platform.query_affinity(process)?;
-        let desired = match request {
-            HardAffinityRequest::Exact(mask) => target_affinity_mask(mask, system),
-        };
+        let desired =
+            match request {
+                HardAffinityRequest::Exact(mask) => target_affinity_mask(mask, system),
+                HardAffinityRequest::PreserveExact(mask) => self
+                    .guarded_affinity_baseline(identity, process, (current, system), true)?
+                    .and_then(|_| target_affinity_mask(mask, system)),
+                HardAffinityRequest::Reduce {
+                    full_mask,
+                    processors_to_remove,
+                    preserve_custom_affinity,
+                } => {
+                    if target_affinity_mask(full_mask, system) == Some(system) {
+                        self.guarded_affinity_baseline(
+                            identity,
+                            process,
+                            (current, system),
+                            preserve_custom_affinity,
+                        )?
+                        .and_then(|baseline| {
+                            reduced_affinity_mask(identity, baseline, processors_to_remove)
+                        })
+                    } else {
+                        None
+                    }
+                }
+                HardAffinityRequest::Limit(mask) => {
+                    if self.managed_affinity.get(identity).is_some_and(|managed| {
+                        managed.owner == owner && managed.expected != current
+                    }) {
+                        self.release_affinity_if_managed(identity, process)?;
+                        return Ok(CpuAllocationApplyOutcome::NoUsableTarget);
+                    }
+                    let mut cpu_sets = self.platform.query_cpu_sets(process)?;
+                    normalize_cpu_set_ids(&mut cpu_sets);
+                    let baseline_sets = self
+                        .managed_cpu_sets
+                        .get(identity)
+                        .filter(|managed| managed.expected == cpu_sets)
+                        .map_or(cpu_sets.as_slice(), |managed| managed.baseline.as_slice());
+                    if !baseline_sets.is_empty() {
+                        return Ok(CpuAllocationApplyOutcome::NoUsableTarget);
+                    }
+                    let Some(desired) = target_affinity_mask(mask, system)
+                        .map(|selection| selection & current)
+                        .filter(|desired| *desired != 0)
+                    else {
+                        return Ok(CpuAllocationApplyOutcome::NoUsableTarget);
+                    };
+                    if desired == current
+                        && !self
+                            .managed_affinity
+                            .get(identity)
+                            .is_some_and(|managed| managed.owner == owner)
+                    {
+                        return Ok(CpuAllocationApplyOutcome::NoUsableTarget);
+                    }
+                    Some(desired)
+                }
+            };
         let released_cpu_sets = self.release_cpu_sets_for_switch(identity, process)?;
         let Some(desired) = desired else {
             if let Err(error) = self.release_affinity_if_managed(identity, process) {
@@ -662,6 +825,38 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
                 Err(self.finish_switch_failure(failure.error, compensation, identity, process))
             }
         }
+    }
+
+    fn guarded_affinity_baseline(
+        &mut self,
+        identity: &ProcessIdentity,
+        process: &P::Process,
+        (current, system): (usize, usize),
+        preserve_custom_affinity: bool,
+    ) -> Result<Option<usize>, ProcessControlError> {
+        // A verified assignment made by Winderust is not a custom Windows baseline.
+        let affinity = match self.managed_affinity.get(identity) {
+            Some(managed) if managed.confirmed && managed.expected == current => managed.baseline,
+            Some(_) => return Ok(None),
+            None => current,
+        };
+        if affinity == 0
+            || affinity & system != affinity
+            || (preserve_custom_affinity && affinity != system)
+        {
+            return Ok(None);
+        }
+
+        let mut current_sets = self.platform.query_cpu_sets(process)?;
+        normalize_cpu_set_ids(&mut current_sets);
+        let baseline_sets = match self.managed_cpu_sets.get(identity) {
+            Some(managed) if managed.confirmed && managed.expected == current_sets => {
+                &managed.baseline
+            }
+            Some(_) => return Ok(None),
+            None => &current_sets,
+        };
+        Ok(baseline_sets.is_empty().then_some(affinity))
     }
 
     fn finish_switch_failure(
@@ -715,6 +910,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
             .as_ref()
             .is_some_and(|managed| managed.expected != current)
         {
+            self.child_affinity.invalidate(identity);
             if let Err(error) = self.platform.relinquish_affinity(identity) {
                 if let Some(managed) = managed {
                     self.managed_affinity.insert(identity.clone(), managed);
@@ -726,6 +922,11 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         let baseline = managed.as_ref().map_or(current, |managed| managed.baseline);
         if current == desired {
             if let Some(mut managed) = managed {
+                if managed.owner != owner {
+                    self.child_affinity.invalidate(identity);
+                } else {
+                    self.child_affinity.record_unchanged(identity, &managed);
+                }
                 managed.owner = owner;
                 managed.expected = current;
                 self.managed_affinity.insert(identity.clone(), managed);
@@ -742,16 +943,15 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
             CommitFailureBehavior::KeepManagedTarget,
         ) {
             Ok(()) => {
-                self.managed_affinity.insert(
-                    identity.clone(),
-                    ManagedValue {
-                        baseline,
-                        expected: desired,
-                        owner,
-                        apply_sequence: sequence,
-                        confirmed: managed.as_ref().is_none_or(|managed| managed.confirmed),
-                    },
-                );
+                let managed = ManagedValue {
+                    baseline,
+                    expected: desired,
+                    owner,
+                    apply_sequence: sequence,
+                    confirmed: managed.as_ref().is_none_or(|managed| managed.confirmed),
+                };
+                self.child_affinity.record_application(identity, &managed);
+                self.managed_affinity.insert(identity.clone(), managed);
                 Ok(CpuAllocationApplyOutcome::Applied)
             }
             Err(mut failure) => {
@@ -765,6 +965,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
                     }
                 }
                 if failure.uncertain {
+                    self.child_affinity.invalidate(identity);
                     self.managed_affinity.insert(
                         identity.clone(),
                         ManagedValue {
@@ -1028,6 +1229,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
             .cloned()
             .collect::<Vec<_>>();
         for stale in stale_affinity {
+            self.child_affinity.invalidate(&stale);
             self.platform.relinquish_affinity(&stale)?;
             self.managed_affinity.remove(&stale);
         }
@@ -1112,7 +1314,69 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         for key in reconcile_keys {
             self.reconcile_policy_key(&key, &mut summary);
         }
+        self.prune_adaptive_episode_keys();
         summary
+    }
+
+    pub(crate) fn release_adaptive_episode_placements_except(
+        &mut self,
+        active_targets: &BTreeSet<ProcessTargetKey>,
+    ) -> (CpuAllocationReleaseSummary, bool) {
+        let stale = self
+            .adaptive_episode_keys
+            .difference(active_targets)
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut summary = CpuAllocationReleaseSummary::default();
+        for key in stale {
+            self.withdraw_adaptive_episode_claim(&key);
+            self.reconcile_policy_key(&key, &mut summary);
+        }
+        self.prune_adaptive_episode_keys();
+        (
+            summary,
+            !self.adaptive_episode_keys.is_subset(active_targets),
+        )
+    }
+
+    pub(crate) fn release_adaptive_episode_placement(
+        &mut self,
+        key: &ProcessTargetKey,
+    ) -> (CpuAllocationReleaseSummary, bool) {
+        let mut summary = CpuAllocationReleaseSummary::default();
+        if self.adaptive_episode_keys.contains(key) {
+            self.withdraw_adaptive_episode_claim(key);
+            self.reconcile_policy_key(key, &mut summary);
+            self.prune_adaptive_episode_keys();
+        }
+        (summary, self.adaptive_episode_keys.contains(key))
+    }
+
+    fn withdraw_adaptive_episode_claim(&mut self, key: &ProcessTargetKey) {
+        if self.adaptive_episode_keys.contains(key) {
+            if let Some(claims) = self.claims.get_mut(&ControlOwner::AdaptiveEngine) {
+                claims.remove(key);
+            }
+        }
+    }
+
+    fn prune_adaptive_episode_keys(&mut self) {
+        if self.adaptive_episode_keys.is_empty() {
+            return;
+        }
+        let owner = ControlOwner::AdaptiveEngine;
+        let claims = self.claims.get(&owner);
+        let affinity = &self.managed_affinity;
+        let cpu_sets = &self.managed_cpu_sets;
+        self.adaptive_episode_keys.retain(|key| {
+            claims.is_some_and(|claims| claims.contains_key(key))
+                || affinity.iter().any(|(identity, managed)| {
+                    managed.owner == owner && identity.matches_target_key(key)
+                })
+                || cpu_sets.iter().any(|(identity, managed)| {
+                    managed.owner == owner && identity.matches_target_key(key)
+                })
+        });
     }
 
     pub(crate) fn release_all_policy(
@@ -1178,6 +1442,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
             if !self.release_unresolved_assignment(&key, &invalid_owners, &mut summary.releases) {
                 continue;
             }
+            self.discard_replayed_episode_claim(&key);
             let Some(claim) = self.effective_claim(&key).cloned() else {
                 if !self.release_managed_key(&key, &mut summary.releases) {
                     self.pending_reconciliations.insert(
@@ -1272,6 +1537,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
                 }
             }
         }
+        self.prune_adaptive_episode_keys();
         summary
     }
 
@@ -1372,6 +1638,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         key: &ProcessTargetKey,
         summary: &mut CpuAllocationReleaseSummary,
     ) {
+        self.discard_replayed_episode_claim(key);
         if let Some(effective) = self.effective_claim(key) {
             let effective = claim_fingerprint(effective);
             let should_queue_handoff = match self.pending_reconciliations.get(key) {
@@ -1412,10 +1679,22 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         key: &ProcessTargetKey,
         failed_claim: Option<CpuAllocationClaimFingerprint>,
     ) {
+        self.discard_replayed_episode_claim(key);
         let effective = self.effective_claim(key).map(claim_fingerprint);
         if effective.is_some() && effective != failed_claim {
             self.pending_reconciliations
                 .insert(key.clone(), PendingReconciliation::Handoff);
+        }
+    }
+
+    fn discard_replayed_episode_claim(&mut self, key: &ProcessTargetKey) {
+        if self.adaptive_episode_keys.contains(key)
+            && self
+                .effective_claim(key)
+                .is_some_and(|claim| claim.owner == ControlOwner::AdaptiveEngine)
+        {
+            // A handoff cannot start a timed allocation without a fresh eligibility pass.
+            self.withdraw_adaptive_episode_claim(key);
         }
     }
 
@@ -1487,6 +1766,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         owner: ControlOwner,
         summary: &mut CpuAllocationReleaseSummary,
     ) {
+        self.child_affinity.invalidate(identity);
         self.instance_balancing.remove(identity);
         match self.platform.relinquish_affinity(identity) {
             Ok(()) => {
@@ -1547,6 +1827,7 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
         let Some(managed) = self.managed_affinity.get(identity).cloned() else {
             return Ok(false);
         };
+        self.child_affinity.invalidate(identity);
         let current = self.platform.query_affinity(process)?.0;
         if current != managed.expected || current == managed.baseline {
             self.platform.relinquish_affinity(identity)?;
@@ -1658,21 +1939,47 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
     }
 
     pub(crate) fn policy_managed_process_count(&self, owner: ControlOwner) -> usize {
-        self.managed_identities(owner).len()
+        self.policy_managed_processes(owner).count()
     }
 
-    fn managed_identities(&self, owner: ControlOwner) -> BTreeSet<&ProcessIdentity> {
+    pub(crate) fn effective_affinity_limit_count(&self, key: &ProcessTargetKey) -> Option<usize> {
         self.managed_affinity
             .iter()
-            .filter(|(_, managed)| managed.owner == owner)
-            .map(|(identity, _)| identity)
-            .chain(
-                self.managed_cpu_sets
-                    .iter()
-                    .filter(|(_, managed)| managed.owner == owner)
-                    .map(|(identity, _)| identity),
-            )
-            .collect()
+            .find_map(|(identity, managed)| {
+                (managed.owner == ControlOwner::CpuLimiter
+                    && managed.confirmed
+                    && identity.key() == *key)
+                    .then_some(managed.expected.count_ones() as usize)
+            })
+    }
+
+    pub(crate) fn policy_managed_processes(
+        &self,
+        owner: ControlOwner,
+    ) -> impl Iterator<Item = &ProcessIdentity> {
+        let affinity = self
+            .managed_affinity
+            .iter()
+            .filter(move |(_, managed)| managed.owner == owner)
+            .map(|(identity, _)| identity);
+        let cpu_sets_only = self
+            .managed_cpu_sets
+            .iter()
+            .filter(move |(identity, managed)| {
+                managed.owner == owner
+                    && self
+                        .managed_affinity
+                        .get(*identity)
+                        .is_none_or(|affinity| affinity.owner != owner)
+            })
+            .map(|(identity, _)| identity);
+        affinity.chain(cpu_sets_only)
+    }
+
+    pub(crate) fn needs_topology_observation(&self) -> bool {
+        self.claims.values().any(|claims| !claims.is_empty())
+            || self.has_managed_state()
+            || self.has_pending_reconciliation()
     }
 
     pub(crate) fn has_managed_state(&self) -> bool {
@@ -1680,7 +1987,9 @@ impl<P: CpuAllocationPlatform> CpuAllocationCoordinator<P> {
     }
 
     pub(crate) fn shutdown(&mut self) -> Result<(), String> {
+        self.set_restore_child_affinity(false);
         self.claims.clear();
+        self.adaptive_episode_keys.clear();
         self.pending_reconciliations.clear();
         let mut releases = self
             .managed_affinity
@@ -1783,6 +2092,13 @@ enum ManagedProperty {
 #[derive(Clone, Copy)]
 enum HardAffinityRequest {
     Exact(u64),
+    Limit(u64),
+    PreserveExact(u64),
+    Reduce {
+        full_mask: u64,
+        processors_to_remove: u8,
+        preserve_custom_affinity: bool,
+    },
 }
 
 enum SwitchCompensation {
@@ -2041,6 +2357,7 @@ fn cpu_allocation_owner_precedence() -> &'static [ControlOwner] {
         ControlOwner::CpuSetsSoft,
         ControlOwner::ProcessorAffinityHard,
         ControlOwner::InstanceBalancing,
+        ControlOwner::CpuLimiter,
         ControlOwner::AdaptiveEngine,
     ]
 }
@@ -2060,9 +2377,30 @@ fn target_affinity_mask(rule_mask: u64, system_affinity: usize) -> Option<usize>
     (mask != 0 && mask & system_affinity == mask).then_some(mask)
 }
 
+fn reduced_affinity_mask(
+    identity: &ProcessIdentity,
+    baseline: usize,
+    processors_to_remove: u8,
+) -> Option<usize> {
+    let count = u32::from(processors_to_remove).min(baseline.count_ones().saturating_sub(1));
+    let mut choice = DefaultHasher::new();
+    choice.write_u32(identity.id);
+    choice.write_u64(identity.creation_time);
+    let mut mask = baseline;
+    for step in 0..count {
+        choice.write_u32(step);
+        let mut candidates = mask;
+        for _ in 0..choice.finish() % u64::from(mask.count_ones()) {
+            candidates &= candidates - 1;
+        }
+        mask &= !(1 << candidates.trailing_zeros());
+    }
+    (count > 0).then_some(mask)
+}
+
 enum ResolvedCpuAllocation<'a> {
     SoftCpuSets(&'a [ProcessorId]),
-    HardAffinity(u64),
+    HardAffinity(HardAffinityRequest),
     InstanceBalancing {
         processors: &'a [ProcessorId],
         generation: u64,
@@ -2096,7 +2434,26 @@ fn resolve_request<'a>(
             }),
         CpuAllocationRequest::HardAffinity { selection } => selection
             .resolve_group_zero(topology)
-            .map(ResolvedCpuAllocation::HardAffinity),
+            .map(|mask| ResolvedCpuAllocation::HardAffinity(HardAffinityRequest::Exact(mask))),
+        CpuAllocationRequest::PreserveHardAffinity { selection } => {
+            selection.resolve_group_zero(topology).map(|mask| {
+                ResolvedCpuAllocation::HardAffinity(HardAffinityRequest::PreserveExact(mask))
+            })
+        }
+        CpuAllocationRequest::ReduceAffinity {
+            selection,
+            processors_to_remove,
+            preserve_custom_affinity,
+        } => selection.resolve_group_zero(topology).map(|full_mask| {
+            ResolvedCpuAllocation::HardAffinity(HardAffinityRequest::Reduce {
+                full_mask,
+                processors_to_remove: *processors_to_remove,
+                preserve_custom_affinity: *preserve_custom_affinity,
+            })
+        }),
+        CpuAllocationRequest::AffinityLimit { selection } => selection
+            .resolve_group_zero(topology)
+            .map(|mask| ResolvedCpuAllocation::HardAffinity(HardAffinityRequest::Limit(mask))),
     }
     .map_err(|error| ProcessControlError::Failed(error.to_string()))
 }

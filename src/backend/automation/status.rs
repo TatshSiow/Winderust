@@ -1,4 +1,5 @@
 use super::*;
+use crate::foreground::process_list::normalize_path_slashes;
 
 pub(super) struct AutomationSnapshot {
     pub(super) settings: Arc<Settings>,
@@ -7,8 +8,10 @@ pub(super) struct AutomationSnapshot {
     pub(super) action_log_clear_requested: bool,
     pub(super) input_activity: InputActivityTracker,
     pub(super) wake_events: AutomationWakeEvents,
+    pub(super) keep_running_resets: keep_running::PendingResets,
     pub(super) instance_limits_resets: instance_limits::PendingResets,
     pub(super) instance_balancing_resets: instance_balancing::PendingResets,
+    pub(super) sleep_prevention_settings: Vec<Arc<Settings>>,
     pub(super) windows_event_watcher_active: bool,
 }
 
@@ -21,8 +24,11 @@ pub(super) fn automation_snapshot(shared: &SharedAutomationState) -> Option<Auto
         process_control_commands: std::mem::take(&mut state.process_control_commands),
         action_log_clear_requested: std::mem::take(&mut state.action_log_clear_requested),
         wake_events: std::mem::take(&mut state.pending_events),
+        keep_running_resets: std::mem::take(&mut state.pending_keep_running_resets),
         instance_limits_resets: std::mem::take(&mut state.pending_instance_limits_resets),
         instance_balancing_resets: std::mem::take(&mut state.pending_instance_balancing_resets),
+        sleep_prevention_settings: std::mem::take(&mut state.pending_sleep_prevention_settings)
+            .intermediate,
         windows_event_watcher_active: state.windows_event_watcher_active,
     })
 }
@@ -34,7 +40,39 @@ pub(super) fn set_windows_event_watcher_active(shared: &SharedAutomationState, a
     }
 
     state.windows_event_watcher_active = active;
-    state.pending_events.windows_event_watcher_changed = true;
+    let change = &mut state.pending_events.windows_event_watcher_change;
+    if active {
+        change.get_or_insert(WindowsEventWatcherChange::Started);
+    } else {
+        *change = Some(WindowsEventWatcherChange::Lost);
+    }
+    if instance_balancing::clear_rule_status(&mut state) {
+        bump_status_generation(shared, &mut state);
+    }
+    state.change_generation = state.change_generation.wrapping_add(1);
+    shared.changed.notify_one();
+}
+
+pub(super) fn notify_tray_visibility_changed(shared: &SharedAutomationState) {
+    let mut state = lock_unpoisoned(&shared.state);
+    if state.stop_requested || !state.worker_accepting_work {
+        return;
+    }
+    state.pending_events.tray_visibility_changed = true;
+    state.change_generation = state.change_generation.wrapping_add(1);
+    shared.changed.notify_one();
+}
+
+pub(super) fn notify_temporary_sleep_watcher(shared: &SharedAutomationState, interrupted: bool) {
+    let mut state = lock_unpoisoned(&shared.state);
+    if state.stop_requested || !state.worker_accepting_work {
+        return;
+    }
+    if interrupted {
+        state
+            .pending_events
+            .temporary_sleep_prevention_interrupted_at = Some(Instant::now());
+    }
     state.change_generation = state.change_generation.wrapping_add(1);
     shared.changed.notify_one();
 }
@@ -45,9 +83,19 @@ pub(super) fn notify_windows_event(shared: &SharedAutomationState, event: Window
         return;
     }
 
-    if event == WindowsAutomationEvent::AppearanceChanged {
+    let appearance_changed = event == WindowsAutomationEvent::AppearanceChanged;
+    if appearance_changed {
         state.status.appearance_change_generation =
             state.status.appearance_change_generation.wrapping_add(1);
+    }
+    let placement_context_changed = matches!(
+        event,
+        WindowsAutomationEvent::SessionChanged | WindowsAutomationEvent::SuspendResume
+    ) || (event == WindowsAutomationEvent::PowerChanged
+        && cpu_allocation_source_difference(&state.settings).is_some());
+    if appearance_changed
+        || (placement_context_changed && instance_balancing::clear_rule_status(&mut state))
+    {
         bump_status_generation(shared, &mut state);
     }
     state.pending_events.insert_windows_event(event);
@@ -61,32 +109,30 @@ pub(super) fn notify_input_event(shared: &SharedAutomationState, events: InputHo
         return;
     }
     state.input_activity.record(events, Instant::now());
-    if !input_hook_should_check(&state.settings, events) {
+    let input_activity = input_hook_should_check_activity(&state.settings, events);
+    let app_switch = input_hook_should_check_app_switch(&state.settings, events);
+    let app_switch_mouse_click =
+        input_hook_should_check_app_switch_mouse_click(&state.settings, events);
+    if !(input_activity || app_switch || app_switch_mouse_click) {
         return;
     }
 
-    if input_hook_should_check_activity(&state.settings, events) {
-        state.pending_events.input_activity = true;
-    }
-    if input_hook_should_check_app_switch(&state.settings, events) {
-        state.pending_events.app_switch = true;
-    }
-    if input_hook_should_check_app_switch_mouse_click(&state.settings, events) {
-        state.pending_events.app_switch_mouse_click = true;
-    }
+    state.pending_events.input_activity |= input_activity;
+    state.pending_events.app_switch |= app_switch;
+    state.pending_events.app_switch_mouse_click |= app_switch_mouse_click;
     state.change_generation = state.change_generation.wrapping_add(1);
     shared.changed.notify_one();
 }
 
-pub(super) fn update_background_efficiency_status(
+pub(super) fn update_efficiency_mode_status(
     shared: &SharedAutomationState,
-    status: BackgroundEfficiencySnapshot,
+    status: EfficiencyModeSnapshot,
 ) {
     update_feature_status(
         shared,
         status,
-        |feature_status| &feature_status.background_efficiency,
-        |feature_status| &mut feature_status.background_efficiency,
+        |feature_status| &feature_status.efficiency_mode,
+        |feature_status| &mut feature_status.efficiency_mode,
     );
 }
 
@@ -113,18 +159,6 @@ pub(super) fn update_keep_running_status(
         status,
         |feature_status| &feature_status.keep_running,
         |feature_status| &mut feature_status.keep_running,
-    );
-}
-
-pub(super) fn update_instance_balancing_status(
-    shared: &SharedAutomationState,
-    status: CpuAllocationSnapshot,
-) {
-    update_feature_status(
-        shared,
-        status,
-        |feature_status| &feature_status.instance_balancing,
-        |feature_status| &mut feature_status.instance_balancing,
     );
 }
 
@@ -161,13 +195,14 @@ pub(super) fn update_processor_affinity_hard_status(
 fn append_unique_executable_paths(executable_paths: &[String], target: &mut Vec<String>) -> bool {
     let old_len = target.len();
     for executable_path in executable_paths {
-        let executable_path = executable_path_key(Path::new(executable_path));
-        if Path::new(&executable_path).is_absolute()
-            && !target.iter().any(|existing| {
-                same_executable_path(Path::new(existing), Path::new(&executable_path))
-            })
+        let executable_path = normalize_path_slashes(executable_path);
+        let path = Path::new(executable_path.as_ref());
+        if path.is_absolute()
+            && !target
+                .iter()
+                .any(|existing| same_executable_path(Path::new(existing), path))
         {
-            target.push(executable_path);
+            target.push(executable_path.into_owned());
         }
     }
     target.len() != old_len
@@ -400,12 +435,25 @@ pub(super) fn update_worker_error(shared: &SharedAutomationState, error: Option<
     }
 }
 
-pub(super) fn update_power_plan_status(shared: &SharedAutomationState, status: PowerPlanStatus) {
+pub(super) fn update_power_plan_status(
+    shared: &SharedAutomationState,
+    status: PowerPlanStatus,
+    rule_context: Option<&PowerPlanRuleContext>,
+    by_activity: Option<ByActivityObservation>,
+) {
     let mut state = lock_unpoisoned(&shared.state);
-    if state.status.power_plan_status.as_ref() == &status {
+    let plan_changed = state.status.power_plan_status.as_ref() != &status;
+    let context_changed = state.status.power_plan_rule_context.as_ref() != rule_context;
+    if !plan_changed && !context_changed && state.status.by_activity == by_activity {
         return;
     }
-    state.status.power_plan_status = Arc::new(status);
+    if plan_changed {
+        state.status.power_plan_status = Arc::new(status);
+    }
+    if context_changed {
+        state.status.power_plan_rule_context = rule_context.cloned();
+    }
+    state.status.by_activity = by_activity;
     bump_status_generation(shared, &mut state);
 }
 
@@ -458,11 +506,13 @@ pub(super) fn update_status_with_auto_exclusions<T: PartialEq>(
 
 pub(super) fn update_action_log(
     shared: &SharedAutomationState,
-    entries: Vec<ActionLogEntry>,
+    state: &mut AutomationWorkerState,
+    entries: Arc<Vec<ActionLogEntry>>,
     summaries: ActionLogSummaries,
 ) {
-    let mut state = lock_unpoisoned(&shared.state);
-    let entries = Arc::new(entries);
+    if state.action_log_clear_requested {
+        return;
+    }
     let summaries = Arc::new(summaries);
     if state.status.action_log_entries == entries && state.status.action_log_summaries == summaries
     {
@@ -470,7 +520,7 @@ pub(super) fn update_action_log(
     }
     state.status.action_log_entries = entries;
     state.status.action_log_summaries = summaries;
-    bump_status_generation(shared, &mut state);
+    bump_status_generation(shared, state);
 }
 
 pub(super) fn bump_status_generation(

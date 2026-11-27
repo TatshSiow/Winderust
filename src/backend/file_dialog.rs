@@ -73,6 +73,20 @@ pub(crate) fn choose_action_log_export_file(
     }
 }
 
+pub(crate) fn choose_interrupt_timing_export_file(
+    hwnd: Option<HWND>,
+) -> impl std::future::Future<Output = Option<PathBuf>> + Send {
+    let filename = format!(
+        "winderust_interrupt_timing_{}.json",
+        Local::now().format("%Y-%m-%d")
+    );
+    let dialog = async_dialog(hwnd)
+        .add_filter(t!("interrupt_timing.report_files").to_string(), &["json"])
+        .set_file_name(filename)
+        .set_title(t!("interrupt_timing.export_report").to_string());
+    async move { Some(dialog.save_file().await?.path().to_owned()) }
+}
+
 pub(crate) fn choose_executable_file(
     hwnd: Option<HWND>,
 ) -> impl std::future::Future<Output = Option<PathBuf>> + Send {

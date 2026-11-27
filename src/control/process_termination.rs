@@ -1,3 +1,5 @@
+use rust_i18n::t;
+
 use crate::{
     foreground::ProcessActionTarget, platform::windows::process_termination, win_util::WinHandle,
 };
@@ -6,7 +8,7 @@ use super::process::{open_process_for_termination, ProcessControlError, ProcessC
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ProcessTerminationOutcome {
-    Terminated,
+    Requested,
     Failed(String),
     NotAttempted,
 }
@@ -23,39 +25,80 @@ pub(crate) struct ProcessTerminationBatchResult {
     pub(crate) preflight_failed: bool,
 }
 
-impl ProcessTerminationBatchResult {
-    pub(crate) fn into_process_list_result(self) -> Result<(), String> {
-        if self.results.is_empty() {
-            return Err("No process targets were available.".to_owned());
+#[derive(Debug)]
+enum ProcessTerminationFailure {
+    NoTargets,
+    Preflight {
+        detail: Option<String>,
+    },
+    RequestsRejected {
+        requested: usize,
+        total: usize,
+        detail: Option<String>,
+    },
+}
+
+impl ProcessTerminationFailure {
+    fn localized(self) -> String {
+        let (summary, detail) = match self {
+            Self::NoTargets => (t!("process_list.stop_no_targets"), None),
+            Self::Preflight { detail } => (t!("process_list.stop_preflight_failed"), detail),
+            Self::RequestsRejected {
+                requested,
+                total,
+                detail,
+            } => (
+                t!(
+                    "process_list.stop_requests_rejected",
+                    requested = requested,
+                    total = total,
+                    failed = total - requested
+                ),
+                detail,
+            ),
+        };
+        match detail {
+            Some(detail) => format!("{summary} {detail}"),
+            None => summary.into_owned(),
         }
+    }
+}
+
+impl ProcessTerminationBatchResult {
+    pub(crate) fn into_termination_result(self) -> Result<usize, String> {
+        self.into_outcome()
+            .map_err(ProcessTerminationFailure::localized)
+    }
+
+    fn into_outcome(self) -> Result<usize, ProcessTerminationFailure> {
         let total = self.results.len();
-        let terminated = self
+        if total == 0 {
+            return Err(ProcessTerminationFailure::NoTargets);
+        }
+        let requested = self
             .results
             .iter()
-            .filter(|result| matches!(result.outcome, ProcessTerminationOutcome::Terminated))
+            .filter(|result| matches!(result.outcome, ProcessTerminationOutcome::Requested))
             .count();
-        let first_error =
+        if !self.preflight_failed && requested == total {
+            return Ok(requested);
+        }
+        let detail =
             self.results
-                .iter()
-                .find_map(|result| match &result.outcome {
-                    ProcessTerminationOutcome::Failed(error) => Some(error.as_str()),
-                    ProcessTerminationOutcome::Terminated
+                .into_iter()
+                .find_map(|result| match result.outcome {
+                    ProcessTerminationOutcome::Failed(error) => Some(error),
+                    ProcessTerminationOutcome::Requested
                     | ProcessTerminationOutcome::NotAttempted => None,
                 });
         if self.preflight_failed {
-            return Err(format!(
-                "Process termination preflight failed; no processes were stopped: {}",
-                first_error.unwrap_or("A process target could not be validated.")
-            ));
-        }
-        if terminated == total {
-            Ok(())
+            Err(ProcessTerminationFailure::Preflight { detail })
         } else {
-            Err(format!(
-                "Stopped {terminated} of {total} processes; {} failed: {}",
-                total.saturating_sub(terminated),
-                first_error.unwrap_or("The process could not be stopped.")
-            ))
+            Err(ProcessTerminationFailure::RequestsRejected {
+                requested,
+                total,
+                detail,
+            })
         }
     }
 }
@@ -160,7 +203,7 @@ impl<P: ProcessTerminationPlatform> ProcessTerminationController<P> {
             .map(|(target, process)| {
                 let outcome = match process {
                     Some(process) => match self.platform.terminate(&process) {
-                        Ok(()) => ProcessTerminationOutcome::Terminated,
+                        Ok(()) => ProcessTerminationOutcome::Requested,
                         Err(error) => ProcessTerminationOutcome::Failed(error.to_string()),
                     },
                     None => ProcessTerminationOutcome::Failed(
@@ -268,11 +311,11 @@ mod tests {
         assert_eq!(result.results[2].target.id, 1);
         assert!(matches!(
             result.results[2].outcome,
-            ProcessTerminationOutcome::Terminated
+            ProcessTerminationOutcome::Requested
         ));
         assert_eq!(
-            result.into_process_list_result().unwrap_err(),
-            "Stopped 2 of 3 processes; 1 failed: failed"
+            result.into_termination_result().unwrap_err(),
+            "Windows accepted termination requests for 2 of 3 processes. 1 failed. failed"
         );
     }
 
@@ -283,7 +326,7 @@ mod tests {
         let result = controller.terminate_batch(Vec::new(), true);
 
         assert_eq!(
-            result.into_process_list_result().unwrap_err(),
+            result.into_termination_result().unwrap_err(),
             "No process targets were available."
         );
         assert!(controller.platform.opens.is_empty());

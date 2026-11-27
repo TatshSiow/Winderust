@@ -251,9 +251,7 @@ pub(crate) fn wait(process: &WinHandle, milliseconds: u32) -> Result<(), String>
     // SAFETY: process is an exact retained handle opened with SYNCHRONIZE; the wait is bounded.
     match unsafe { WaitForSingleObject(process.raw(), milliseconds) } {
         WAIT_OBJECT_0 => Ok(()),
-        WAIT_TIMEOUT => {
-            Err("Timed out waiting for the app to stop; it was not relaunched.".to_owned())
-        }
+        WAIT_TIMEOUT => Err("Timed out waiting for an original process to exit.".to_owned()),
         _ => Err(error("WaitForSingleObject")),
     }
 }

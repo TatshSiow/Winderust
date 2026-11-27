@@ -21,9 +21,7 @@ use windows_sys::Win32::{
             WTSRegisterSessionNotification, WTSUnRegisterSessionNotification,
             NOTIFY_FOR_THIS_SESSION,
         },
-        SystemServices::{
-            GUID_ACDC_POWER_SOURCE, GUID_BATTERY_PERCENTAGE_REMAINING, GUID_POWERSCHEME_PERSONALITY,
-        },
+        SystemServices::{GUID_ACDC_POWER_SOURCE, GUID_POWERSCHEME_PERSONALITY},
         Threading::GetCurrentThreadId,
     },
     UI::{
@@ -35,8 +33,8 @@ use windows_sys::Win32::{
             OBJID_WINDOW, PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMECRITICAL, PBT_APMRESUMESTANDBY,
             PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, PBT_POWERSETTINGCHANGE, PM_NOREMOVE,
             WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_DWMCOLORIZATIONCOLORCHANGED,
-            WM_POWERBROADCAST, WM_QUIT, WM_SETTINGCHANGE, WM_THEMECHANGED, WM_TIMECHANGE,
-            WM_WTSSESSION_CHANGE, WNDCLASSW,
+            WM_POWERBROADCAST, WM_QUIT, WM_SETTINGCHANGE, WM_SYSCOLORCHANGE, WM_THEMECHANGED,
+            WM_TIMECHANGE, WM_WTSSESSION_CHANGE, WNDCLASSW,
         },
     },
 };
@@ -60,7 +58,15 @@ thread_local! {
     static EVENT_CALLBACK: RefCell<Option<EventCallback>> = RefCell::new(None);
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowsEventWatcherMode {
+    Full,
+    SuspendResumeAndSession,
+    SuspendResumeOnly,
+}
+
 pub struct WindowsEventWatcher {
+    mode: WindowsEventWatcherMode,
     thread_id: u32,
     thread: Option<JoinHandle<()>>,
     stopped: Arc<AtomicBool>,
@@ -86,6 +92,7 @@ struct PowerNotifications {
 
 impl WindowsEventWatcher {
     pub fn start(
+        mode: WindowsEventWatcherMode,
         callback: EventCallback,
         on_stopped: Arc<dyn Fn() + Send + Sync>,
     ) -> Result<Self, String> {
@@ -97,11 +104,12 @@ impl WindowsEventWatcher {
         };
         let thread = thread::spawn(move || {
             let _notification = notification;
-            event_thread(sender, callback);
+            event_thread(sender, callback, mode);
         });
 
         match receiver.recv() {
             Ok(Ok(thread_id)) => Ok(Self {
+                mode,
                 thread_id,
                 thread: Some(thread),
                 stopped,
@@ -115,6 +123,10 @@ impl WindowsEventWatcher {
                 Err(format!("Windows event watcher did not start: {err}"))
             }
         }
+    }
+
+    pub fn mode(&self) -> WindowsEventWatcherMode {
+        self.mode
     }
 
     pub fn is_running(&self) -> bool {
@@ -138,11 +150,28 @@ impl Drop for WindowsEventWatcher {
     }
 }
 
-fn event_thread(sender: mpsc::Sender<Result<u32, String>>, callback: EventCallback) {
+fn event_thread(
+    sender: mpsc::Sender<Result<u32, String>>,
+    callback: EventCallback,
+    mode: WindowsEventWatcherMode,
+) {
+    let full = mode == WindowsEventWatcherMode::Full;
+    let session = mode != WindowsEventWatcherMode::SuspendResumeOnly;
     // SAFETY: GetCurrentThreadId takes no arguments and has no caller requirements.
     let thread_id = unsafe { GetCurrentThreadId() };
     let mut msg = MSG::default();
 
+    let callback = if full {
+        callback
+    } else {
+        Arc::new(move |event| {
+            if event == WindowsAutomationEvent::SuspendResume
+                || (session && event == WindowsAutomationEvent::SessionChanged)
+            {
+                callback(event);
+            }
+        })
+    };
     EVENT_CALLBACK.with(|slot| {
         *slot.borrow_mut() = Some(callback);
     });
@@ -154,31 +183,13 @@ fn event_thread(sender: mpsc::Sender<Result<u32, String>>, callback: EventCallba
     }
 
     let window = create_event_window();
-    // SAFETY: win_event_proc has the required static ABI and the out-of-context hook retains no
-    // borrowed Rust data.
-    let foreground_hook = unsafe {
-        SetWinEventHook(
-            EVENT_SYSTEM_FOREGROUND,
-            EVENT_SYSTEM_FOREGROUND,
-            std::ptr::null_mut(),
-            Some(win_event_proc),
-            0,
-            0,
-            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+    let (foreground_hook, window_hook) = if full {
+        (
+            register_window_hook(EVENT_SYSTEM_FOREGROUND),
+            register_window_hook(EVENT_OBJECT_CREATE),
         )
-    };
-    // SAFETY: win_event_proc has the required static ABI and the out-of-context hook retains no
-    // borrowed Rust data.
-    let window_hook = unsafe {
-        SetWinEventHook(
-            EVENT_OBJECT_CREATE,
-            EVENT_OBJECT_CREATE,
-            std::ptr::null_mut(),
-            Some(win_event_proc),
-            0,
-            0,
-            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
-        )
+    } else {
+        (std::ptr::null_mut(), std::ptr::null_mut())
     };
 
     let mut power_notifications = PowerNotifications {
@@ -188,13 +199,16 @@ fn event_thread(sender: mpsc::Sender<Result<u32, String>>, callback: EventCallba
     };
     let mut session_notifications_registered = false;
     if !window.is_null() {
-        power_notifications = register_power_notifications(window);
-        // SAFETY: window is the live hidden event window owned by this thread.
-        session_notifications_registered =
-            unsafe { WTSRegisterSessionNotification(window, NOTIFY_FOR_THIS_SESSION) } != 0;
+        power_notifications = register_power_notifications(window, full);
+        if session {
+            // SAFETY: window is the live hidden event window owned by this thread.
+            session_notifications_registered =
+                unsafe { WTSRegisterSessionNotification(window, NOTIFY_FOR_THIS_SESSION) } != 0;
+        }
     }
 
     if !event_sources_ready(
+        mode,
         window,
         foreground_hook,
         window_hook,
@@ -241,6 +255,7 @@ fn event_thread(sender: mpsc::Sender<Result<u32, String>>, callback: EventCallba
 }
 
 fn event_sources_ready(
+    mode: WindowsEventWatcherMode,
     window: HWND,
     foreground_hook: HWINEVENTHOOK,
     window_hook: HWINEVENTHOOK,
@@ -248,11 +263,12 @@ fn event_sources_ready(
     session_notifications_registered: bool,
 ) -> bool {
     !window.is_null()
-        && !foreground_hook.is_null()
-        && !window_hook.is_null()
-        && power_notifications.settings_complete
         && power_notifications.suspend_resume != 0
-        && session_notifications_registered
+        && (mode == WindowsEventWatcherMode::SuspendResumeOnly || session_notifications_registered)
+        && (mode != WindowsEventWatcherMode::Full
+            || (!foreground_hook.is_null()
+                && !window_hook.is_null()
+                && power_notifications.settings_complete))
 }
 
 fn cleanup_event_sources(
@@ -319,15 +335,37 @@ fn create_event_window() -> HWND {
     }
 }
 
-fn register_power_notifications(window: HWND) -> PowerNotifications {
-    let power_settings = [
-        GUID_ACDC_POWER_SOURCE,
-        GUID_BATTERY_PERCENTAGE_REMAINING,
-        GUID_POWERSCHEME_PERSONALITY,
-    ];
+fn register_window_hook(event: u32) -> HWINEVENTHOOK {
+    // Focusing Winderust can end another app's By Focus match.
+    let flags = if event == EVENT_SYSTEM_FOREGROUND {
+        WINEVENT_OUTOFCONTEXT
+    } else {
+        WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS
+    };
+    // SAFETY: win_event_proc has the required static ABI and the out-of-context hook
+    // retains no borrowed Rust data.
+    unsafe {
+        SetWinEventHook(
+            event,
+            event,
+            std::ptr::null_mut(),
+            Some(win_event_proc),
+            0,
+            0,
+            flags,
+        )
+    }
+}
+
+fn register_power_notifications(window: HWND, include_power_settings: bool) -> PowerNotifications {
+    let power_settings: &[_] = if include_power_settings {
+        &[GUID_ACDC_POWER_SOURCE, GUID_POWERSCHEME_PERSONALITY]
+    } else {
+        &[]
+    };
     let mut settings = Vec::new();
 
-    for setting in &power_settings {
+    for setting in power_settings {
         // SAFETY: window is live and setting points to a static GUID for the duration of the call.
         let notification = unsafe {
             RegisterPowerSettingNotification(window as _, setting, DEVICE_NOTIFY_WINDOW_HANDLE)
@@ -375,7 +413,7 @@ unsafe extern "system" fn event_window_proc(
             notify_event(WindowsAutomationEvent::ClockChanged);
             0
         }
-        WM_SETTINGCHANGE | WM_THEMECHANGED | WM_DWMCOLORIZATIONCOLORCHANGED => {
+        WM_SETTINGCHANGE | WM_SYSCOLORCHANGE | WM_THEMECHANGED | WM_DWMCOLORIZATIONCOLORCHANGED => {
             // System settings include time-zone changes; recheck without interpreting lparam.
             if message == WM_SETTINGCHANGE {
                 notify_event(WindowsAutomationEvent::ClockChanged);
@@ -507,6 +545,7 @@ mod tests {
         });
         for message in [
             WM_SETTINGCHANGE,
+            WM_SYSCOLORCHANGE,
             WM_THEMECHANGED,
             WM_DWMCOLORIZATIONCOLORCHANGED,
             WM_TIMECHANGE,
@@ -525,6 +564,7 @@ mod tests {
                 WindowsAutomationEvent::AppearanceChanged,
                 WindowsAutomationEvent::AppearanceChanged,
                 WindowsAutomationEvent::AppearanceChanged,
+                WindowsAutomationEvent::AppearanceChanged,
                 WindowsAutomationEvent::ClockChanged,
             ]
         );
@@ -540,6 +580,7 @@ mod tests {
         };
 
         assert!(event_sources_ready(
+            WindowsEventWatcherMode::Full,
             handle,
             handle,
             handle,
@@ -547,6 +588,7 @@ mod tests {
             true,
         ));
         assert!(!event_sources_ready(
+            WindowsEventWatcherMode::Full,
             std::ptr::null_mut(),
             handle,
             handle,
@@ -559,11 +601,50 @@ mod tests {
             ..complete_power
         };
         assert!(!event_sources_ready(
+            WindowsEventWatcherMode::Full,
             handle,
             handle,
             handle,
             &incomplete_power,
             true,
+        ));
+
+        let no_hook = std::ptr::null_mut();
+        assert!(event_sources_ready(
+            WindowsEventWatcherMode::SuspendResumeAndSession,
+            handle,
+            no_hook,
+            no_hook,
+            &incomplete_power,
+            true,
+        ));
+        assert!(!event_sources_ready(
+            WindowsEventWatcherMode::SuspendResumeAndSession,
+            handle,
+            no_hook,
+            no_hook,
+            &incomplete_power,
+            false,
+        ));
+        assert!(event_sources_ready(
+            WindowsEventWatcherMode::SuspendResumeOnly,
+            handle,
+            no_hook,
+            no_hook,
+            &incomplete_power,
+            false,
+        ));
+        let no_suspend_resume = PowerNotifications {
+            suspend_resume: 0,
+            ..incomplete_power
+        };
+        assert!(!event_sources_ready(
+            WindowsEventWatcherMode::SuspendResumeOnly,
+            handle,
+            no_hook,
+            no_hook,
+            &no_suspend_resume,
+            false,
         ));
     }
 

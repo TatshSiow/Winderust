@@ -1,5 +1,5 @@
 use super::*;
-use crate::platform::windows::thread_suspension;
+use crate::platform::windows::{job, process_termination, thread_suspension};
 use std::{
     io::Cursor,
     os::windows::io::AsRawHandle,
@@ -7,7 +7,9 @@ use std::{
 };
 
 use windows_sys::Win32::{
-    Foundation::{LocalFree, ERROR_ACCESS_DENIED, INVALID_HANDLE_VALUE, WAIT_OBJECT_0},
+    Foundation::{
+        LocalFree, ERROR_ACCESS_DENIED, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0,
+    },
     Security::{
         AdjustTokenPrivileges, Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW,
         DuplicateTokenEx, ImpersonateLoggedOnUser, SecurityImpersonation, SetKernelObjectSecurity,
@@ -19,8 +21,9 @@ use windows_sys::Win32::{
             CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
         },
         JobObjects::{
-            AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation,
+            JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
             QueryInformationJobObject, TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
         },
         Threading::{
             CreateEventW, CreateProcessW, GetCurrentProcess, OpenProcessToken, ResumeThread,
@@ -71,7 +74,7 @@ fn recovery_helper_is_rejected_by_every_process_control_acquisition() {
 }
 
 struct FrozenJobCleanup {
-    job: WinHandle,
+    job: job::JobHandle,
 }
 
 impl Drop for FrozenJobCleanup {
@@ -92,11 +95,18 @@ impl Drop for FrozenJobCleanup {
     }
 }
 
-fn resume_disposable_root(process: &WinHandle, thread: &WinHandle) {
-    // SAFETY: both handles belong to the suspended disposable process created by the test.
-    let _ = unsafe { ResumeThread(thread.raw()) };
-    // SAFETY: process is a live disposable handle; this bounded wait retains no pointer.
-    let _ = unsafe { WaitForSingleObject(process.raw(), 5_000) };
+fn dispose_suspended_test_root(process: &WinHandle, setup_error: String) -> String {
+    let termination = process_termination::terminate(process);
+    // SAFETY: CreateProcessW returned this exact process handle with synchronization access.
+    let wait = unsafe { WaitForSingleObject(process.raw(), 5_000) };
+    let wait_failure = match wait {
+        WAIT_OBJECT_0 => return setup_error,
+        WAIT_FAILED => format!("Windows error {}", last_error()),
+        result => format!("wait result {result}"),
+    };
+    format!(
+        "{setup_error} Could not confirm the suspended test root exited ({wait_failure}, termination result {termination:?})."
+    )
 }
 
 struct DisposableChild {
@@ -1628,6 +1638,8 @@ fn io_priority_recovery_restores_a_disposable_process() -> Result<(), String> {
 #[test]
 #[ignore = "modifies and restores the explicit WINDERUST_GPU_TEST_PID target; run in integration QA"]
 fn gpu_priority_recovery_restores_an_explicit_gpu_process() -> Result<(), String> {
+    use crate::control::process::{open_process_for_set_information, ProcessControlTarget};
+
     let process_id = std::env::var("WINDERUST_GPU_TEST_PID")
         .map_err(|_| "Set WINDERUST_GPU_TEST_PID to a disposable GPU-using process.".to_owned())?
         .parse::<u32>()
@@ -1638,24 +1650,12 @@ fn gpu_priority_recovery_restores_an_explicit_gpu_process() -> Result<(), String
     let target = crate::foreground::capture_process_action_target(
         process_id,
         Path::new(&executable_path),
-        true,
+        false,
     )
     .map_err(|error| error.to_string())?;
-    // SAFETY: target is an exact, validated live process instance captured for this test.
-    let handle = unsafe {
-        OpenProcess(
-            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION,
-            0,
-            target.id,
-        )
-    };
-    if handle.is_null() {
-        return Err(format!(
-            "OpenProcess(GPU test target) failed with error {}.",
-            last_error()
-        ));
-    }
-    let process = WinHandle::new(handle);
+    let target = ProcessControlTarget::from_action_target(&target);
+    let (_, process) =
+        open_process_for_set_information(&target, false).map_err(|error| error.to_string())?;
     let probe = ProcessValue::GpuPriority(0);
     let original = query_process_value(process.raw(), &probe)?;
     let ProcessValue::GpuPriority(original_priority) = original else {
@@ -2032,14 +2032,18 @@ fn thread_suspension_recovery_ignores_an_exited_process() -> Result<(), String> 
 fn suspended_job_recovery_thaws_descendants_after_the_recorded_root_exits() -> Result<(), String> {
     let system_root =
         std::env::var_os("SystemRoot").ok_or_else(|| "SystemRoot is unavailable.".to_owned())?;
-    let command = Path::new(&system_root).join("System32").join("cmd.exe");
+    let system32 = Path::new(&system_root).join("System32");
+    let command = system32.join("cmd.exe");
+    let ping = system32.join("ping.exe");
     let wide_command = command
         .as_os_str()
         .encode_wide()
         .chain(std::iter::once(0))
         .collect::<Vec<_>>();
-    let mut command_line = "cmd.exe /D /C start \"\" /B ping.exe 127.0.0.1 -n 15 -w 1000"
+    let mut command_line = "cmd.exe /D /C start \"\" /B \""
         .encode_utf16()
+        .chain(ping.as_os_str().encode_wide())
+        .chain("\" 127.0.0.1 -n 15 -w 1000".encode_utf16())
         .chain(std::iter::once(0))
         .collect::<Vec<_>>();
     let startup = STARTUPINFOW {
@@ -2071,34 +2075,42 @@ fn suspended_job_recovery_thaws_descendants_after_the_recorded_root_exits() -> R
     }
     let process = WinHandle::new(process_information.hProcess);
     let thread = WinHandle::new(process_information.hThread);
-    let identity = match process_identity(process.raw()) {
-        Ok(identity) => identity,
-        Err(error) => {
-            resume_disposable_root(&process, &thread);
-            return Err(error);
-        }
-    };
+    let dispose = |error| dispose_suspended_test_root(&process, error);
+    let identity = process_identity(process.raw()).map_err(dispose)?;
     let name = suspension_job_name(identity.id, identity.creation_time);
-    let wide_name = name
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    // SAFETY: wide_name is terminated UTF-16 and the returned handle is owned by this test.
-    let job = unsafe { CreateJobObjectW(std::ptr::null(), wide_name.as_ptr()) };
-    if job.is_null() {
-        let error = last_error();
-        resume_disposable_root(&process, &thread);
-        return Err(format!("CreateJobObjectW failed with error {error}."));
-    }
-    let job = WinHandle::new(job);
-    // SAFETY: job and process are live handles owned by this test.
-    if unsafe { AssignProcessToJobObject(job.raw(), process.raw()) } == 0 {
-        let error = last_error();
-        resume_disposable_root(&process, &thread);
-        return Err(format!(
-            "AssignProcessToJobObject failed with error {error}."
+    let created = job::create_job(&name).map_err(|error| {
+        dispose(format!(
+            "Creating the disposable Job Object failed ({error:?})."
+        ))
+    })?;
+    if created.already_existed {
+        return Err(dispose(
+            "The disposable Job Object already exists.".to_owned(),
         ));
     }
+    let job = created.handle;
+    let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    // SAFETY: this newly created job is owned by the test and limits uses the documented layout.
+    if unsafe {
+        SetInformationJobObject(
+            job.raw(),
+            JobObjectExtendedLimitInformation,
+            (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+    } == 0
+    {
+        return Err(dispose(format!(
+            "Arming disposable Job Object cleanup failed with error {}.",
+            last_error()
+        )));
+    }
+    job::assign_process(&job, &process, identity.id).map_err(|error| {
+        dispose(format!(
+            "Assigning the disposable Job Object failed ({error:?})."
+        ))
+    })?;
     let cleanup = FrozenJobCleanup { job };
     // SAFETY: thread is the suspended primary thread created above and has not been resumed.
     if unsafe { ResumeThread(thread.raw()) } == u32::MAX {

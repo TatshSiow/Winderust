@@ -16,6 +16,10 @@ pub(super) mod typography {
         weight: iced::font::Weight::Semibold,
         ..iced::Font::with_name("Segoe UI")
     };
+    pub const DEFAULT_FONT: iced::Font = iced::Font {
+        weight: iced::font::Weight::Normal,
+        ..FONT
+    };
     pub const BADGE: u32 = 11;
     pub const CAPTION: u32 = 12;
     pub const SECONDARY: u32 = 13;
@@ -23,7 +27,6 @@ pub(super) mod typography {
     pub const SECTION: u32 = 16;
     pub const SUBTITLE: u32 = 18;
     pub const DIALOG_TITLE: u32 = 24;
-    pub const TITLE: u32 = 28;
 }
 
 pub(super) const CONTROL_PADDING: [u16; 2] = [5, 12];
@@ -37,15 +40,14 @@ pub(super) const SLIDER_HEIGHT: u32 = 16;
 pub(super) const NUMERIC_WIDTH: u32 = 80;
 pub(super) const STANDALONE_NUMERIC_WIDTH: u32 = 96;
 pub(super) const SELECT_WIDTH: u32 = 240;
-pub(super) const STEPPER_BUTTON_WIDTH: u32 = 32;
 pub(super) const CARD_RADIUS: f32 = 10.0;
 pub(super) const CONTROL_RADIUS: f32 = 6.0;
 pub(super) const CONTENT_WIDTH: u32 = 1440;
-pub(super) const NAVIGATION_RAIL_WIDTH: f32 = 88.0;
-pub(super) const NAVIGATION_FLYOUT_WIDTH: f32 = 252.0;
-pub(super) const NAVIGATION_ITEM_HEIGHT: u32 = 64;
+pub(super) const PAGE_NAVIGATION_WIDTH: f32 = 200.0;
+pub(super) const COMPACT_PAGE_NAVIGATION_WIDTH: f32 = 156.0;
 pub(super) const SIDE_PANEL_WIDTH: f32 = 320.0;
-pub(super) const PAGE_BREADCRUMB_HEIGHT: u32 = 48;
+pub(super) const COMPACT_SIDE_PANEL_WIDTH: f32 = 280.0;
+pub(super) const PAGE_TITLE_HEIGHT: u32 = 48;
 pub(super) const NAVIGATION_ROW_HEIGHT: u32 = 44;
 
 pub(super) fn palette(light: bool, accent: Option<iced::Color>) -> iced::theme::Palette {
@@ -68,6 +70,64 @@ pub(super) fn palette(light: bool, accent: Option<iced::Color>) -> iced::theme::
 
 fn tint(gray: u8, accent: iced::Color, amount: f32) -> iced::Color {
     iced::theme::palette::mix(iced::Color::from_rgb8(gray, gray, gray), accent, amount)
+}
+
+const CONTRAST_THEME_NAME: &str = "Winderust Contrast";
+
+pub(super) fn is_contrast(theme: &iced::Theme) -> bool {
+    use iced::theme::Base;
+    theme.name() == CONTRAST_THEME_NAME
+}
+
+pub(super) fn contrast_theme(
+    colors: crate::platform::windows::appearance::ContrastColors,
+) -> iced::Theme {
+    use iced::theme::palette::{Extended, Pair};
+    let rgb =
+        |color: u32| iced::Color::from_rgb8((color >> 16) as u8, (color >> 8) as u8, color as u8);
+    let pair = |color, text| Pair {
+        color,
+        text: readable_on(text, color),
+    };
+    let window = pair(rgb(colors.window), rgb(colors.window_text));
+    let highlight_fill = rgb(colors.highlight);
+    let highlight = pair(highlight_fill, rgb(colors.highlight_text));
+    let foreground = pair(window.text, window.color);
+    // Iced draws selected input text with the same foreground as unselected text.
+    let input_selection = (0..10)
+        .map(|step| iced::theme::palette::mix(highlight_fill, window.color, step as f32 / 10.0))
+        .find(|color| color.relative_contrast(window.text) >= 4.5)
+        .unwrap_or(window.color);
+    let palette = iced::theme::Palette {
+        background: window.color,
+        text: window.text,
+        primary: highlight.color,
+        success: window.text,
+        warning: window.text,
+        danger: window.text,
+    };
+    iced::Theme::custom_with_fn(CONTRAST_THEME_NAME, palette, move |palette| {
+        let mut colors = Extended::generate(palette);
+        let background = &mut colors.background;
+        background.base = window;
+        background.weakest = window;
+        background.weaker = window;
+        background.weak = window;
+        background.neutral = window;
+        background.strong = foreground; // shared control outlines and dividers
+        background.stronger = foreground;
+        background.strongest = foreground;
+        colors.primary.base = highlight;
+        colors.primary.weak = pair(input_selection, window.text);
+        colors.primary.strong = highlight;
+        colors.secondary.base = foreground;
+        colors.secondary.weak = foreground;
+        colors.secondary.strong = foreground;
+        colors.danger.base = foreground;
+        colors.danger.weak = foreground;
+        colors.danger.strong = foreground;
+        colors
+    })
 }
 
 pub(super) fn amoled_theme(accent: Option<iced::Color>) -> iced::Theme {
@@ -105,31 +165,80 @@ pub(super) fn extended_palette(palette: iced::theme::Palette) -> iced::theme::pa
     colors.background.neutral = Pair::new(color(40, 242, 0.026, 0.045), palette.text); // fields / buttons
     colors.background.strong = Pair::new(color(62, 223, 0.04, 0.065), palette.text); // borders
     colors.secondary.base = Pair::new(color(176, 94, 0.06, 0.045), palette.background);
-    let foreground = accent_foreground(palette.primary, colors.is_dark);
     for pair in [
         &mut colors.primary.base,
         &mut colors.primary.weak,
         &mut colors.primary.strong,
     ] {
-        pair.text = foreground;
+        pair.text = contrasting_neutral(pair.color);
     }
     colors
 }
 
-// Matches origin/main's accent_glyph_color and primary_foreground policy.
-fn accent_foreground(accent: iced::Color, dark: bool) -> iced::Color {
-    let brightness = 0.299 * accent.r + 0.587 * accent.g + 0.114 * accent.b;
-    if !dark || brightness < 140.0 / 255.0 {
-        iced::Color::WHITE
+pub(super) fn readable_on(color: iced::Color, background: iced::Color) -> iced::Color {
+    if color.relative_contrast(background) >= 4.5 {
+        return color;
+    }
+    let candidate = iced::theme::palette::readable(background, color);
+    if candidate.relative_contrast(background) >= 4.5 {
+        candidate
     } else {
-        iced::Color::from_rgb8(17, 17, 17)
+        contrasting_neutral(background)
+    }
+}
+
+fn contrasting_neutral(background: iced::Color) -> iced::Color {
+    use iced::Color;
+    if Color::BLACK.relative_contrast(background) > Color::WHITE.relative_contrast(background) {
+        Color::BLACK
+    } else {
+        Color::WHITE
     }
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
-    fn accent_tints_stay_readable_and_preserve_semantic_colors() {
+    fn windows_contrast_preserves_opaque_window_and_highlight_pairs() {
+        use crate::platform::windows::appearance::ContrastColors;
+        use iced::Color;
+        for (window, window_text, highlight, highlight_text) in [
+            (0x000000, 0xffffff, 0xffff00, 0x000000),
+            (0xffffff, 0x000000, 0x0055aa, 0xffffff),
+        ] {
+            let theme = super::contrast_theme(ContrastColors {
+                window,
+                window_text,
+                highlight,
+                highlight_text,
+            });
+            let rgb =
+                |color: u32| Color::from_rgb8((color >> 16) as u8, (color >> 8) as u8, color as u8);
+            let colors = theme.extended_palette();
+            for background in [
+                colors.background.base,
+                colors.background.weaker,
+                colors.background.weak,
+                colors.background.neutral,
+            ] {
+                assert_eq!(background.color, rgb(window));
+                assert_eq!(background.text, rgb(window_text));
+            }
+            assert_eq!(colors.primary.base.color, rgb(highlight));
+            assert_eq!(colors.primary.base.text, rgb(highlight_text));
+            assert!(
+                colors
+                    .primary
+                    .weak
+                    .color
+                    .relative_contrast(rgb(window_text))
+                    >= 4.5
+            );
+        }
+    }
+
+    #[test]
+    fn accent_palette_preserves_fills_and_keeps_text_readable() {
         use crate::config::AppThemeMode;
         use iced::{Color, Theme};
         for mode in [
@@ -143,7 +252,13 @@ mod tests {
                 Color::from_rgb8(40, 130, 225),
                 Color::from_rgb8(45, 165, 90),
                 Color::from_rgb8(145, 75, 200),
+                Color::from_rgb8(36, 107, 254),
+                Color::from_rgb8(120, 166, 255),
                 Color::from_rgb8(255, 235, 20),
+                Color::from_rgb8(117, 117, 117),
+                Color::from_rgb8(118, 118, 118),
+                Color::from_rgb8(139, 139, 139),
+                Color::from_rgb8(141, 141, 141),
                 Color::BLACK,
                 Color::WHITE,
             ];
@@ -163,6 +278,21 @@ mod tests {
                 let colors = theme.extended_palette();
                 assert_eq!(colors.is_dark, !light);
                 assert_eq!(palette.primary, accents[index]);
+                let original = iced::theme::palette::Extended::generate(palette);
+                for (pair, original) in [
+                    colors.primary.base,
+                    colors.primary.weak,
+                    colors.primary.strong,
+                ]
+                .into_iter()
+                .zip([
+                    original.primary.base,
+                    original.primary.weak,
+                    original.primary.strong,
+                ]) {
+                    assert_eq!(pair.color, original.color);
+                    assert!(pair.text.relative_contrast(pair.color) >= 4.5);
+                }
                 if mode == AppThemeMode::Amoled {
                     assert_eq!(palette.background, Color::BLACK);
                     assert_eq!(colors.background.weaker.color, Color::BLACK);
@@ -212,19 +342,25 @@ mod tests {
     }
 
     #[test]
-    fn accent_foreground_matches_original_theme_and_brightness_rules() {
+    fn readable_text_preserves_passing_colors_and_repairs_native_fallbacks() {
         use iced::Color;
-        for (accent, dark_foreground) in [
-            (Color::from_rgb8(76, 194, 255), Color::from_rgb8(17, 17, 17)),
-            (Color::from_rgb8(62, 96, 55), Color::WHITE),
-            (Color::from_rgb8(139, 139, 139), Color::WHITE),
-            (
-                Color::from_rgb8(141, 141, 141),
-                Color::from_rgb8(17, 17, 17),
-            ),
+        for (color, background) in [
+            (Color::BLACK, Color::WHITE),
+            (Color::WHITE, Color::BLACK),
+            (Color::from_rgb8(0, 80, 160), Color::WHITE),
         ] {
-            assert_eq!(super::accent_foreground(accent, false), Color::WHITE);
-            assert_eq!(super::accent_foreground(accent, true), dark_foreground);
+            assert!(color.relative_contrast(background) >= 4.5);
+            assert_eq!(super::readable_on(color, background), color);
+        }
+        for gray in 0..=255 {
+            let background = Color::from_rgb8(gray, gray, gray);
+            for color in [Color::BLACK, Color::WHITE, background] {
+                let readable = super::readable_on(color, background);
+                assert!(
+                    readable.relative_contrast(background) >= 4.5,
+                    "foreground {color:?} on {background:?} became {readable:?}"
+                );
+            }
         }
     }
 }

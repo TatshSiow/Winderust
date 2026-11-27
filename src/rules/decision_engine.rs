@@ -1,15 +1,16 @@
 use crate::{
     activity::ActivityState,
-    config::Settings,
-    features::power_plan_control::{ByCpuLoadDecision, ByTimeDecision},
-    foreground::same_executable_path,
+    config::{ByFocusRule, ByFocusSettings, ExecutableSelector, Settings},
+    features::power_plan_control::{ByCpuLoadDecision, ByCpuLoadMatch, ByTimeDecision},
+    foreground::{process_list::path_has_executable_name, same_executable_path},
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecisionState {
     Disabled,
     PausedWhilePluggedIn,
+    WaitingForObservation,
     ByFocus,
     ByRunningApp,
     ByTime,
@@ -22,7 +23,7 @@ pub enum DecisionState {
 #[derive(Debug, Clone)]
 pub struct DecisionInput {
     pub activity_state: ActivityState,
-    pub foreground_executable_path: Option<String>,
+    pub foreground_executable_path: Option<PathBuf>,
     pub foreground_process_id: Option<u32>,
     pub by_running_app_known: bool,
     pub cpu_load_known: bool,
@@ -51,6 +52,16 @@ pub struct DecisionOutcome {
     pub running_app_known: bool,
     pub cpu_load_known: bool,
     pub activity_known: bool,
+    pub cpu_load_match: Option<ByCpuLoadMatch>,
+    pub competing_modes: Vec<QualifiedPowerPlan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QualifiedPowerPlan {
+    pub state: DecisionState,
+    pub rule_index: Option<usize>,
+    pub target_guid: String,
+    pub cpu_load_match: Option<ByCpuLoadMatch>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -63,21 +74,21 @@ pub struct FocusDecision {
 pub fn decide(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
     let focus = FocusDecision {
         enabled: settings.by_focus.enabled
-            && settings.by_focus.rules.iter().any(|rule| {
-                rule.enabled
-                    && rule.power_plan_guid.is_some()
-                    && !rule.executable_path.trim().is_empty()
-            }),
+            && settings
+                .by_focus
+                .rules
+                .iter()
+                .any(|rule| rule.configured_plan().is_some()),
         known: input.foreground_executable_path.is_some(),
         process_id: input.foreground_process_id,
     };
     let running_app_known = input.by_running_app_known
         || !settings.by_running_app.enabled
-        || !settings.by_running_app.rules.iter().any(|rule| {
-            rule.enabled
-                && rule.power_plan_guid.is_some()
-                && !rule.executable_path.trim().is_empty()
-        });
+        || !settings
+            .by_running_app
+            .rules
+            .iter()
+            .any(|rule| rule.configured_plan().is_some());
     let cpu_load_known = input.cpu_load_known
         || !settings.by_cpu_load.enabled
         || !settings.by_cpu_load.rules.iter().any(|rule| {
@@ -100,76 +111,102 @@ pub fn decide(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
     outcome
 }
 
-fn decide_plan(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
-    if !settings.general.enabled {
-        return DecisionOutcome::without_power_plan(
-            DecisionState::Disabled,
-            "Automation is disabled.",
-        );
-    }
+pub(crate) fn matching_by_focus_rules<'a>(
+    settings: &'a ByFocusSettings,
+    executable_path: &'a Path,
+) -> impl Iterator<Item = (usize, &'a ByFocusRule, &'a str)> + 'a {
+    settings
+        .rules
+        .iter()
+        .enumerate()
+        .filter_map(move |(index, rule)| {
+            let plan = rule.configured_plan()?;
+            let matches = match &rule.selector {
+                ExecutableSelector::ExactPath {
+                    executable_path: target,
+                } => same_executable_path(Path::new(target.trim_start()), executable_path),
+                ExecutableSelector::ExactName { executable_name } => {
+                    path_has_executable_name(executable_path, executable_name)
+                }
+            };
+            matches.then_some((index, rule, plan))
+        })
+}
 
-    if settings.general.pause_power_plan_switching_while_plugged_in
-        && input.plugged_in == Some(true)
+pub(crate) fn ordinary_power_plan_stop(
+    settings: &Settings,
+    plugged_in: Option<bool>,
+) -> Option<(DecisionState, &'static str)> {
+    if !settings.general.enabled {
+        Some((DecisionState::Disabled, "Automation is disabled."))
+    } else if settings.general.pause_power_plan_switching_while_plugged_in
+        && plugged_in == Some(true)
     {
-        return DecisionOutcome::without_power_plan(
+        Some((
             DecisionState::PausedWhilePluggedIn,
             "Power-plan switching is paused while plugged in.",
-        );
+        ))
+    } else {
+        None
+    }
+}
+
+fn decide_plan(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
+    if let Some((state, reason)) = ordinary_power_plan_stop(settings, input.plugged_in) {
+        return DecisionOutcome::without_power_plan(state, reason);
     }
 
-    let foreground_executable_path = input.foreground_executable_path.as_deref();
-
-    if let Some(foreground_executable_path) =
-        foreground_executable_path.filter(|_| settings.by_focus.enabled)
-    {
-        for (rule_index, rule) in settings.by_focus.rules.iter().enumerate() {
-            if rule.enabled
-                && same_executable_path(
-                    Path::new(&rule.executable_path),
-                    Path::new(foreground_executable_path),
-                )
-            {
-                if let Some(power_plan_guid) = rule.power_plan_guid.clone() {
-                    let mut outcome = DecisionOutcome::with_power_plan(
-                        Some(power_plan_guid),
-                        DecisionState::ByFocus,
-                        format!(
-                            "{foreground_executable_path} matched By Focus rule '{}'.",
-                            rule.name
-                        ),
-                    );
-                    outcome.rule_index = Some(rule_index);
-                    return outcome;
-                }
-                break;
-            }
-        }
+    let mut winner = None;
+    let focus_match = input
+        .foreground_executable_path
+        .as_deref()
+        .filter(|_| settings.by_focus.enabled)
+        .and_then(|path| {
+            matching_by_focus_rules(&settings.by_focus, path)
+                .next()
+                .map(|rule| (path, rule))
+        });
+    if let Some((path, (rule_index, rule, power_plan_guid))) = focus_match {
+        consider_plan(
+            &mut winner,
+            DecisionState::ByFocus,
+            Some(rule_index),
+            power_plan_guid.to_owned(),
+            None,
+            || format!("{} matched By Focus rule '{}'.", path.display(), rule.name),
+        );
     }
 
     if let Some(by_running_app) = input.by_running_app {
-        let mut outcome = DecisionOutcome::with_power_plan(
-            Some(by_running_app.power_plan_guid),
+        consider_plan(
+            &mut winner,
             DecisionState::ByRunningApp,
-            format!(
-                "{} is running and matched By Running App rule '{}'.",
-                by_running_app.process_name, by_running_app.rule_name
-            ),
+            Some(by_running_app.rule_index),
+            by_running_app.power_plan_guid,
+            None,
+            || {
+                format!(
+                    "{} is running and matched By Running App rule '{}'.",
+                    by_running_app.process_name, by_running_app.rule_name
+                )
+            },
         );
-        outcome.rule_index = Some(by_running_app.rule_index);
-        return outcome;
     }
 
     if let Some(by_cpu_load_decision) = input.by_cpu_load {
-        let mut outcome = DecisionOutcome::with_power_plan(
-            Some(by_cpu_load_decision.power_plan_guid),
+        consider_plan(
+            &mut winner,
             DecisionState::ByCpuLoad,
-            format!(
-                "CPU load is {:.1}% and selected By CPU Load rule '{}'.",
-                by_cpu_load_decision.usage_percent, by_cpu_load_decision.rule_name
-            ),
+            Some(by_cpu_load_decision.rule_index),
+            by_cpu_load_decision.power_plan_guid,
+            Some(by_cpu_load_decision.selection),
+            || {
+                format!(
+                    "CPU load is {:.1}% and selected By CPU Load rule '{}'.",
+                    by_cpu_load_decision.usage_percent, by_cpu_load_decision.rule_name
+                )
+            },
         );
-        outcome.rule_index = Some(by_cpu_load_decision.rule_index);
-        return outcome;
     }
 
     let deferred_activity_outcome = if settings.by_activity.enabled {
@@ -204,31 +241,58 @@ fn decide_plan(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
                 "Input activity could not be detected.",
             ),
         };
-        if outcome.power_plan_guid.is_some() {
-            return outcome;
+        if let Some(target_guid) = outcome.power_plan_guid {
+            consider_plan(&mut winner, outcome.state, None, target_guid, None, || {
+                outcome.reason
+            });
+            None
+        } else {
+            Some(outcome)
         }
-        Some(outcome)
     } else {
         None
     };
 
     if let Some(by_time_decision) = input.by_time {
-        let mut outcome = DecisionOutcome::with_power_plan(
-            Some(by_time_decision.power_plan_guid),
+        consider_plan(
+            &mut winner,
             DecisionState::ByTime,
-            format!("By Time rule '{}' is active.", by_time_decision.rule_name),
+            Some(by_time_decision.rule_index),
+            by_time_decision.power_plan_guid,
+            None,
+            || format!("By Time rule '{}' is active.", by_time_decision.rule_name),
         );
-        outcome.rule_index = Some(by_time_decision.rule_index);
-        return outcome;
     }
 
-    if let Some(outcome) = deferred_activity_outcome {
-        return outcome;
+    winner.or(deferred_activity_outcome).unwrap_or_else(|| {
+        DecisionOutcome::without_power_plan(
+            DecisionState::NoPowerPlanSelected,
+            "No enabled power-plan rule currently applies.",
+        )
+    })
+}
+
+fn consider_plan(
+    winner: &mut Option<DecisionOutcome>,
+    state: DecisionState,
+    rule_index: Option<usize>,
+    target_guid: String,
+    cpu_load_match: Option<ByCpuLoadMatch>,
+    reason: impl FnOnce() -> String,
+) {
+    if let Some(winner) = winner {
+        winner.competing_modes.push(QualifiedPowerPlan {
+            state,
+            rule_index,
+            target_guid,
+            cpu_load_match,
+        });
+    } else {
+        let mut outcome = DecisionOutcome::with_power_plan(Some(target_guid), state, reason());
+        outcome.rule_index = rule_index;
+        outcome.cpu_load_match = cpu_load_match;
+        *winner = Some(outcome);
     }
-    DecisionOutcome::without_power_plan(
-        DecisionState::NoPowerPlanSelected,
-        "No enabled power-plan rule currently applies.",
-    )
 }
 
 impl DecisionOutcome {
@@ -252,10 +316,12 @@ impl DecisionOutcome {
             running_app_known: true,
             cpu_load_known: true,
             activity_known: true,
+            cpu_load_match: None,
+            competing_modes: Vec::new(),
         }
     }
 
-    fn without_power_plan(state: DecisionState, reason: impl Into<String>) -> Self {
+    pub(crate) fn without_power_plan(state: DecisionState, reason: impl Into<String>) -> Self {
         Self {
             rule_index: None,
             power_plan_guid: None,
@@ -266,6 +332,8 @@ impl DecisionOutcome {
             running_app_known: true,
             cpu_load_known: true,
             activity_known: true,
+            cpu_load_match: None,
+            competing_modes: Vec::new(),
         }
     }
 }
@@ -273,11 +341,7 @@ impl DecisionOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        activity::ActivityState,
-        config::{ByFocusRule, ByFocusSettings, PowerPlanSettings, Settings},
-        features::power_plan_control::{ByCpuLoadDecision, ByTimeDecision},
-    };
+    use crate::config::PowerPlanSettings;
 
     fn test_settings() -> Settings {
         let mut settings = Settings::default();
@@ -310,14 +374,22 @@ mod tests {
     #[test]
     fn global_restoration_policy_applies_to_every_selected_plan() {
         for restore in [false, true] {
-            for (state, is_else, expected_plan) in [
-                (DecisionState::ByFocus, false, "focused-plan"),
-                (DecisionState::ByRunningApp, false, "app-plan"),
-                (DecisionState::ByTime, false, "time-plan"),
-                (DecisionState::ByCpuLoad, false, "cpu-plan"),
-                (DecisionState::ByCpuLoad, true, "else-plan"),
-                (DecisionState::ByActivityIdle, false, "idle-guid"),
-                (DecisionState::ByActivityActive, false, "active-guid"),
+            for (state, cpu_load_match, expected_plan) in [
+                (DecisionState::ByFocus, None, "focused-plan"),
+                (DecisionState::ByRunningApp, None, "app-plan"),
+                (DecisionState::ByTime, None, "time-plan"),
+                (
+                    DecisionState::ByCpuLoad,
+                    Some(ByCpuLoadMatch::MinimumHold),
+                    "cpu-plan",
+                ),
+                (
+                    DecisionState::ByCpuLoad,
+                    Some(ByCpuLoadMatch::Else),
+                    "else-plan",
+                ),
+                (DecisionState::ByActivityIdle, None, "idle-guid"),
+                (DecisionState::ByActivityActive, None, "active-guid"),
             ] {
                 let mut settings = test_settings();
                 settings.general.restore_previous_power_plan = restore;
@@ -327,14 +399,16 @@ mod tests {
                 );
                 settings.by_focus.rules.push(ByFocusRule {
                     enabled: true,
-                    executable_path: "focused.exe".into(),
+                    name: String::new(),
+                    selector: ExecutableSelector::ExactPath {
+                        executable_path: r"C:\Apps\focused.exe".into(),
+                    },
                     power_plan_guid: Some("focused-plan".into()),
-                    ..ByFocusRule::default()
                 });
                 let mut input = inactive_input();
                 match state {
                     DecisionState::ByFocus => {
-                        input.foreground_executable_path = Some("focused.exe".into());
+                        input.foreground_executable_path = Some(r"C:\Apps\focused.exe".into());
                     }
                     DecisionState::ByRunningApp => {
                         input.by_running_app = Some(ByRunningAppDecision {
@@ -357,7 +431,7 @@ mod tests {
                             rule_name: "Load".into(),
                             power_plan_guid: expected_plan.into(),
                             usage_percent: 80.0,
-                            is_else,
+                            selection: cpu_load_match.unwrap(),
                         });
                     }
                     DecisionState::ByActivityIdle => input.activity_state = ActivityState::Idle,
@@ -368,6 +442,7 @@ mod tests {
                 assert_eq!(outcome.state, state);
                 assert_eq!(outcome.power_plan_guid.as_deref(), Some(expected_plan));
                 assert_eq!(outcome.restore_previous_plan, restore);
+                assert_eq!(outcome.cpu_load_match, cpu_load_match);
             }
         }
     }
@@ -427,20 +502,32 @@ mod tests {
         settings.general.restore_previous_power_plan = true;
         settings.by_focus.rules.push(ByFocusRule {
             enabled: true,
-            executable_path: "focused.exe".into(),
+            name: String::new(),
+            selector: ExecutableSelector::ExactName {
+                executable_name: "focused.exe".into(),
+            },
             power_plan_guid: Some("focused-plan".into()),
-            ..ByFocusRule::default()
         });
         for (path, expected_state, known) in [
-            (Some("focused.exe"), DecisionState::ByFocus, true),
-            (Some("other.exe"), DecisionState::NoPowerPlanSelected, true),
+            (Some(r"C:\Apps\Focused.exe"), DecisionState::ByFocus, true),
+            (Some(r"C:\Tools\focused.exe"), DecisionState::ByFocus, true),
+            (
+                Some(r"C:\Apps\focused.exe.old"),
+                DecisionState::NoPowerPlanSelected,
+                true,
+            ),
+            (
+                Some("focused.exe"),
+                DecisionState::NoPowerPlanSelected,
+                true,
+            ),
             (None, DecisionState::NoPowerPlanSelected, false),
         ] {
             let outcome = decide(
                 &settings,
                 DecisionInput {
                     activity_state: ActivityState::Active,
-                    foreground_executable_path: path.map(str::to_owned),
+                    foreground_executable_path: path.map(PathBuf::from),
                     foreground_process_id: Some(10),
                     by_running_app_known: true,
                     cpu_load_known: true,
@@ -475,6 +562,55 @@ mod tests {
     }
 
     #[test]
+    fn overlapping_focus_selectors_use_first_enabled_match_with_a_plan() {
+        let mut settings = test_settings();
+        let path = r"C:\Apps\editor.exe";
+        let rules = &mut settings.by_focus.rules;
+        rules.push(ByFocusRule {
+            enabled: true,
+            name: "Name rule".into(),
+            selector: ExecutableSelector::ExactName {
+                executable_name: "Editor.exe".into(),
+            },
+            power_plan_guid: None,
+        });
+        rules.push(ByFocusRule {
+            enabled: true,
+            name: "Path rule".into(),
+            selector: ExecutableSelector::ExactPath {
+                executable_path: path.into(),
+            },
+            power_plan_guid: Some("path-plan".into()),
+        });
+        let mut input = inactive_input();
+        input.foreground_executable_path = Some(path.into());
+        assert_eq!(decide(&settings, input.clone()).rule_index, Some(1));
+
+        settings.by_focus.rules[0].power_plan_guid = Some("name-plan".into());
+        let decision = decide(&settings, input.clone());
+        assert_eq!(decision.rule_index, Some(0));
+        assert_eq!(decision.power_plan_guid.as_deref(), Some("name-plan"));
+        assert_eq!(
+            matching_by_focus_rules(&settings.by_focus, Path::new(path))
+                .map(|(index, _, plan)| (index, plan))
+                .collect::<Vec<_>>(),
+            [(0, "name-plan"), (1, "path-plan")]
+        );
+
+        settings.by_focus.rules[0].enabled = false;
+        assert_eq!(decide(&settings, input.clone()).rule_index, Some(1));
+
+        settings.by_focus.enabled = false;
+        let (rule_index, rule, plan) = matching_by_focus_rules(&settings.by_focus, Path::new(path))
+            .next()
+            .unwrap();
+        assert_eq!(rule_index, 1);
+        assert_eq!(rule.name, "Path rule");
+        assert_eq!(plan, "path-plan");
+        assert_ne!(decide(&settings, input).state, DecisionState::ByFocus);
+    }
+
+    #[test]
     fn cpu_usage_overrides_activity_and_schedule() {
         let outcome = decide(
             &test_settings(),
@@ -492,7 +628,7 @@ mod tests {
                     power_plan_guid: "schedule-custom".to_owned(),
                 }),
                 by_cpu_load: Some(ByCpuLoadDecision {
-                    is_else: false,
+                    selection: ByCpuLoadMatch::Condition,
                     rule_index: 0,
                     rule_name: "Low CPU".to_owned(),
                     power_plan_guid: "cpu-low-guid".to_owned(),
@@ -627,7 +763,9 @@ mod tests {
         settings.by_focus.rules.push(ByFocusRule {
             enabled: true,
             name: "Backup".to_owned(),
-            executable_path: "backup.exe".to_owned(),
+            selector: ExecutableSelector::ExactPath {
+                executable_path: r"C:\Apps\backup.exe".to_owned(),
+            },
             power_plan_guid: Some("backup-guid".to_owned()),
         });
 
@@ -635,7 +773,7 @@ mod tests {
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_executable_path: Some("backup.exe".to_owned()),
+                foreground_executable_path: Some(r"C:\Apps\backup.exe".into()),
                 foreground_process_id: None,
                 by_running_app_known: true,
                 cpu_load_known: true,
@@ -684,7 +822,9 @@ mod tests {
         settings.by_focus.rules = vec![ByFocusRule {
             enabled: true,
             name: "Game".to_owned(),
-            executable_path: "game.exe".to_owned(),
+            selector: ExecutableSelector::ExactPath {
+                executable_path: r"C:\Apps\game.exe".to_owned(),
+            },
             power_plan_guid: Some("focus-custom".to_owned()),
         }];
 
@@ -692,7 +832,7 @@ mod tests {
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Active,
-                foreground_executable_path: Some("game.exe".to_owned()),
+                foreground_executable_path: Some(r"C:\Apps\game.exe".into()),
                 foreground_process_id: None,
                 by_running_app_known: true,
                 cpu_load_known: true,
@@ -741,7 +881,7 @@ mod tests {
                 by_running_app: None,
                 by_time: None,
                 by_cpu_load: Some(ByCpuLoadDecision {
-                    is_else: false,
+                    selection: ByCpuLoadMatch::Condition,
                     rule_index: 0,
                     rule_name: "High CPU".to_owned(),
                     power_plan_guid: "cpu-custom".to_owned(),
@@ -775,7 +915,9 @@ mod tests {
         settings.by_focus.rules = vec![ByFocusRule {
             enabled: true,
             name: "Editing".to_owned(),
-            executable_path: "editor.exe".to_owned(),
+            selector: ExecutableSelector::ExactPath {
+                executable_path: r"C:\Apps\editor.exe".to_owned(),
+            },
             power_plan_guid: Some("balanced-guid".to_owned()),
         }];
 
@@ -783,7 +925,7 @@ mod tests {
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_executable_path: Some("editor.exe".to_owned()),
+                foreground_executable_path: Some(r"C:\Apps\editor.exe".into()),
                 foreground_process_id: None,
                 by_running_app_known: true,
                 cpu_load_known: true,
@@ -805,7 +947,9 @@ mod tests {
         settings.by_focus.rules = vec![ByFocusRule {
             enabled: true,
             name: "Editing".to_owned(),
-            executable_path: "editor.exe".to_owned(),
+            selector: ExecutableSelector::ExactPath {
+                executable_path: r"C:\Apps\editor.exe".to_owned(),
+            },
             power_plan_guid: None,
         }];
 
@@ -813,7 +957,7 @@ mod tests {
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_executable_path: Some("editor.exe".to_owned()),
+                foreground_executable_path: Some(r"C:\Apps\editor.exe".into()),
                 foreground_process_id: None,
                 by_running_app_known: true,
                 cpu_load_known: true,
@@ -825,7 +969,7 @@ mod tests {
                     power_plan_guid: "schedule-custom".to_owned(),
                 }),
                 by_cpu_load: Some(ByCpuLoadDecision {
-                    is_else: false,
+                    selection: ByCpuLoadMatch::Condition,
                     rule_index: 0,
                     rule_name: "High CPU".to_owned(),
                     power_plan_guid: "cpu-high-guid".to_owned(),
@@ -844,7 +988,9 @@ mod tests {
         settings.by_focus.rules = vec![ByFocusRule {
             enabled: true,
             name: "Rendering".to_owned(),
-            executable_path: "render.exe".to_owned(),
+            selector: ExecutableSelector::ExactPath {
+                executable_path: r"C:\Apps\render.exe".to_owned(),
+            },
             power_plan_guid: None,
         }];
 
@@ -852,7 +998,7 @@ mod tests {
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_executable_path: Some("render.exe".to_owned()),
+                foreground_executable_path: Some(r"C:\Apps\render.exe".into()),
                 foreground_process_id: None,
                 by_running_app_known: true,
                 cpu_load_known: true,
@@ -860,7 +1006,7 @@ mod tests {
                 by_running_app: None,
                 by_time: None,
                 by_cpu_load: Some(ByCpuLoadDecision {
-                    is_else: false,
+                    selection: ByCpuLoadMatch::Condition,
                     rule_index: 0,
                     rule_name: "High CPU".to_owned(),
                     power_plan_guid: "cpu-high-guid".to_owned(),
@@ -896,7 +1042,7 @@ mod tests {
                     power_plan_guid: "schedule-custom".to_owned(),
                 }),
                 by_cpu_load: Some(ByCpuLoadDecision {
-                    is_else: false,
+                    selection: ByCpuLoadMatch::Condition,
                     rule_index: 0,
                     rule_name: "High CPU".to_owned(),
                     power_plan_guid: "cpu-high-guid".to_owned(),
@@ -914,38 +1060,100 @@ mod tests {
     }
 
     #[test]
-    fn focus_rule_overrides_by_running_app_when_both_match() {
+    fn qualified_lower_priority_modes_follow_winner_order() {
         let mut settings = test_settings();
         settings.by_focus.rules = vec![ByFocusRule {
             enabled: true,
             name: "Game focus".to_owned(),
-            executable_path: "game.exe".to_owned(),
+            selector: ExecutableSelector::ExactPath {
+                executable_path: r"C:\Apps\game.exe".to_owned(),
+            },
             power_plan_guid: Some("foreground-guid".to_owned()),
         }];
 
-        let outcome = decide(
-            &settings,
-            DecisionInput {
-                activity_state: ActivityState::Idle,
-                foreground_executable_path: Some("game.exe".to_owned()),
-                foreground_process_id: None,
-                by_running_app_known: true,
-                cpu_load_known: true,
-                plugged_in: None,
-                by_running_app: Some(ByRunningAppDecision {
-                    rule_index: 0,
-                    rule_name: "Game running".to_owned(),
-                    process_name: "game.exe".to_owned(),
-                    power_plan_guid: "by-running-app-guid".to_owned(),
-                }),
-                by_time: None,
-                by_cpu_load: None,
-            },
-        );
+        let input = DecisionInput {
+            activity_state: ActivityState::Idle,
+            foreground_executable_path: Some(r"C:\Apps\game.exe".into()),
+            plugged_in: Some(true),
+            by_running_app: Some(ByRunningAppDecision {
+                rule_index: 3,
+                rule_name: "Game running".into(),
+                process_name: "game.exe".into(),
+                power_plan_guid: "running-guid".into(),
+            }),
+            by_time: Some(ByTimeDecision {
+                rule_index: 1,
+                rule_name: "Work hours".into(),
+                power_plan_guid: "schedule-guid".into(),
+            }),
+            by_cpu_load: Some(ByCpuLoadDecision {
+                selection: ByCpuLoadMatch::Else,
+                rule_index: 2,
+                rule_name: "CPU load".into(),
+                power_plan_guid: "cpu-else-guid".into(),
+                usage_percent: 12.0,
+            }),
+            ..inactive_input()
+        };
+
+        let outcome = decide(&settings, input.clone());
 
         assert_eq!(outcome.state, DecisionState::ByFocus);
         assert_eq!(outcome.rule_index, Some(0));
         assert_eq!(outcome.power_plan_guid.as_deref(), Some("foreground-guid"));
+        assert_eq!(
+            outcome.reason,
+            r"C:\Apps\game.exe matched By Focus rule 'Game focus'."
+        );
+        let competing_modes: Vec<_> = outcome
+            .competing_modes
+            .iter()
+            .map(|plan| {
+                (
+                    plan.state,
+                    plan.rule_index,
+                    plan.target_guid.as_str(),
+                    plan.cpu_load_match,
+                )
+            })
+            .collect();
+        assert_eq!(
+            competing_modes,
+            [
+                (DecisionState::ByRunningApp, Some(3), "running-guid", None),
+                (
+                    DecisionState::ByCpuLoad,
+                    Some(2),
+                    "cpu-else-guid",
+                    Some(ByCpuLoadMatch::Else),
+                ),
+                (DecisionState::ByActivityIdle, None, "idle-guid", None),
+                (DecisionState::ByTime, Some(1), "schedule-guid", None),
+            ]
+        );
+
+        settings.general.pause_power_plan_switching_while_plugged_in = true;
+        let paused = decide(&settings, input.clone());
+        assert_eq!(paused.state, DecisionState::PausedWhilePluggedIn);
+        assert!(paused.competing_modes.is_empty());
+        settings.general.enabled = false;
+        let disabled = decide(&settings, input);
+        assert_eq!(disabled.state, DecisionState::Disabled);
+        assert!(disabled.competing_modes.is_empty());
+
+        settings.general.enabled = true;
+        let unqualified = decide(
+            &settings,
+            DecisionInput {
+                activity_state: ActivityState::Unknown,
+                by_running_app_known: false,
+                cpu_load_known: false,
+                ..inactive_input()
+            },
+        );
+        assert_eq!(unqualified.reason, "Input activity could not be detected.");
+        assert!(unqualified.power_plan_guid.is_none());
+        assert!(unqualified.competing_modes.is_empty());
     }
 
     #[test]
@@ -954,7 +1162,9 @@ mod tests {
         settings.by_focus.rules = vec![ByFocusRule {
             enabled: false,
             name: "Editing".to_owned(),
-            executable_path: "editor.exe".to_owned(),
+            selector: ExecutableSelector::ExactPath {
+                executable_path: r"C:\Apps\editor.exe".to_owned(),
+            },
             power_plan_guid: Some("balanced-guid".to_owned()),
         }];
 
@@ -962,7 +1172,7 @@ mod tests {
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_executable_path: Some("editor.exe".to_owned()),
+                foreground_executable_path: Some(r"C:\Apps\editor.exe".into()),
                 foreground_process_id: None,
                 by_running_app_known: true,
                 cpu_load_known: true,
@@ -984,7 +1194,9 @@ mod tests {
         settings.by_focus.rules.push(ByFocusRule {
             enabled: true,
             name: "Editor".to_owned(),
-            executable_path: "editor.exe".to_owned(),
+            selector: ExecutableSelector::ExactPath {
+                executable_path: r"C:\Apps\editor.exe".to_owned(),
+            },
             power_plan_guid: Some("editor-guid".to_owned()),
         });
 
@@ -997,7 +1209,7 @@ mod tests {
                 &settings,
                 DecisionInput {
                     activity_state,
-                    foreground_executable_path: Some("other.exe".to_owned()),
+                    foreground_executable_path: Some(r"C:\Apps\other.exe".into()),
                     foreground_process_id: None,
                     by_running_app_known: true,
                     cpu_load_known: true,

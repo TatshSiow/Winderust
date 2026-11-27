@@ -1,12 +1,12 @@
-use std::path::Path;
-
+use super::process_rules::{can_add_exact_process_candidate, exact_path_input, picked_path_input};
 use super::{app_picker, design, widgets};
 use crate::{
     config::{KeepRunningRule, KeepRunningSettings},
-    features::advanced_controls::keep_running::{KeepRunningSnapshot, KeepRunningState},
+    features::watchdog::keep_running::{KeepRunningSnapshot, KeepRunningState},
+    foreground::process_list::normalize_path_slashes,
 };
 use iced::{
-    widget::{column, row, text},
+    widget::{column, text},
     Element, Fill,
 };
 use rust_i18n::t;
@@ -26,30 +26,30 @@ pub(super) enum Message {
     Edit(usize),
     Remove(usize),
     RuleEnabled(usize, bool),
+    RuleNotify(usize, bool),
     Arguments(String),
-    WorkingDirectory(String),
     SaveRule,
     CancelRule,
     Resume(String),
 }
 
 impl Editor {
-    fn can_add(settings: &KeepRunningSettings, path: &str) -> bool {
-        super::process_rules::can_add_process_candidate(
+    fn addable_rule(settings: &KeepRunningSettings, path: &str) -> Option<KeepRunningRule> {
+        if !can_add_exact_process_candidate(
             path,
             |path| {
-                let key =
-                    crate::foreground::executable_path_key(Path::new(path)).to_ascii_lowercase();
+                let key = normalize_path_slashes(path);
                 settings.rules.iter().any(|rule| {
-                    crate::foreground::executable_path_key(Path::new(&rule.executable_path))
-                        .to_ascii_lowercase()
-                        == key
+                    normalize_path_slashes(&rule.executable_path).eq_ignore_ascii_case(&key)
                 })
             },
             |name| name.eq_ignore_ascii_case("winderust.exe"),
-        ) && KeepRunningRule::new(path.trim().to_owned())
-            .validate()
-            .is_ok()
+        ) {
+            return None;
+        }
+        let rule = KeepRunningRule::new(normalize_path_slashes(path).into_owned());
+        rule.validate().ok()?;
+        Some(rule)
     }
 
     pub(super) fn has_pending_editor(&self) -> bool {
@@ -60,13 +60,10 @@ impl Editor {
         match message {
             Message::Enabled(value) => settings.enabled = value,
             Message::Path(path) => self.path = path,
-            Message::Add if Self::can_add(settings, &self.path) => {
-                self.draft = Some((
-                    None,
-                    KeepRunningRule::new(crate::foreground::executable_path_key(Path::new(
-                        self.path.trim(),
-                    ))),
-                ));
+            Message::Add => {
+                if let Some(rule) = Self::addable_rule(settings, exact_path_input(&self.path)) {
+                    self.draft = Some((None, rule));
+                }
             }
             Message::Edit(index) => {
                 self.draft = settings
@@ -84,14 +81,14 @@ impl Editor {
                     rule.enabled = enabled;
                 }
             }
+            Message::RuleNotify(index, notify) => {
+                if let Some(rule) = settings.rules.get_mut(index) {
+                    rule.notify = notify;
+                }
+            }
             Message::Arguments(value) => {
                 if let Some((_, rule)) = &mut self.draft {
                     rule.arguments = value;
-                }
-            }
-            Message::WorkingDirectory(value) => {
-                if let Some((_, rule)) = &mut self.draft {
-                    rule.working_directory = value;
                 }
             }
             Message::SaveRule => {
@@ -110,7 +107,7 @@ impl Editor {
                 }
             }
             Message::CancelRule => self.draft = None,
-            Message::Add | Message::Remove(_) | Message::Browse | Message::Resume(_) => {}
+            Message::Remove(_) | Message::Browse | Message::Resume(_) => {}
         }
     }
 
@@ -119,107 +116,13 @@ impl Editor {
         settings: &'a KeepRunningSettings,
         status: &'a KeepRunningSnapshot,
         candidates: &'a [app_picker::Candidate],
+        settings_are_pending: bool,
     ) -> Element<'a, Message> {
-        let rules = settings
-            .rules
-            .iter()
-            .enumerate()
-            .map(|(index, rule)| {
-                let runtime = status.rules.iter().find(|entry| {
-                    entry
-                        .executable_path
-                        .eq_ignore_ascii_case(&rule.executable_path)
-                });
-                let state = if !settings.enabled || !rule.enabled {
-                    KeepRunningState::Disabled
-                } else {
-                    runtime.map_or(KeepRunningState::WaitingForApp, |entry| entry.state)
-                };
-                let header = widgets::process_rule_header(
-                    &rule.executable_path,
-                    candidates,
-                    widgets::checkbox(rule.enabled)
-                        .on_toggle(move |value| Message::RuleEnabled(index, value))
-                        .into(),
-                    Some(
-                        text(t!(state.label_key()).to_string())
-                            .size(design::typography::SECONDARY)
-                            .into(),
-                    ),
-                    Vec::new(),
-                    row![
-                        widgets::tooltip(
-                            widgets::icon_button("icons/pencil.svg").on_press(Message::Edit(index)),
-                            text(t!("common.edit").to_string()),
-                            iced::widget::tooltip::Position::Top
-                        ),
-                        widgets::rule_delete_button(Some(Message::Remove(index)))
-                    ]
-                    .spacing(design::space::SMALL)
-                    .into(),
-                );
-                let mut details = column![].spacing(design::space::SMALL);
-                if let Some(runtime) = runtime {
-                    details = details.push(
-                        text(t!("keep_running.attempts", count = runtime.attempts).to_string())
-                            .size(design::typography::SECONDARY),
-                    );
-                    if let Some(seconds) = runtime.next_retry_seconds {
-                        details = details.push(
-                            text(t!("keep_running.next_retry", seconds = seconds).to_string())
-                                .size(design::typography::SECONDARY),
-                        );
-                    }
-                    if let Some(error) = &runtime.last_error {
-                        details = details.push(text(error).style(text::danger));
-                    }
-                }
-                if matches!(state, KeepRunningState::Paused(_)) {
-                    details = details.push(
-                        widgets::action_button(t!("keep_running.resume").to_string())
-                            .on_press(Message::Resume(rule.executable_path.clone())),
-                    );
-                }
-                (
-                    widgets::stable_key(&rule.executable_path),
-                    column![
-                        header,
-                        iced::widget::container(details).padding(iced::Padding {
-                            top: 0.0,
-                            right: widgets::CARD_PADDING as f32,
-                            bottom: widgets::CARD_PADDING as f32,
-                            left: widgets::CARD_PADDING as f32,
-                        }),
-                        widgets::settings_divider(),
-                    ]
-                    .into(),
-                )
-            })
-            .collect();
-        let mut body = column![
-            widgets::toggle_card(
-                "keep_running.enable",
-                settings.enabled,
-                Some(Message::Enabled)
-            ),
-            widgets::setting_title("common.rules"),
-            app_picker::view(
-                &self.path,
-                candidates,
-                true,
-                Message::Path,
-                Message::Browse,
-                Self::can_add(settings, &self.path).then_some(Message::Add),
-                |path| Self::can_add(settings, path).then_some(true)
-            ),
-            widgets::process_rules_table_with_actions(
-                [],
-                rules,
-                t!("keep_running.empty").to_string(),
-                80,
-                true
-            ),
-        ]
+        let mut body = column![widgets::toggle_card(
+            "keep_running.enable",
+            settings.enabled,
+            Some(Message::Enabled)
+        )]
         .spacing(widgets::CARD_GAP);
         if settings.enabled && !status.observation_known {
             body = body.push(
@@ -229,7 +132,117 @@ impl Editor {
         if let Some(error) = &status.last_error {
             body = body.push(text(error).style(text::danger));
         }
+        let body = body.push(widgets::settings_section(
+            "common.rules",
+            iced::widget::Column::with_children(self.custom_rules(
+                settings,
+                status,
+                candidates,
+                settings_are_pending,
+            ))
+            .spacing(widgets::CARD_GAP),
+        ));
         super::scrolling::scrollable(body).height(Fill).into()
+    }
+
+    fn custom_rules<'a>(
+        &'a self,
+        settings: &'a KeepRunningSettings,
+        status: &'a KeepRunningSnapshot,
+        candidates: &'a [app_picker::Candidate],
+        settings_are_pending: bool,
+    ) -> [Element<'a, Message>; 2] {
+        let rules = settings
+            .rules
+            .iter()
+            .enumerate()
+            .map(|(index, rule)| {
+                let runtime = status.rule_status(rule);
+                let state = if !settings.enabled || !rule.enabled {
+                    Some(KeepRunningState::Disabled)
+                } else {
+                    runtime.map(|entry| entry.state)
+                };
+                let state_label = state.map_or("common.unknown", KeepRunningState::label_key);
+                let header = widgets::process_rule_header_with_notify(
+                    &rule.executable_path,
+                    candidates,
+                    widgets::checkbox(rule.enabled)
+                        .on_toggle(move |value| Message::RuleEnabled(index, value))
+                        .into(),
+                    widgets::rule_notify_checkbox(rule.notify, move |value| {
+                        Message::RuleNotify(index, value)
+                    }),
+                    Some(
+                        text(t!(state_label).to_string())
+                            .size(design::typography::SECONDARY)
+                            .into(),
+                    ),
+                    Vec::new(),
+                    widgets::rule_actions(Some(Message::Edit(index)), Some(Message::Remove(index))),
+                );
+                let mut row = column![header];
+                if let Some(runtime) = runtime {
+                    let mut details = column![text(
+                        t!("keep_running.attempts", count = runtime.attempts).to_string()
+                    )
+                    .size(design::typography::SECONDARY)]
+                    .spacing(design::space::SMALL);
+                    if let Some(seconds) = runtime.next_retry_seconds {
+                        details = details.push(
+                            text(t!("keep_running.next_retry", seconds = seconds).to_string())
+                                .size(design::typography::SECONDARY),
+                        );
+                    }
+                    if let Some(error) = &runtime.last_error {
+                        details = details.push(text(error).style(text::danger));
+                    }
+                    if matches!(state, Some(KeepRunningState::Paused(_))) {
+                        let resume = widgets::action_button(t!("keep_running.resume").to_string())
+                            .on_press_maybe(
+                                (!settings_are_pending)
+                                    .then(|| Message::Resume(rule.executable_path.clone())),
+                            );
+                        details = if settings_are_pending {
+                            details.push(widgets::tooltip(
+                                resume,
+                                text(t!("keep_running.save_before_resume").to_string())
+                                    .width(240)
+                                    .wrapping(text::Wrapping::WordOrGlyph),
+                                iced::widget::tooltip::Position::Top,
+                            ))
+                        } else {
+                            details.push(resume)
+                        };
+                    }
+                    row = row.push(iced::widget::container(details).padding(iced::Padding {
+                        top: 0.0,
+                        right: widgets::CARD_PADDING as f32,
+                        bottom: widgets::CARD_PADDING as f32,
+                        left: widgets::CARD_PADDING as f32,
+                    }));
+                }
+                (
+                    widgets::stable_key(&rule.executable_path),
+                    row.push(widgets::settings_divider()).into(),
+                )
+            })
+            .collect();
+        [
+            widgets::settings_card(app_picker::view_with_path_selection(
+                &self.path,
+                candidates,
+                true,
+                (Message::Path, |path| Message::Path(picked_path_input(path))),
+                Message::Browse,
+                Self::addable_rule(settings, exact_path_input(&self.path))
+                    .is_some()
+                    .then_some(Message::Add),
+                |path| Self::addable_rule(settings, path).is_some().then_some(true),
+            ))
+            .into(),
+            widgets::process_rules_table_with_notify([], rules, true),
+        ]
     }
 
     pub(super) fn modal<'a>(
@@ -238,57 +251,34 @@ impl Editor {
     ) -> Option<Element<'a, Message>> {
         let (index, rule) = self.draft.as_ref()?;
         let valid = rule.validate().is_ok();
-        let mut body = column![
+        let mut fields = column![
+            widgets::setting_title("keep_running.arguments"),
+            widgets::text_input("", &rule.arguments).on_input(Message::Arguments),
+            text(t!("keep_running.launch_help").to_string())
+                .size(design::typography::SECONDARY)
+                .style(text::secondary),
+        ]
+        .spacing(design::space::SMALL);
+        if !valid {
+            fields = fields.push(text(t!("keep_running.invalid").to_string()).style(text::danger));
+        }
+        let body = column![
             app_picker::app_name(&rule.executable_path, candidates),
             text(rule.executable_path.clone()).style(text::secondary),
-            widgets::heading(
-                t!("keep_running.launch_settings").to_string(),
-                design::typography::BODY
-            ),
-            widgets::settings_card(
-                column![
-                    widgets::setting_title("keep_running.arguments"),
-                    widgets::text_input("", &rule.arguments).on_input(Message::Arguments),
-                    widgets::settings_divider(),
-                    widgets::setting_title("keep_running.working_directory"),
-                    widgets::text_input("", &rule.working_directory)
-                        .on_input(Message::WorkingDirectory),
-                ]
-                .spacing(design::space::SMALL)
-            ),
-            text(t!("keep_running.launch_help").to_string()).size(design::typography::SECONDARY),
+            widgets::settings_card(fields),
         ]
         .spacing(widgets::CARD_GAP);
-        if !valid {
-            body = body.push(text(t!("keep_running.invalid").to_string()).style(text::danger));
-        }
-        Some(widgets::modal_frame(
-            row![
-                widgets::heading(
-                    t!(if index.is_some() {
-                        "keep_running.edit_rule"
-                    } else {
-                        "keep_running.add_rule"
-                    })
-                    .to_string(),
-                    design::typography::SECTION
-                )
-                .width(Fill),
-                widgets::icon_button("icons/x.svg").on_press(Message::CancelRule)
-            ]
-            .align_y(iced::Center),
+        Some(widgets::rule_dialog(
+            t!(if index.is_some() {
+                "keep_running.edit_rule"
+            } else {
+                "keep_running.add_rule"
+            })
+            .to_string(),
             super::scrolling::scrollable_pane(body).height(Fill),
-            row![
-                iced::widget::Space::new().width(Fill),
-                widgets::action_button(t!("common.cancel").to_string())
-                    .style(widgets::tertiary_button)
-                    .on_press(Message::CancelRule),
-                widgets::action_button(t!("common.ok").to_string())
-                    .style(widgets::primary_button)
-                    .on_press_maybe(valid.then_some(Message::SaveRule)),
-            ]
-            .spacing(design::space::SMALL),
-            (760, 620),
+            Message::CancelRule,
+            valid.then_some(Message::SaveRule),
+            (760, 340),
         ))
     }
 }
@@ -298,27 +288,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn drafts_prefill_explicit_cwd_preserve_literal_arguments_and_cancel_without_changes() {
+    fn drafts_preserve_literal_arguments_and_cancel_without_changes() {
         let mut editor = Editor::default();
         let mut settings = KeepRunningSettings::default();
-        editor.update(&mut settings, Message::Path(r"C:\Apps\app.exe".into()));
-        editor.update(&mut settings, Message::Add);
-        assert_eq!(
-            editor.draft.as_ref().unwrap().1.working_directory,
-            r"C:\Apps"
+        editor.update(
+            &mut settings,
+            Message::Path(picked_path_input(concat!(r"C:\Apps\app.exe", " ").into())),
         );
+        editor.update(&mut settings, Message::Add);
+        assert!(!editor.has_pending_editor());
+        editor.update(&mut settings, Message::SaveRule);
+        assert!(settings.rules.is_empty());
+        editor.update(&mut settings, Message::Path(" C:\\Apps\\app.exe ".into()));
+        editor.update(&mut settings, Message::Add);
         editor.update(
             &mut settings,
             Message::Arguments(r#"--file "literal value""#.into()),
         );
         editor.update(&mut settings, Message::SaveRule);
         assert_eq!(settings.rules[0].arguments, r#"--file "literal value""#);
-        assert!(!Editor::can_add(&settings, "c:/apps/APP.exe"));
+        assert!(Editor::addable_rule(&settings, "c:/apps/APP.exe").is_none());
         editor.update(&mut settings, Message::Edit(0));
-        editor.update(&mut settings, Message::WorkingDirectory("relative".into()));
+        editor.update(
+            &mut settings,
+            Message::Arguments("invalid\0argument".into()),
+        );
         editor.update(&mut settings, Message::SaveRule);
         assert!(editor.has_pending_editor());
         editor.update(&mut settings, Message::CancelRule);
-        assert_eq!(settings.rules[0].working_directory, r"C:\Apps");
+        assert_eq!(settings.rules[0].arguments, r#"--file "literal value""#);
     }
 }

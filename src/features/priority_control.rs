@@ -1,4 +1,5 @@
 pub(crate) mod dynamic_priority_boost;
+pub(crate) mod efficiency_mode;
 pub(crate) mod gpu_priority;
 pub(crate) mod io_priority;
 pub(crate) mod memory_priority;
@@ -29,25 +30,6 @@ impl PriorityProcessTier {
             Self::VisibleWindow => visible_window,
             Self::Background => background,
         }
-    }
-}
-
-pub(crate) fn foreground_for_owner(
-    owner: crate::control::process::ControlOwner,
-    process: &crate::foreground::ProcessInfo,
-    path: &std::path::Path,
-    foreground_id: Option<u32>,
-    foreground_path: Option<&std::path::Path>,
-    workload: Option<&std::collections::BTreeMap<u32, u64>>,
-) -> bool {
-    if owner == crate::control::process::ControlOwner::AdaptiveEngine {
-        workload
-            .and_then(|group| group.get(&process.id))
-            .copied()
-            .zip(process.creation_time)
-            .is_some_and(|(expected, current)| expected == current)
-    } else {
-        crate::foreground::is_foreground_process(process.id, path, foreground_id, foreground_path)
     }
 }
 

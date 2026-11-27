@@ -19,6 +19,44 @@ pub(super) enum Field {
     Behaviour,
     Boost,
 }
+impl Field {
+    const ALL: [Self; 3] = [Self::Duration, Self::Behaviour, Self::Boost];
+
+    fn descriptor(self) -> (&'static str, u32, &'static [Choice]) {
+        macro_rules! key {
+            ($suffix:literal) => {
+                concat!("settings.win32_priority_separation_", $suffix)
+            };
+        }
+        match self {
+            Self::Duration => (
+                key!("quantum_duration"),
+                0x30,
+                &[
+                    Choice(0x20, key!("quantum_duration_short")),
+                    Choice(0x10, key!("quantum_duration_long")),
+                ],
+            ),
+            Self::Behaviour => (
+                key!("quantum_behaviour"),
+                0x0c,
+                &[
+                    Choice(0x04, key!("quantum_behaviour_variable")),
+                    Choice(0x08, key!("quantum_behaviour_fixed")),
+                ],
+            ),
+            Self::Boost => (
+                key!("foreground_boost"),
+                0x03,
+                &[
+                    Choice(0, key!("foreground_boost_none")),
+                    Choice(1, key!("foreground_boost_medium")),
+                    Choice(2, key!("foreground_boost_high")),
+                ],
+            ),
+        }
+    }
+}
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Refresh,
@@ -65,12 +103,8 @@ impl Editor {
         match m {
             Message::Refresh => self.refresh(),
             Message::Field(field, bits) => {
-                let (mask, allowed) = match field {
-                    Field::Duration => (0x30, &[0x20, 0x10][..]),
-                    Field::Behaviour => (0x0c, &[0x04, 0x08][..]),
-                    Field::Boost => (0x03, &[0, 1, 2][..]),
-                };
-                if allowed.contains(&bits) {
+                let (_, mask, choices) = field.descriptor();
+                if choices.iter().any(|choice| choice.0 == bits) {
                     self.value = (normalize(self.value) & !mask) | bits;
                 }
             }
@@ -172,46 +206,36 @@ impl Editor {
             )
         ]
         .spacing(super::widgets::CARD_GAP);
-        let mut policy = Vec::new();
-        for (field, key, mask, bits) in [
-            (Field::Duration, "quantum_duration", 0x30, vec![0x20, 0x10]),
-            (
-                Field::Behaviour,
-                "quantum_behaviour",
-                0x0c,
-                vec![0x04, 0x08],
-            ),
-            (Field::Boost, "foreground_boost", 0x03, vec![0, 1, 2]),
-        ] {
-            let choices = bits
-                .into_iter()
-                .map(|bits| Choice(bits, field_label(field, bits)))
-                .collect::<Vec<_>>();
-            let selected = normalize(self.value) & mask;
-            policy.push(
-                super::widgets::setting_row(
-                    &format!("settings.win32_priority_separation_{key}"),
-                    pick_list(
-                        choices,
-                        Some(Choice(selected, field_label(field, selected))),
-                        move |v| Message::Field(field, v.0),
-                    )
-                    .width(design::SELECT_WIDTH),
-                )
-                .into(),
-            );
-        }
         let value = normalize(self.value);
-        policy.push(
+        let policy = Field::ALL.into_iter().map(|field| {
+            let (key, mask, choices) = field.descriptor();
+            let selected = choices
+                .iter()
+                .find(|choice| choice.0 == value & mask)
+                .copied();
             super::widgets::setting_row(
-                "settings.win32_priority_separation_resulting_value",
-                display(format!("0x{value:02X} ({value})")),
+                key,
+                pick_list(choices, selected, move |choice| {
+                    Message::Field(field, choice.0)
+                })
+                .width(design::SELECT_WIDTH),
             )
-            .into(),
-        );
+            .into()
+        });
+        let policy = policy.chain([super::widgets::setting_row(
+            "settings.win32_priority_separation_resulting_value",
+            display(format!("0x{value:02X} ({value})")),
+        )
+        .into()]);
         body = body
             .push(super::widgets::settings_card(
-                super::widgets::settings_rows(policy),
+                column![
+                    text(t!("settings.win32_priority_separation_warning").to_string())
+                        .size(design::typography::SECONDARY)
+                        .style(text::secondary),
+                    super::widgets::settings_rows(policy),
+                ]
+                .spacing(design::space::MEDIUM),
             ))
             .push(
                 row![
@@ -231,11 +255,11 @@ impl Editor {
         scrollable(body).height(Fill).into()
     }
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Choice(u32, String);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Choice(u32, &'static str);
 impl std::fmt::Display for Choice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.1)
+        f.write_str(&t!(self.1))
     }
 }
 fn normalize(v: u32) -> u32 {
@@ -249,22 +273,6 @@ fn normalize(v: u32) -> u32 {
         0..=2 => v & 3,
         _ => 2,
     })
-}
-fn field_label(field: Field, bits: u32) -> String {
-    let key = match (field, bits) {
-        (Field::Duration, 0x10) => "quantum_duration_long",
-        (Field::Duration, _) => "quantum_duration_short",
-        (Field::Behaviour, 0x08) => "quantum_behaviour_fixed",
-        (Field::Behaviour, _) => "quantum_behaviour_variable",
-        (Field::Boost, 0) => "foreground_boost_none",
-        (Field::Boost, 1) => "foreground_boost_medium",
-        (Field::Boost, _) => "foreground_boost_high",
-    };
-    {
-        let locale_key = format!("settings.win32_priority_separation_{key}");
-        t!(&locale_key).to_string()
-    }
-    .to_string()
 }
 fn format_value(v: u32) -> String {
     let key = match v {

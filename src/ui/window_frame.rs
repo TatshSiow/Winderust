@@ -8,6 +8,7 @@ const HEIGHT: u32 = 36;
 const BUTTON_WIDTH: u32 = 46;
 const EDGE: u32 = 5;
 const CORNER: u32 = 10;
+pub(super) const SEARCH_WIDTH: u32 = 420;
 
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Event {
@@ -20,10 +21,17 @@ pub(super) enum Event {
 
 pub(super) fn view<'a, M: Clone + 'a>(
     content: Element<'a, M>,
+    search: Element<'a, M>,
     maximized: bool,
+    caption_focusable: bool,
     message: impl Fn(Event) -> M + Copy + 'a,
 ) -> Element<'a, M> {
-    let caption = mouse_area(
+    let drag = |content: Element<'a, M>| {
+        mouse_area(content)
+            .on_press(message(Event::Drag))
+            .on_double_click(message(Event::ToggleMaximize))
+    };
+    let caption = drag(
         container(
             row![
                 iced::widget::image(assets::logo()).width(18).height(18),
@@ -39,14 +47,15 @@ pub(super) fn view<'a, M: Clone + 'a>(
         .padding([0, design::space::LARGE as u16])
         .width(Fill)
         .height(HEIGHT)
-        .align_y(iced::Center),
-    )
-    .on_press(message(Event::Drag))
-    .on_double_click(message(Event::ToggleMaximize));
-    let title = container(row![
-        caption,
-        control("icons/minus.svg", "window.minimize", Event::Minimize).map(message),
-        control(
+        .align_y(iced::Center)
+        .into(),
+    );
+    let caption_button =
+        |icon, label, event| control(icon, label, event, caption_focusable).map(message);
+    let controls = row![
+        drag(Space::new().width(Fill).height(HEIGHT).into()),
+        caption_button("icons/minus.svg", "window.minimize", Event::Minimize),
+        caption_button(
             if maximized {
                 "icons/copy.svg"
             } else {
@@ -58,12 +67,20 @@ pub(super) fn view<'a, M: Clone + 'a>(
                 "window.maximize"
             },
             Event::ToggleMaximize,
-        )
-        .map(message),
-        control("icons/x.svg", "common.close", Event::Close).map(message),
-    ])
-    .width(Fill)
-    .style(widgets::navigation_surface);
+        ),
+        caption_button("icons/x.svg", "common.close", Event::Close),
+    ]
+    .width(Fill);
+    let search = drag(
+        container(search)
+            .width(SEARCH_WIDTH)
+            .height(HEIGHT)
+            .align_y(iced::Center)
+            .into(),
+    );
+    let title = container(row![caption, search, controls])
+        .width(Fill)
+        .style(widgets::navigation_surface);
     let frame = column![title, widgets::settings_divider(), content]
         .width(Fill)
         .height(Fill);
@@ -106,18 +123,25 @@ pub(super) fn view<'a, M: Clone + 'a>(
     layers.into()
 }
 
-fn control(icon: &'static str, label: &str, event: Event) -> Element<'static, Event> {
-    widgets::tooltip(
-        widgets::button(
-            container(navigation::glyph(icon))
-                .center_x(Fill)
-                .center_y(Fill),
-        )
+fn control(
+    icon: &'static str,
+    label: &str,
+    event: Event,
+    focusable: bool,
+) -> Element<'static, Event> {
+    let icon = navigation::glyph(icon);
+    let button = widgets::button(container(icon).center_x(Fill).center_y(Fill))
         .width(BUTTON_WIDTH)
         .height(HEIGHT)
         .padding(0)
         .style(move |theme, status| control_style(theme, status, matches!(event, Event::Close)))
-        .on_press(event),
+        .on_press(event);
+    widgets::tooltip(
+        if focusable {
+            button
+        } else {
+            button.pointer_only()
+        },
         text(t!(label).to_string()),
         tooltip::Position::Bottom,
     )
@@ -131,7 +155,7 @@ fn control_style(
 ) -> iced::widget::button::Style {
     let mut style = widgets::quiet(theme, status);
     style.border.radius = 0.0.into();
-    if close {
+    if close && !design::is_contrast(theme) {
         style.background = match status {
             iced::widget::button::Status::Hovered => {
                 Some(theme.palette().danger.scale_alpha(0.25).into())
@@ -154,6 +178,7 @@ mod tests {
     #[derive(Debug, Clone)]
     enum Message {
         Chrome(Event),
+        Search,
         Body,
     }
 
@@ -165,7 +190,13 @@ mod tests {
                 .height(Fill)
                 .on_press(Message::Body)
                 .into(),
+            widgets::button(Space::new())
+                .width(Fill)
+                .height(26)
+                .on_press(Message::Search)
+                .into(),
             maximized,
+            true,
             Message::Chrome,
         );
         let mut tree = Tree::new(&view);
@@ -205,6 +236,7 @@ mod tests {
                 .into_iter()
                 .map(|message| match message {
                     Message::Chrome(event) => format!("{event:?}"),
+                    Message::Search => "Search".into(),
                     Message::Body => "Body".into(),
                 })
                 .collect(),
@@ -217,6 +249,13 @@ mod tests {
         for maximized in [false, true] {
             for (x, y, action) in [
                 (100.0, 18.0, "Drag"),
+                (239.0, 18.0, "Drag"),
+                (241.0, 18.0, "Search"),
+                (450.0, 18.0, "Search"),
+                (450.0, 34.0, "Drag"),
+                (659.0, 18.0, "Search"),
+                (661.0, 18.0, "Drag"),
+                (739.0, 18.0, "Drag"),
                 (785.0, 18.0, "Minimize"),
                 (831.0, 18.0, "ToggleMaximize"),
                 (877.0, 18.0, "Close"),
@@ -227,6 +266,10 @@ mod tests {
             assert_eq!(
                 click(maximized, Point::new(100.0, 18.0), 2).0,
                 ["Drag", "Drag", "ToggleMaximize"]
+            );
+            assert_eq!(
+                click(maximized, Point::new(450.0, 18.0), 2).0,
+                ["Search", "Search"]
             );
         }
     }
@@ -311,7 +354,9 @@ mod tests {
             let mut renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
             let mut view = view(
                 Space::new().width(Fill).height(Fill).into(),
+                Space::new().into(),
                 false,
+                true,
                 std::convert::identity,
             );
             let mut tree = Tree::new(&view);

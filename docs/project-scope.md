@@ -10,25 +10,37 @@ Process Lasso is a useful comparison point, not the target to clone. Prefer smal
 
 ## Current Scope
 
-- Power Plan Control through By Focus, By Running App, By CPU Load, By
-  Activity, and By Time.
-- Advanced Power Plan Tuning for core parking and processor performance values.
+- Power Plan Control with manual switching and By Focus, By Running App, By
+  CPU Load, By Activity, and By Time rules.
+- Adaptive Processor Power with demand profiles and processor tuning presets.
+- Advanced Power Plan Tuning for core parking, processor performance and boost,
+  energy performance preference, and thread scheduling policies.
 - Adaptive Engine CPU scheduling for foreground responsiveness and background restraint.
-- Background Efficiency, implemented with Windows EcoQoS at the operating-system
-  boundary.
-- CPU Control through CPU Limiter, CPU Sets (Soft), and Processor Affinity (Hard).
+- CPU Control through CPU Limiter with CPU time and load-triggered affinity,
+  CPU Sets (Soft) with processor-group presets, Processor Affinity (Hard),
+  and Cache Domain presets.
 - App Suspension for explicit opt-in apps.
 - Priority Control through Process Priority, Thread Priority, Dynamic Priority
-  Boost, I/O Priority, GPU Priority, and Memory Priority.
+  Boost, I/O Priority, GPU Priority, and Memory Priority. Efficiency Mode
+  applies Windows EcoQoS and Idle process priority by app and window state.
 - Memory Trim.
-- Watchdog with per-app sustained CPU/memory warning and critical thresholds, Windows notifications, and explicit opt-in termination or restart.
+- Resource Thresholds with sustained CPU and working-set memory thresholds and
+  optional Windows notifications. Measurements combine eligible instances by
+  executable path. Trim Memory, Terminate, and Restart require an exact path rule.
 - Timer Resolution rules tied to foreground apps.
 - Sleep Prevention rules for running apps, with separate display requests.
-- Keep Running rules for opt-in automatic relaunch after a manually started app exits.
+- Keep Running rules for opt-in relaunch after the last eligible instance of a
+  manually started app exits.
 - Instance Limits for sampled per-path process counts and excess notifications in
   the current user's Windows session; it does not prevent or stop app instances.
+- Instance Balancing for separate whole-core CPU Sets (Soft) preferences across
+  eligible instances of the same executable in the current Windows user session.
 - Action Log and CSV export.
-- Process List as the main per-process policy surface.
+- Win32 Priority Separation for Windows scheduler time slices and foreground
+  boost, with backup and restore.
+- Interrupt Timing for read-only DPC and ISR capture with JSON report export.
+- Dashboard with system telemetry and Process List as the main per-process
+  policy surface.
 
 ## Process Lasso Parity
 
@@ -52,6 +64,11 @@ Not a goal by default:
 - Broad "suspend all background apps" behavior.
 
 ## Future Goals
+
+Start with a named user workflow and the smallest change that fits an existing
+page or controller. Define who owns the effect, how the UI reports unavailable
+evidence, and how to verify the result and restoration. Verify read-only
+diagnostics before considering persistent machine-wide controls.
 
 Add only when a real workflow needs them:
 

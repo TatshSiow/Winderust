@@ -1,31 +1,49 @@
 use super::design;
 use super::widgets::{self, Choice};
 use super::widgets::{action_button, button, pick_list, text_input};
+use crate::rules::execution_failure::{
+    MAX_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD, MIN_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
+};
 use crate::ui::scrolling::scrollable;
 use crate::{config::*, ui::Page};
 use iced::widget::{column, row, text};
 use iced::{Color, Element, Fill, Theme};
 use rust_i18n::t;
+use std::sync::Arc;
 
 #[derive(Default)]
 pub(super) struct Editor {
-    pub(super) hotkey_capture: Option<SearchHotkeySlot>,
+    pub(super) hotkey_capture: Option<ShortcutSlot>,
+    pub(super) show_shortcut_capture_error: Option<&'static str>,
     color: Option<String>,
     failure_threshold: Option<String>,
     accent_expanded: bool,
     picker: Option<super::pickers::ColorDraft>,
     editing_color: Option<u32>,
-    pub(super) checking: bool,
-    notify_on_update: bool,
+    active_check: Option<Arc<UpdateCheck>>,
     pub(super) latest: Option<String>,
     pub(super) download: Option<String>,
-    pub(super) update_error: Option<String>,
+    update_failed: bool,
     pub(super) show_update: bool,
+    pub(super) replace_settings_open: bool,
 }
+
+#[derive(Debug)]
+pub(super) struct UpdateCheck {
+    channel: UpdateChannel,
+    notify: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SearchHotkeySlot {
     Primary,
     Secondary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ShortcutSlot {
+    Search(SearchHotkeySlot),
+    ShowWinderust,
 }
 impl SearchHotkeySlot {
     fn binding(self, settings: &SearchHotkeys) -> &KeyboardShortcut {
@@ -57,10 +75,11 @@ pub(super) enum Flag {
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Flag(Flag, bool),
-    RecordSearchHotkey(SearchHotkeySlot),
-    CancelSearchHotkey,
+    RecordShortcut(ShortcutSlot),
+    CancelShortcut,
     SetSearchHotkey(SearchHotkeySlot, Option<KeyboardShortcut>),
     ResetSearchHotkeys,
+    SetShowWinderustShortcut(Option<ShowWinderustShortcut>),
     Language(AppLanguage),
     Animation(AnimationMode),
     Theme(AppThemeMode),
@@ -70,63 +89,92 @@ pub(super) enum Message {
     OpenColorPicker(u32),
     PickerHue(u16),
     PickerSv(f32, f32),
+    PickerPercent(super::pickers::ColorPercent, String),
     PickerHex(String),
     CancelColorPicker,
     ColorPicked(Color),
     EditColor(u32),
     ReplaceColor(u32, u32),
     Accent(u32),
-    SaveColor,
+    AddColor,
     RemoveColor(usize),
     FailureThreshold(String),
     Channel(UpdateChannel),
     Check,
     CheckStartup,
-    Checked(UpdateChannel, Result<(String, Option<String>), String>),
+    Checked(Arc<UpdateCheck>, Result<(String, Option<String>), ()>),
     Open(String),
+    OpenUpdate(String),
     Export,
     Import,
+    ReplaceSettingsPrompt(bool),
+    ConfirmReplaceSettings,
     DismissUpdate,
 }
+
+fn parse_failure_threshold(value: &str) -> Option<u8> {
+    let threshold = value.parse().ok()?;
+    (crate::rules::normalize_execution_failure_suppression_threshold(threshold) == threshold)
+        .then_some(threshold)
+}
+
 impl Editor {
+    pub(super) fn has_invalid_failure_threshold(&self) -> bool {
+        self.failure_threshold
+            .as_deref()
+            .is_some_and(|value| parse_failure_threshold(value).is_none())
+    }
+
     pub(super) fn has_invalid_inputs(&self) -> bool {
-        self.failure_threshold.as_ref().is_some_and(|value| {
-            value
-                .parse::<u8>()
-                .ok()
-                .is_none_or(|value| !(1..=100).contains(&value))
-        }) || self
-            .color
-            .as_ref()
+        self.has_invalid_failure_threshold() || self.has_invalid_accent()
+    }
+
+    pub(super) fn has_invalid_accent(&self) -> bool {
+        self.color
+            .as_deref()
             .is_some_and(|value| parse_color(value).is_none())
     }
 
     pub(super) fn reset_drafts(&mut self) {
         self.dismiss_picker();
-        self.hotkey_capture = None;
+        self.cancel_shortcut_capture();
         self.color = None;
         self.failure_threshold = None;
+        self.replace_settings_open = false;
+    }
+
+    pub(super) fn cancel_shortcut_capture(&mut self) {
+        self.hotkey_capture = None;
+        self.show_shortcut_capture_error = None;
+    }
+
+    pub(super) fn reset_update_check(&mut self) {
+        self.active_check = None;
         self.latest = None;
         self.download = None;
-        self.update_error = None;
+        self.update_failed = false;
         self.show_update = false;
     }
 
-    pub(super) fn begin_check(&mut self, automatic: bool) -> bool {
-        if self.checking {
-            return false;
+    pub(super) fn begin_check(
+        &mut self,
+        channel: UpdateChannel,
+        notify: bool,
+    ) -> Option<Arc<UpdateCheck>> {
+        if self.active_check.is_some() {
+            return None;
         }
-        self.checking = true;
-        self.notify_on_update = automatic;
-        self.update_error = None;
-        true
+        let check = Arc::new(UpdateCheck { channel, notify });
+        self.active_check = Some(Arc::clone(&check));
+        self.update_failed = false;
+        Some(check)
     }
 
     fn update_status(&self) -> std::borrow::Cow<'_, str> {
-        if self.checking {
+        if self.active_check.is_some() {
             t!("about.checking")
-        } else if let Some(error) = &self.update_error {
-            error.as_str().into()
+        } else if self.update_failed {
+            t!("about.update_check_failed")
         } else if self.download.is_some() {
             t!("about.update_available")
         } else if self.latest.is_some() {
@@ -156,30 +204,42 @@ impl Editor {
                     picker.set_sv(s, v);
                 }
             }
+            Message::PickerPercent(field, input) => {
+                if let Some(picker) = &mut self.picker {
+                    picker.set_percent(field, input);
+                }
+            }
             Message::PickerHex(hex) => {
                 if let Some(picker) = &mut self.picker {
                     picker.set_hex(hex);
                 }
             }
             Message::CancelColorPicker => self.dismiss_picker(),
-            Message::RecordSearchHotkey(slot) => self.hotkey_capture = Some(slot),
-            Message::CancelSearchHotkey => self.hotkey_capture = None,
+            Message::RecordShortcut(slot) => {
+                self.hotkey_capture = Some(slot);
+                self.show_shortcut_capture_error = None;
+            }
+            Message::CancelShortcut => self.cancel_shortcut_capture(),
             Message::ToggleAccent => self.accent_expanded = !self.accent_expanded,
             Message::DismissUpdate => self.show_update = false,
-            Message::Checked(channel, result) => {
-                if channel != current_channel {
-                    self.checking = false;
+            Message::Checked(check, result) => {
+                let Some(check) = self
+                    .active_check
+                    .take_if(|active| Arc::ptr_eq(active, &check))
+                else {
+                    return;
+                };
+                if check.channel != current_channel {
                     return;
                 }
-                self.checking = false;
                 match result {
                     Ok((version, url)) => {
                         self.latest = Some(version);
-                        self.show_update = self.notify_on_update && url.is_some();
+                        self.show_update = check.notify && url.is_some();
                         self.download = url;
-                        self.update_error = None;
+                        self.update_failed = false;
                     }
-                    Err(error) => self.update_error = Some(error),
+                    Err(()) => self.update_failed = true,
                 }
             }
             _ => unreachable!("Only UI preference messages belong in update_ui"),
@@ -209,17 +269,22 @@ impl Editor {
                 } else {
                     binding.enabled = false;
                 }
-                self.hotkey_capture = None;
+                self.cancel_shortcut_capture();
             }
             Message::ResetSearchHotkeys => {
                 s.general.search_hotkeys = SearchHotkeys::default();
-                self.hotkey_capture = None;
+                self.cancel_shortcut_capture();
             }
-            Message::RecordSearchHotkey(_)
-            | Message::CancelSearchHotkey
+            Message::SetShowWinderustShortcut(shortcut) => {
+                s.general.show_winderust_shortcut = shortcut;
+                self.cancel_shortcut_capture();
+            }
+            Message::RecordShortcut(_)
+            | Message::CancelShortcut
             | Message::OpenColorPicker(_)
             | Message::PickerHue(_)
             | Message::PickerSv(..)
+            | Message::PickerPercent(..)
             | Message::PickerHex(_)
             | Message::EditColor(_)
             | Message::CancelColorPicker => self.update_ui(s.general.update_channel, m),
@@ -229,7 +294,7 @@ impl Editor {
                 Flag::Minimized => s.general.start_minimized = value,
                 Flag::Tray => s.general.hide_to_tray = value,
                 Flag::CrossSession => s.general.allow_cross_session_process_control = value,
-                Flag::FeatureCounts => s.general.show_enabled_feature_counts_in_sidebar = value,
+                Flag::FeatureCounts => s.general.show_enabled_feature_counts = value,
                 Flag::CardStatus => s.general.show_feature_status_on_cards = value,
                 Flag::AdvancedControls => s.advanced.show_advanced_controls = value,
                 Flag::AdvancedValues => {
@@ -249,6 +314,9 @@ impl Editor {
             Message::AccentSource(value) => {
                 s.general.accent.source = value;
                 self.accent_expanded = value != AccentColorSource::Windows;
+                if !self.accent_expanded {
+                    self.color = None;
+                }
             }
             Message::AccentHex(value) => {
                 if let Some(color) = parse_color(&value) {
@@ -262,13 +330,9 @@ impl Editor {
                 s.general.accent.source = AccentColorSource::Custom;
                 self.color = None;
             }
-            Message::SaveColor => {
+            Message::AddColor => {
                 let color = s.general.accent.custom_color;
-                if self
-                    .color
-                    .as_deref()
-                    .is_none_or(|v| parse_color(v).is_some())
-                {
+                if !self.has_invalid_accent() {
                     s.general
                         .accent
                         .custom_colors
@@ -303,25 +367,27 @@ impl Editor {
                 }
             }
             Message::FailureThreshold(value) => {
-                self.failure_threshold = Some(value.clone());
-                if let Ok(value) = value.parse::<u8>() {
-                    if (1..=100).contains(&value) {
-                        s.advanced.execution_failure_suppression_threshold = value;
-                    }
+                if let Some(threshold) = parse_failure_threshold(&value) {
+                    s.advanced.execution_failure_suppression_threshold = threshold;
                 }
+                self.failure_threshold = Some(value);
             }
             Message::Channel(value) => {
-                s.general.update_channel = value;
-                self.latest = None;
-                self.download = None;
-                self.update_error = None;
-                self.show_update = false;
+                if s.general.update_channel != value {
+                    s.general.update_channel = value;
+                    self.reset_update_check();
+                }
             }
             Message::Check | Message::CheckStartup => {}
             Message::Checked(..) | Message::DismissUpdate | Message::ToggleAccent => {
                 self.update_ui(s.general.update_channel, m);
             }
-            Message::Open(_) | Message::Export | Message::Import => {}
+            Message::Open(_)
+            | Message::OpenUpdate(_)
+            | Message::Export
+            | Message::Import
+            | Message::ReplaceSettingsPrompt(_)
+            | Message::ConfirmReplaceSettings => {}
         }
     }
     fn search_hotkey_row<'a>(
@@ -331,21 +397,33 @@ impl Editor {
         label: &str,
     ) -> Element<'a, Message> {
         let binding = slot.binding(&s.general.search_hotkeys);
-        let recording = self.hotkey_capture == Some(slot);
-        let value = if recording {
+        self.shortcut_row(
+            label,
+            ShortcutSlot::Search(slot),
+            binding.enabled.then(|| binding.to_string()),
+            Message::SetSearchHotkey(slot, None),
+        )
+    }
+
+    fn shortcut_row<'a>(
+        &self,
+        label: &str,
+        slot: ShortcutSlot,
+        binding: Option<String>,
+        clear: Message,
+    ) -> Element<'a, Message> {
+        let value = if self.hotkey_capture == Some(slot) {
             t!("settings.shortcut_record_prompt").to_string()
-        } else if binding.enabled {
-            binding.to_string()
         } else {
-            t!("common.disabled").to_string()
+            binding.unwrap_or_else(|| t!("common.disabled").into_owned())
         };
         widgets::setting_row(
             label,
             row![
-                action_button(value).on_press(Message::RecordSearchHotkey(slot)),
+                action_button(value).on_press(Message::RecordShortcut(slot)),
                 action_button(t!("settings.clear_shortcut").to_string())
                     .style(widgets::tertiary_button)
-                    .on_press(Message::SetSearchHotkey(slot, None)),
+                    .on_press(clear),
             ]
             .spacing(design::space::SMALL)
             .align_y(iced::Center),
@@ -353,7 +431,42 @@ impl Editor {
         .into()
     }
 
-    pub(super) fn view<'a>(&'a self, page: Page, s: &'a Settings) -> Element<'a, Message> {
+    pub(super) fn replace_settings_modal(&self) -> Element<'_, Message> {
+        iced::widget::container(
+            column![
+                widgets::heading(
+                    t!("settings.replace_settings_title").to_string(),
+                    design::typography::DIALOG_TITLE,
+                ),
+                text(t!("settings.replace_settings_message").to_string())
+                    .wrapping(text::Wrapping::WordOrGlyph),
+                row![
+                    iced::widget::Space::new().width(Fill),
+                    action_button(t!("common.cancel").to_string())
+                        .style(widgets::tertiary_button)
+                        .on_press(Message::ReplaceSettingsPrompt(false)),
+                    action_button(t!("settings.replace_settings_confirm").to_string())
+                        .style(widgets::danger_button)
+                        .on_press(Message::ConfirmReplaceSettings),
+                ]
+                .spacing(design::space::SMALL),
+            ]
+            .spacing(design::space::LARGE),
+        )
+        .padding(design::space::LARGE as u16)
+        .width(Fill)
+        .max_width(460)
+        .style(widgets::surface)
+        .into()
+    }
+
+    pub(super) fn view<'a>(
+        &'a self,
+        page: Page,
+        s: &'a Settings,
+        can_replace_settings: bool,
+        show_shortcut_error: Option<crate::backend::tray::ShortcutError>,
+    ) -> Element<'a, Message> {
         let flag_row = |key: &str, value, flag| {
             widgets::setting_row(
                 key,
@@ -362,6 +475,30 @@ impl Editor {
         };
         let flag = |key: &str, value, flag| {
             widgets::toggle_card(key, value, Some(move |value| Message::Flag(flag, value)))
+        };
+        let file_actions = || {
+            let mut actions = vec![
+                widgets::setting_row(
+                    "settings.export_settings",
+                    action_button(t!("settings.export_settings_open").to_string())
+                        .on_press(Message::Export),
+                )
+                .into(),
+                widgets::setting_row(
+                    "settings.import_settings",
+                    action_button(t!("settings.import_settings_open").to_string())
+                        .on_press(Message::Import),
+                )
+                .into(),
+            ];
+            if can_replace_settings {
+                actions.push(
+                    action_button(t!("settings.replace_settings_open").to_string())
+                        .on_press(Message::ReplaceSettingsPrompt(true))
+                        .into(),
+                );
+            }
+            widgets::settings_rows(actions)
         };
         let body = match page {
             Page::WinderustBehaviour => column![
@@ -400,58 +537,75 @@ impl Editor {
                         Flag::CrossSession
                     )
                     .into(),
-                    widgets::setting_row(
+                    widgets::numeric_setting(
                         "settings.failure_suppression_threshold",
-                        text_input(
-                            "",
-                            self.failure_threshold.as_deref().unwrap_or(
-                                &s.advanced
-                                    .execution_failure_suppression_threshold
-                                    .to_string()
+                        "",
+                        move || {
+                            widgets::stepper(
+                                self.failure_threshold.as_deref().unwrap_or(
+                                    &s.advanced
+                                        .execution_failure_suppression_threshold
+                                        .to_string(),
+                                ),
+                                u64::from(MIN_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD)
+                                    ..=u64::from(MAX_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD),
+                                1,
+                                Some(Message::FailureThreshold),
                             )
-                        )
-                        .on_input(Message::FailureThreshold)
-                        .align_x(iced::Center)
-                        .width(design::STANDALONE_NUMERIC_WIDTH),
-                    )
-                    .into(),
+                        },
+                    ),
                 ])),
                 widgets::heading(
                     t!("settings.keyboard_shortcuts").to_string(),
                     design::typography::BODY
                 ),
-                text(t!("settings.shortcut_help").to_string())
-                    .size(design::typography::SECONDARY)
-                    .style(text::secondary),
-                widgets::settings_card(widgets::settings_rows([
-                    self.search_hotkey_row(
-                        s,
-                        SearchHotkeySlot::Primary,
-                        "settings.search_shortcut"
-                    ),
-                    self.search_hotkey_row(
-                        s,
-                        SearchHotkeySlot::Secondary,
-                        "settings.search_alternate_shortcut"
-                    ),
-                    row![action_button(t!("settings.reset_shortcuts").to_string())
-                        .on_press(Message::ResetSearchHotkeys)]
-                    .into(),
-                ])),
+                widgets::settings_card(
+                    column![
+                        text(t!("settings.shortcut_help").to_string())
+                            .size(design::typography::SECONDARY)
+                            .style(text::secondary),
+                        widgets::settings_rows([
+                            self.search_hotkey_row(
+                                s,
+                                SearchHotkeySlot::Primary,
+                                "settings.search_shortcut"
+                            ),
+                            self.search_hotkey_row(
+                                s,
+                                SearchHotkeySlot::Secondary,
+                                "settings.search_alternate_shortcut"
+                            ),
+                            row![action_button(t!("settings.reset_shortcuts").to_string())
+                                .on_press(Message::ResetSearchHotkeys)]
+                            .into(),
+                        ]),
+                    ]
+                    .spacing(design::space::MEDIUM),
+                ),
+                widgets::settings_card(
+                    column![self.shortcut_row(
+                        "settings.show_winderust_shortcut",
+                        ShortcutSlot::ShowWinderust,
+                        s.general.show_winderust_shortcut.map(|key| key.to_string()),
+                        Message::SetShowWinderustShortcut(None),
+                    )]
+                    .extend(
+                        self.show_shortcut_capture_error
+                            .map(|key| t!(key).into_owned())
+                            .or_else(|| show_shortcut_error.map(|error| error.localized()))
+                            .map(|error| text(error)
+                                .size(design::typography::CAPTION)
+                                .style(text::danger)
+                                .wrapping(text::Wrapping::WordOrGlyph)
+                                .into())
+                    )
+                    .spacing(design::space::SMALL),
+                ),
                 widgets::heading(
                     t!("settings.settings_files").to_string(),
                     design::typography::BODY
                 ),
-                widgets::settings_card(
-                    row![
-                        action_button(t!("settings.export_settings").to_string())
-                            .on_press(Message::Export),
-                        action_button(t!("settings.import_settings").to_string())
-                            .on_press(Message::Import),
-                    ]
-                    .spacing(design::space::SMALL)
-                    .align_y(iced::Center),
-                ),
+                widgets::settings_card(file_actions()),
             ]
             .spacing(super::widgets::CARD_GAP),
             Page::LanguageAndAppearance => {
@@ -477,7 +631,7 @@ impl Editor {
                         .iter()
                         .enumerate()
                         .map(|(i, color)| {
-                            super::popover::context_menu(
+                            let swatch = super::popover::context_menu(
                                 u64::from(*color),
                                 color_button(
                                     *color,
@@ -504,11 +658,24 @@ impl Editor {
                                     .style(widgets::tooltip_surface)
                                     .into()
                                 },
-                            )
+                            );
+                            row![
+                                swatch,
+                                widgets::tooltip(
+                                    widgets::icon_button("icons/pencil.svg")
+                                        .on_press(Message::EditColor(*color)),
+                                    text(t!("common.edit").to_string()),
+                                    iced::widget::tooltip::Position::Top,
+                                ),
+                                widgets::rule_delete_button(Some(Message::RemoveColor(i))),
+                            ]
+                            .spacing(design::space::TINY)
+                            .align_y(iced::Center)
+                            .into()
                         })
                         .collect(),
                 )
-                .spacing(design::space::CONTROL)
+                .spacing(design::space::MEDIUM)
                 .line_spacing(design::space::CONTROL);
                 let picker = color_button(s.general.accent.custom_color, false)
                     .on_press(Message::OpenColorPicker(s.general.accent.custom_color));
@@ -528,13 +695,10 @@ impl Editor {
                         )
                         .on_input(Message::AccentHex)
                         .width(130),
-                        action_button(t!("common.save").to_string())
-                            .style(widgets::primary_button)
+                        action_button(t!("accent.add_color").to_string())
+                            .style(widgets::secondary_button)
                             .on_press_maybe(
-                                self.color
-                                    .as_deref()
-                                    .is_none_or(|v| parse_color(v).is_some())
-                                    .then_some(Message::SaveColor)
+                                (!self.has_invalid_accent()).then_some(Message::AddColor)
                             )
                     ]
                     .spacing(design::space::SMALL)
@@ -627,8 +791,8 @@ impl Editor {
                     ),
                     widgets::settings_card(widgets::settings_rows([
                         flag_row(
-                            "settings.show_enabled_feature_counts_in_sidebar",
-                            s.general.show_enabled_feature_counts_in_sidebar,
+                            "settings.show_enabled_feature_counts",
+                            s.general.show_enabled_feature_counts,
                             Flag::FeatureCounts
                         )
                         .into(),
@@ -741,7 +905,9 @@ impl Editor {
                             )
                             .width(design::SELECT_WIDTH),
                             action_button(t!("about.check_for_updates").to_string())
-                                .on_press_maybe((!self.checking).then_some(Message::Check))
+                                .on_press_maybe(
+                                    self.active_check.is_none().then_some(Message::Check)
+                                )
                         ]
                         .spacing(design::space::MEDIUM),
                     )
@@ -772,7 +938,7 @@ impl Editor {
                 .spacing(super::widgets::CARD_GAP);
                 if let Some(url) = &self.download {
                     body = body.push(
-                        action_button(t!("about.download_update").to_string())
+                        action_button(t!("about.open_release_page").to_string())
                             .style(widgets::primary_button)
                             .on_press(Message::Open(url.clone())),
                     );
@@ -781,7 +947,7 @@ impl Editor {
             }
             _ => column![],
         };
-        let body = scrollable(body).height(Fill).into();
+        let body = scrollable(body).id("settings-content").height(Fill).into();
         if page != Page::LanguageAndAppearance {
             return body;
         }
@@ -851,7 +1017,8 @@ fn channel_label(v: UpdateChannel) -> String {
     .to_string()
 }
 pub(super) fn theme(s: &GeneralSettings) -> Theme {
-    let system = match crate::platform::windows::appearance::read() {
+    use crate::platform::windows::appearance;
+    let system = match appearance::read() {
         Ok(appearance) => Some(appearance),
         Err(error) => {
             eprintln!("Unable to read Windows appearance: {error}");
@@ -865,10 +1032,28 @@ pub(super) fn theme(s: &GeneralSettings) -> Theme {
                 .is_some_and(|appearance| appearance.animations),
         ),
     );
+    let contrast = if s.theme_mode == AppThemeMode::System {
+        appearance::contrast_colors()
+    } else {
+        None
+    };
+    theme_from_appearance(s, system.as_ref(), contrast)
+}
+
+pub(super) fn theme_from_appearance(
+    s: &GeneralSettings,
+    system: Option<&crate::platform::windows::appearance::Appearance>,
+    contrast: Option<crate::platform::windows::appearance::ContrastColors>,
+) -> Theme {
     let light = match s.theme_mode {
         AppThemeMode::Light => true,
         AppThemeMode::Dark | AppThemeMode::Amoled => false,
-        AppThemeMode::System => system.as_ref().is_none_or(|appearance| appearance.light),
+        AppThemeMode::System => {
+            if let Some(colors) = contrast {
+                return design::contrast_theme(colors);
+            }
+            system.is_none_or(|appearance| appearance.light)
+        }
     };
     let accent = if s.accent.source == AccentColorSource::Custom {
         Some(rgb(s.accent.custom_color))
@@ -1116,7 +1301,7 @@ mod tests {
         let settings = Settings::default();
         let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
         for width in [780.0, 1200.0] {
-            let mut view = editor.view(Page::About, &settings);
+            let mut view = editor.view(Page::About, &settings, false, None);
             let mut tree = Tree::new(&view);
             let bounds = Rectangle::with_size(Size::new(width, 540.0));
             let node = view.as_widget_mut().layout(
@@ -1168,9 +1353,12 @@ mod tests {
         let original = settings.general.search_hotkeys.clone();
         editor.update_ui(
             settings.general.update_channel,
-            Message::RecordSearchHotkey(SearchHotkeySlot::Primary),
+            Message::RecordShortcut(ShortcutSlot::Search(SearchHotkeySlot::Primary)),
         );
-        assert_eq!(editor.hotkey_capture, Some(SearchHotkeySlot::Primary));
+        assert_eq!(
+            editor.hotkey_capture,
+            Some(ShortcutSlot::Search(SearchHotkeySlot::Primary))
+        );
         assert_eq!(settings.general.search_hotkeys, original);
         let shortcut = super::super::hotkeys::capture(
             &iced::keyboard::Key::Character("j".into()),
@@ -1204,30 +1392,27 @@ mod tests {
         assert_eq!(editor.update_status(), t!("about.not_checked"));
         editor.update_ui(channel, Message::ToggleAccent);
         assert!(editor.accent_expanded);
-        assert!(editor.begin_check(true));
+        let check = editor.begin_check(channel, true).unwrap();
         assert_eq!(editor.update_status(), t!("about.checking"));
         editor.update_ui(
             channel,
-            Message::Checked(channel, Ok(("next".into(), Some("url".into())))),
+            Message::Checked(check, Ok(("next".into(), Some("url".into())))),
         );
-        assert!(!editor.checking);
+        assert!(editor.active_check.is_none());
         assert!(editor.show_update);
         assert_eq!(editor.update_status(), t!("about.update_available"));
         editor.update_ui(channel, Message::DismissUpdate);
         assert!(!editor.show_update);
-        assert!(editor.begin_check(false));
+        let check = editor.begin_check(channel, false).unwrap();
         assert_eq!(editor.update_status(), t!("about.checking"));
-        editor.update_ui(
-            channel,
-            Message::Checked(channel, Err("Test failure".into())),
-        );
-        assert_eq!(editor.update_status(), "Test failure");
+        editor.update_ui(channel, Message::Checked(check, Err(())));
+        assert_eq!(editor.update_status(), t!("about.update_check_failed"));
         assert!(editor.download.is_some());
-        assert!(editor.begin_check(false));
+        let check = editor.begin_check(channel, false).unwrap();
         assert_eq!(editor.update_status(), t!("about.checking"));
         editor.update_ui(
             channel,
-            Message::Checked(channel, Ok(("current".into(), None))),
+            Message::Checked(check, Ok(("current".into(), None))),
         );
         assert_eq!(editor.update_status(), t!("about.up_to_date"));
     }
@@ -1262,7 +1447,7 @@ mod tests {
         assert_eq!(settings.general.accent.custom_color, 0x123456);
         assert!(settings.general.accent.custom_colors.is_empty());
         assert!(editor.picker.is_none());
-        editor.update(&mut settings, Message::SaveColor);
+        editor.update(&mut settings, Message::AddColor);
         editor.update(&mut settings, Message::EditColor(0x123456));
         editor.update(&mut settings, Message::ColorPicked(rgb(0xabcdef)));
         assert_eq!(settings.general.accent.custom_color, 0xabcdef);
@@ -1354,13 +1539,24 @@ mod tests {
         let mut editor = Editor::default();
         let mut settings = Settings::default();
         editor.update(&mut settings, Message::FailureThreshold("12".into()));
-        for draft in ["", "0", "101", "invalid"] {
+        for draft in ["", "0", "101", "256", "invalid"] {
             editor.update(&mut settings, Message::FailureThreshold(draft.into()));
             assert_eq!(editor.failure_threshold.as_deref(), Some(draft));
             assert!(editor.has_invalid_inputs());
             assert_eq!(
                 settings.advanced.execution_failure_suppression_threshold,
                 12
+            );
+        }
+        for threshold in [1, 100] {
+            editor.update(
+                &mut settings,
+                Message::FailureThreshold(threshold.to_string()),
+            );
+            assert!(!editor.has_invalid_inputs());
+            assert_eq!(
+                settings.advanced.execution_failure_suppression_threshold,
+                threshold
             );
         }
         editor.reset_drafts();
@@ -1372,21 +1568,68 @@ mod tests {
         assert!(!editor.has_invalid_inputs());
     }
     #[test]
-    fn resetting_drafts_preserves_in_flight_update_check() {
+    fn resetting_drafts_preserves_update_check_state() {
+        let check = Arc::new(UpdateCheck {
+            channel: UpdateChannel::Stable,
+            notify: true,
+        });
         let mut e = Editor {
             color: Some("#123456".into()),
-            checking: true,
-            notify_on_update: true,
+            active_check: Some(Arc::clone(&check)),
             latest: Some("1.0.0".into()),
             download: Some("https://example.com".into()),
-            update_error: Some("error".into()),
+            update_failed: true,
             show_update: true,
             ..Editor::default()
         };
         e.reset_drafts();
-        assert!(e.checking && e.notify_on_update);
-        assert!(e.color.is_none() && e.latest.is_none() && e.download.is_none());
-        assert!(e.update_error.is_none() && !e.show_update);
+        assert!(Arc::ptr_eq(e.active_check.as_ref().unwrap(), &check));
+        assert!(e.color.is_none());
+        assert_eq!(e.latest.as_deref(), Some("1.0.0"));
+        assert_eq!(e.download.as_deref(), Some("https://example.com"));
+        assert!(e.update_failed);
+        assert!(e.show_update);
+    }
+
+    #[test]
+    fn windows_contrast_applies_only_to_system_and_preserves_saved_accent() {
+        use crate::platform::windows::appearance::{Appearance, ContrastColors};
+        let contrast = Some(ContrastColors {
+            window: 0x000000,
+            window_text: 0xffffff,
+            highlight: 0xfaf080,
+            highlight_text: 0x000000,
+        });
+        let mut settings = Settings::default().general;
+        settings.theme_mode = AppThemeMode::System;
+        settings.accent.source = AccentColorSource::Custom;
+        settings.accent.custom_color = 0x3366aa;
+        let windows = Appearance {
+            light: false,
+            accent: 0xabcdef,
+            animations: false,
+        };
+        let theme = theme_from_appearance(&settings, None, contrast);
+        assert!(design::is_contrast(&theme));
+        assert_eq!(theme.palette().primary, rgb(0xfaf080));
+        let theme = theme_from_appearance(&settings, Some(&windows), None);
+        assert!(!design::is_contrast(&theme));
+        assert!(theme.extended_palette().is_dark);
+        assert_eq!(theme.palette().primary, rgb(0x3366aa));
+        for mode in [
+            AppThemeMode::Light,
+            AppThemeMode::Dark,
+            AppThemeMode::Amoled,
+        ] {
+            settings.theme_mode = mode;
+            let theme = theme_from_appearance(&settings, Some(&windows), contrast);
+            assert!(!design::is_contrast(&theme));
+            assert_eq!(
+                theme.extended_palette().is_dark,
+                mode != AppThemeMode::Light
+            );
+            assert_eq!(theme.palette().primary, rgb(0x3366aa));
+        }
     }
 
     #[test]
@@ -1398,11 +1641,19 @@ mod tests {
         let before = s.general.accent.custom_color;
         e.update(&mut s, Message::AccentHex("#xyzxyz".into()));
         assert_eq!(s.general.accent.custom_color, before);
-        e.update(&mut s, Message::SaveColor);
+        e.update(&mut s, Message::AddColor);
         assert!(s.general.accent.custom_colors.is_empty());
         e.update(&mut s, Message::AccentHex("#123456".into()));
-        e.update(&mut s, Message::SaveColor);
-        e.update(&mut s, Message::SaveColor);
+        e.update(&mut s, Message::AccentHex(String::new()));
+        assert!(e.has_invalid_accent());
+        e.update(&mut s, Message::AccentSource(AccentColorSource::Windows));
+        assert!(e.color.is_none() && !e.accent_expanded);
+        assert!(!e.has_invalid_inputs());
+        assert_eq!(s.general.accent.custom_color, 0x123456);
+        e.update(&mut s, Message::AccentSource(AccentColorSource::Custom));
+        assert_eq!(s.general.accent.custom_color, 0x123456);
+        e.update(&mut s, Message::AddColor);
+        e.update(&mut s, Message::AddColor);
         assert_eq!(s.general.accent.custom_colors, vec![0x123456]);
         s.process_priority.visible_window_priority = ProcessPrioritySetting::Realtime;
         s.thread_priority.visible_window_priority = ProcessThreadPrioritySetting::TimeCritical;
@@ -1427,42 +1678,56 @@ mod tests {
         assert_eq!(ACCENT_PALETTE.len(), 48);
     }
     #[test]
-    fn only_current_channel_startup_checks_raise_update_notification() {
+    fn only_the_current_update_check_can_publish_and_notify() {
         let mut e = Editor::default();
         let mut s = Settings::default();
         let channel = s.general.update_channel;
-        assert!(e.begin_check(false));
-        assert!(!e.begin_check(true));
+        let manual = e.begin_check(channel, false).unwrap();
+        assert!(e.begin_check(channel, true).is_none());
         e.update(
             &mut s,
             Message::Checked(
-                channel,
+                manual,
                 Ok(("1.0".into(), Some("https://example.com".into()))),
             ),
         );
         assert!(!e.show_update);
-        assert!(e.begin_check(true));
+        let automatic = e.begin_check(channel, true).unwrap();
         e.update(
             &mut s,
             Message::Checked(
-                channel,
+                automatic,
                 Ok(("1.0".into(), Some("https://example.com".into()))),
             ),
         );
         assert!(e.show_update);
-        assert!(e.begin_check(true));
+        e.update(&mut s, Message::Channel(channel));
+        assert_eq!(e.latest.as_deref(), Some("1.0"));
+        assert!(e.show_update);
+        let abandoned = e.begin_check(channel, true).unwrap();
         let other = if channel == UpdateChannel::Stable {
             UpdateChannel::PreRelease
         } else {
             UpdateChannel::Stable
         };
         e.update(&mut s, Message::Channel(other));
+        assert_eq!(e.update_status(), t!("about.not_checked"));
+        let other_check = e.begin_check(other, false).unwrap();
+        e.update(&mut s, Message::Channel(channel));
+        let current = e.begin_check(channel, false).unwrap();
         e.update(
             &mut s,
-            Message::Checked(channel, Ok(("wrong-channel".into(), None))),
+            Message::Checked(abandoned, Ok(("stale".into(), Some("url".into())))),
         );
+        e.update(&mut s, Message::Checked(other_check, Err(())));
         assert!(e.latest.is_none());
         assert!(!e.show_update);
-        assert_eq!(e.update_status(), t!("about.not_checked"));
+        assert_eq!(e.update_status(), t!("about.checking"));
+        e.update(
+            &mut s,
+            Message::Checked(current, Ok(("current".into(), None))),
+        );
+        assert_eq!(e.latest.as_deref(), Some("current"));
+        assert_eq!(e.update_status(), t!("about.up_to_date"));
     }
 }

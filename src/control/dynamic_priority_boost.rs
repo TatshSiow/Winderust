@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
     time::{Duration, Instant},
 };
 
@@ -54,7 +55,7 @@ pub(crate) enum DynamicPriorityBoostApplyOutcome {
 pub(crate) struct DynamicPriorityBoostReleaseFailure {
     pub(crate) process_id: u32,
     pub(crate) process_name: String,
-    pub(crate) executable_path: String,
+    pub(crate) executable_path: PathBuf,
     pub(crate) error: ProcessControlError,
 }
 
@@ -443,7 +444,7 @@ impl<P: DynamicPriorityBoostPlatform> DynamicPriorityBoostController<P> {
                 Err(error) => summary.failures.push(DynamicPriorityBoostReleaseFailure {
                     process_id: identity.id,
                     process_name: identity.name.clone(),
-                    executable_path: identity.executable_path.to_string_lossy().into_owned(),
+                    executable_path: identity.executable_path.clone(),
                     error,
                 }),
             }
@@ -502,12 +503,11 @@ impl<P: DynamicPriorityBoostPlatform> DynamicPriorityBoostController<P> {
         }
     }
 
-    pub(crate) fn policy_managed_process_names(&self) -> Vec<String> {
+    pub(crate) fn policy_managed_process_count(&self) -> usize {
         self.managed
-            .iter()
-            .filter(|(_, managed)| managed.owner.is_automatic())
-            .map(|(identity, _)| identity.name.clone())
-            .collect()
+            .values()
+            .filter(|managed| managed.owner.is_automatic())
+            .count()
     }
 
     pub(crate) fn has_managed_state(&self) -> bool {
@@ -641,10 +641,14 @@ fn restore_and_verify<P: DynamicPriorityBoostPlatform>(
 
 pub(crate) fn current_dynamic_priority_boost_state(
     target: &ProcessActionTarget,
+    allow_cross_session_process_control: bool,
 ) -> Result<DynamicPriorityBoostState, String> {
     let mut platform = WindowsDynamicPriorityBoostPlatform;
     let (_, process) = platform
-        .open(&ProcessControlTarget::from_action_target(target), true)
+        .open(
+            &ProcessControlTarget::from_action_target(target),
+            allow_cross_session_process_control,
+        )
         .map_err(|error| error.to_string())?;
     platform.query(&process).map_err(|error| error.to_string())
 }

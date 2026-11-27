@@ -352,10 +352,17 @@ impl canvas::Program<power_rules::Message> for TimeDial {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(super) enum ColorPercent {
+    Saturation,
+    Brightness,
+}
+
 pub(super) struct ColorDraft {
     hue: u16,
     saturation: f32,
     value: f32,
+    percent_drafts: [Option<String>; 2],
     pub hex: String,
 }
 impl ColorDraft {
@@ -377,6 +384,7 @@ impl ColorDraft {
             hue: hue.round() as u16 % 360,
             saturation: if max == 0.0 { 0.0 } else { delta / max },
             value: max,
+            percent_drafts: [None, None],
             hex: format!("#{rgb:06X}"),
         }
     }
@@ -398,6 +406,21 @@ impl ColorDraft {
     pub fn set_sv(&mut self, saturation: f32, value: f32) {
         self.saturation = saturation.clamp(0.0, 1.0);
         self.value = value.clamp(0.0, 1.0);
+        self.percent_drafts = [None, None];
+        self.sync_hex();
+    }
+    pub(super) fn set_percent(&mut self, field: ColorPercent, input: String) {
+        let draft = &mut self.percent_drafts[field as usize];
+        let Some(value) = input.parse::<u8>().ok().filter(|&value| value <= 100) else {
+            *draft = Some(input);
+            return;
+        };
+        *draft = None;
+        let value = f32::from(value) / 100.0;
+        match field {
+            ColorPercent::Saturation => self.saturation = value,
+            ColorPercent::Brightness => self.value = value,
+        }
         self.sync_hex();
     }
     pub fn set_hex(&mut self, hex: String) {
@@ -406,10 +429,30 @@ impl ColorDraft {
         }
         self.hex = hex;
     }
+    fn selected_color(&self) -> Option<Color> {
+        if self.percent_drafts.iter().any(Option::is_some) {
+            return None;
+        }
+        settings_pages::parse_color(&self.hex).map(settings_pages::rgb)
+    }
 }
 
 pub(super) fn color(draft: &ColorDraft) -> Element<'_, settings_pages::Message> {
     use settings_pages::Message;
+    let percent_row = |field: ColorPercent, key: &str, value: f32| {
+        column![
+            text(t!(key).to_string()),
+            widgets::slider_stepper(
+                (value * 100.0).round() as u64,
+                draft.percent_drafts[field as usize].as_deref(),
+                0..=100,
+                1,
+                move |value| Message::PickerPercent(field, value),
+            )
+            .push(text("%").style(text::secondary)),
+        ]
+        .spacing(design::space::TIGHT)
+    };
     let body = column![
         canvas::Canvas::new(ColorSquare {
             hue: draft.hue,
@@ -423,22 +466,12 @@ pub(super) fn color(draft: &ColorDraft) -> Element<'_, settings_pages::Message> 
             widgets::slider(0..=359u16, draft.hue, Message::PickerHue)
         ]
         .align_y(iced::Center),
-        row![
-            text(t!("accent.saturation").to_string()).width(92),
-            widgets::slider(
-                0..=100u16,
-                (draft.saturation * 100.0).round() as u16,
-                move |s| Message::PickerSv(s as f32 / 100.0, draft.value)
-            )
-        ]
-        .align_y(iced::Center),
-        row![
-            text(t!("accent.brightness").to_string()).width(92),
-            widgets::slider(0..=100u16, (draft.value * 100.0).round() as u16, move |v| {
-                Message::PickerSv(draft.saturation, v as f32 / 100.0)
-            })
-        ]
-        .align_y(iced::Center),
+        percent_row(
+            ColorPercent::Saturation,
+            "accent.saturation",
+            draft.saturation
+        ),
+        percent_row(ColorPercent::Brightness, "accent.brightness", draft.value),
         row![
             container(iced::widget::Space::new())
                 .width(32)
@@ -458,7 +491,7 @@ pub(super) fn color(draft: &ColorDraft) -> Element<'_, settings_pages::Message> 
         t!("accent.choose_color").to_string(),
         body.into(),
         Message::CancelColorPicker,
-        settings_pages::parse_color(&draft.hex).map(|_| Message::ColorPicked(draft.color())),
+        draft.selected_color().map(Message::ColorPicked),
     )
 }
 
@@ -581,6 +614,37 @@ impl canvas::Program<settings_pages::Message> for ColorSquare {
 mod tests {
     use super::*;
     use canvas::Program;
+
+    #[test]
+    fn color_percentages_keep_independent_drafts_and_guard_confirmation() {
+        let mut draft = ColorDraft::new(0xff0000);
+        draft.set_percent(ColorPercent::Saturation, String::new());
+        assert_eq!(draft.color(), settings_pages::rgb(0xff0000));
+        assert_eq!(draft.selected_color(), None);
+
+        draft.set_percent(ColorPercent::Brightness, "50".into());
+        assert_eq!(draft.value, 0.5);
+        assert_eq!(draft.saturation, 1.0);
+        assert_eq!(draft.percent_drafts[0].as_deref(), Some(""));
+        assert_eq!(draft.selected_color(), None);
+
+        draft.set_percent(ColorPercent::Saturation, "0".into());
+        assert_eq!(draft.saturation, 0.0);
+        assert_eq!(draft.selected_color(), Some(draft.color()));
+        assert_eq!(draft.color().r, draft.color().g);
+
+        draft.set_percent(ColorPercent::Brightness, "101".into());
+        assert_eq!(draft.value, 0.5);
+        assert_eq!(draft.percent_drafts[1].as_deref(), Some("101"));
+        assert_eq!(draft.selected_color(), None);
+
+        draft.set_hex("#123456".into());
+        assert_eq!(draft.selected_color(), Some(settings_pages::rgb(0x123456)));
+        draft.set_percent(ColorPercent::Saturation, "-1".into());
+        assert_eq!(draft.selected_color(), None);
+        draft.set_sv(0.0, 1.0);
+        assert_eq!(draft.selected_color(), Some(Color::WHITE));
+    }
 
     #[test]
     fn picker_drafts_keep_exact_hex_and_validate_time_bounds() {

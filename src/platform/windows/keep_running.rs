@@ -3,6 +3,7 @@
 //! The caller owns intent ordering, fresh absence checks and worker capacity. A successful job
 //! disarm is irreversible acceptance; publication of that result is a separate operation.
 use std::{
+    cell::OnceCell,
     ffi::{c_void, OsString},
     mem::{offset_of, size_of, size_of_val},
     os::windows::ffi::{OsStrExt, OsStringExt},
@@ -15,16 +16,15 @@ use windows_sys::Win32::{
         DuplicateHandle, HANDLE, HWND, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
     },
     Security::{
-        GetKernelObjectSecurity, GetLengthSid, GetSecurityDescriptorDacl,
-        GetSecurityDescriptorSacl, GetSidSubAuthority, GetSidSubAuthorityCount,
-        GetTokenInformation, IsValidSid, IsWellKnownSid, SetKernelObjectSecurity, TokenElevation,
-        TokenElevationType, TokenGroups, TokenIntegrityLevel, TokenIsAppContainer,
-        TokenLinkedToken, TokenPrivileges, TokenRestrictedSids, TokenSessionId, TokenStatistics,
-        TokenUIAccess, TokenUser, WinLocalServiceSid, WinLocalSystemSid, WinNetworkServiceSid,
-        DACL_SECURITY_INFORMATION, LABEL_SECURITY_INFORMATION, LUID_AND_ATTRIBUTES,
-        SID_AND_ATTRIBUTES, TOKEN_DUPLICATE, TOKEN_GROUPS, TOKEN_INFORMATION_CLASS,
-        TOKEN_LINKED_TOKEN, TOKEN_MANDATORY_LABEL, TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_STATISTICS,
-        TOKEN_USER,
+        GetKernelObjectSecurity, GetSecurityDescriptorDacl, GetSecurityDescriptorSacl,
+        GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, IsWellKnownSid,
+        SetKernelObjectSecurity, TokenElevation, TokenElevationType, TokenGroups,
+        TokenIntegrityLevel, TokenIsAppContainer, TokenLinkedToken, TokenPrivileges,
+        TokenRestrictedSids, TokenSessionId, TokenStatistics, TokenUIAccess, TokenUser,
+        WinLocalServiceSid, WinLocalSystemSid, WinNetworkServiceSid, DACL_SECURITY_INFORMATION,
+        LABEL_SECURITY_INFORMATION, LUID_AND_ATTRIBUTES, SID_AND_ATTRIBUTES, TOKEN_DUPLICATE,
+        TOKEN_GROUPS, TOKEN_INFORMATION_CLASS, TOKEN_LINKED_TOKEN, TOKEN_MANDATORY_LABEL,
+        TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_STATISTICS, TOKEN_USER,
     },
     Storage::FileSystem::{
         CreateFileW, FileIdInfo, GetFileInformationByHandleEx, FILE_ATTRIBUTE_NORMAL, FILE_ID_INFO,
@@ -61,6 +61,8 @@ use windows_sys::Win32::{
 
 use crate::win_util::{last_error, WinHandle};
 
+use super::sid_bytes;
+
 type Result<T> = std::result::Result<T, KeepRunningError>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,7 +72,7 @@ pub(crate) enum ErrorKind {
     CleanupUnknown,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub(crate) enum KeepRunningError {
     #[error("{0}")]
     Unsupported(&'static str),
@@ -190,39 +192,33 @@ fn file_identity(path: &Path) -> Result<ExecutableIdentity> {
 pub(crate) struct LaunchSpec {
     executable: PathBuf,
     arguments: String,
-    directory: PathBuf,
     executable_identity: ExecutableIdentity,
 }
 
 impl LaunchSpec {
-    pub(crate) fn new(executable: &Path, arguments: &str, directory: &Path) -> Result<Self> {
-        if !executable.is_absolute() || !directory.is_absolute() || arguments.contains('\0') {
+    pub(crate) fn new(executable: &Path, arguments: &str) -> Result<Self> {
+        if !executable.is_absolute() || arguments.contains('\0') {
             return Err(KeepRunningError::Unsupported(
-                "Keep Running requires absolute executable and working-directory paths without NUL characters.",
+                "Keep Running requires an absolute executable path and arguments without NUL characters.",
             ));
         }
         let executable = executable.canonicalize().map_err(|_| {
             KeepRunningError::Unsupported("The executable path could not be resolved.")
         })?;
-        let directory = directory.canonicalize().map_err(|_| {
-            KeepRunningError::Unsupported("The working directory could not be resolved.")
-        })?;
         if !executable.is_file()
-            || !directory.is_dir()
             || executable
                 .extension()
                 .and_then(|ext| ext.to_str())
                 .is_none_or(|ext| !ext.eq_ignore_ascii_case("exe"))
         {
             return Err(KeepRunningError::Unsupported(
-                "Keep Running requires an executable file and an existing working directory.",
+                "Keep Running requires an executable file.",
             ));
         }
         let executable_identity = file_identity(&executable)?;
         let spec = Self {
             executable,
             arguments: arguments.to_owned(),
-            directory,
             executable_identity,
         };
         spec.command_line()?;
@@ -315,37 +311,6 @@ fn token_buffer(token: &WinHandle, class: TOKEN_INFORMATION_CLASS) -> Result<Vec
     Ok(storage)
 }
 
-fn sid_bytes(sid: *mut c_void, storage: &[usize]) -> Result<Vec<u8>> {
-    let start = storage.as_ptr() as usize;
-    let end = start + size_of_val(storage);
-    let address = sid as usize;
-    if address < start || address.checked_add(8).is_none_or(|value| value > end) {
-        return Err(KeepRunningError::Unsupported(
-            "Windows returned an invalid token SID.",
-        ));
-    }
-    // SAFETY: the SID header lies inside the retained native response.
-    let count = unsafe { *sid.cast::<u8>().add(1) } as usize;
-    if address
-        .checked_add(8 + count * 4)
-        .is_none_or(|value| value > end)
-    {
-        return Err(KeepRunningError::Unsupported(
-            "Windows returned a truncated token SID.",
-        ));
-    }
-    // SAFETY: the complete counted SID lies in the retained allocation.
-    if unsafe { IsValidSid(sid) } == 0 {
-        return Err(KeepRunningError::Unsupported(
-            "Windows returned an invalid token SID.",
-        ));
-    }
-    // SAFETY: the SID is valid and its complete storage remains alive.
-    let bytes = unsafe { GetLengthSid(sid) } as usize;
-    // SAFETY: GetLengthSid's validated SID bytes lie within storage.
-    Ok(unsafe { std::slice::from_raw_parts(sid.cast::<u8>(), bytes) }.to_vec())
-}
-
 #[derive(PartialEq, Eq)]
 struct TokenFacts {
     sid: Vec<u8>,
@@ -391,7 +356,9 @@ fn facts(token: &WinHandle) -> Result<TokenFacts> {
     }
     // SAFETY: user is aligned and contains the complete native TOKEN_USER header.
     let user_sid = unsafe { (*user.as_ptr().cast::<TOKEN_USER>()).User.Sid };
-    let sid = sid_bytes(user_sid, &user)?;
+    let sid = sid_bytes(user_sid, &user)
+        .map_err(KeepRunningError::Unsupported)?
+        .to_vec();
     // SAFETY: sid_bytes validated this SID in retained native user-token storage.
     let service_account = unsafe {
         IsWellKnownSid(user_sid, WinLocalSystemSid) != 0
@@ -406,7 +373,7 @@ fn facts(token: &WinHandle) -> Result<TokenFacts> {
     }
     // SAFETY: label is aligned and contains the complete TOKEN_MANDATORY_LABEL header.
     let label_sid = unsafe { (*label.as_ptr().cast::<TOKEN_MANDATORY_LABEL>()).Label.Sid };
-    sid_bytes(label_sid, &label)?;
+    sid_bytes(label_sid, &label).map_err(KeepRunningError::Unsupported)?;
     // SAFETY: sid_bytes validated the complete SID inside the retained label allocation.
     let count = unsafe { *GetSidSubAuthorityCount(label_sid) };
     if count == 0 {
@@ -438,7 +405,8 @@ fn facts(token: &WinHandle) -> Result<TokenFacts> {
                 .cast::<SID_AND_ATTRIBUTES>()
                 .add(index)
         };
-        groups.push((sid_bytes(entry.Sid, &group_storage)?, entry.Attributes));
+        let sid = sid_bytes(entry.Sid, &group_storage).map_err(KeepRunningError::Unsupported)?;
+        groups.push((sid.to_vec(), entry.Attributes));
     }
     groups.sort_unstable();
     let privilege_storage = token_buffer(token, TokenPrivileges)?;
@@ -714,14 +682,188 @@ pub(crate) struct ObservedProcess {
     pub(crate) creation_time: u64,
 }
 
-pub(crate) fn matching_processes(spec: &LaunchSpec) -> Result<Vec<ObservedProcess>> {
-    let expected = spec.identity()?;
-    let name = spec
-        .executable
-        .file_name()
-        .ok_or(KeepRunningError::Unsupported(
-            "Missing executable filename.",
-        ))?;
+type CreationTimeResult = std::result::Result<u64, u32>;
+
+enum ProcessProbe<Creation> {
+    Exited,
+    Unreadable(&'static str),
+    Failed(KeepRunningError),
+    Image {
+        path: PathBuf,
+        identity: ExecutableIdentity,
+        creation: Creation,
+    },
+}
+
+fn probe_process<Creation>(
+    id: u32,
+    creation_source: impl FnOnce(WinHandle) -> Creation,
+) -> ProcessProbe<Creation> {
+    // SAFETY: snapshot PID is used only for a noninheritable query/synchronize handle.
+    let raw = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            0,
+            id,
+        )
+    };
+    if raw.is_null() {
+        return ProcessProbe::Unreadable(
+            "A possible matching app could not be inspected; absence is unknown.",
+        );
+    }
+    let process = WinHandle::new(raw);
+    match wait(&process, 0) {
+        Ok(true) => return ProcessProbe::Exited,
+        Err(error) => return ProcessProbe::Failed(error),
+        Ok(false) => {}
+    }
+    match image(&process).and_then(|path| file_identity(&path).map(|identity| (path, identity))) {
+        Ok((path, identity)) => ProcessProbe::Image {
+            path,
+            identity,
+            creation: creation_source(process),
+        },
+        Err(_) => ProcessProbe::Unreadable(
+            "A possible matching executable could not be verified; absence is unknown.",
+        ),
+    }
+}
+
+struct ExecutableMatch {
+    identity: ExecutableIdentity,
+    basename: Vec<u16>,
+}
+
+impl ExecutableMatch {
+    fn candidate<Creation>(
+        &self,
+        id: u32,
+        name: &[u16],
+        probe: &ProcessProbe<Creation>,
+        creation_time: impl FnOnce(&Creation) -> CreationTimeResult,
+    ) -> Result<Option<ObservedProcess>> {
+        match probe {
+            ProcessProbe::Failed(error) => Err(error.clone()),
+            ProcessProbe::Unreadable(reason)
+                if super::ordinal_equal(name, &self.basename).unwrap_or(true) =>
+            {
+                Err(KeepRunningError::Unsupported(reason))
+            }
+            ProcessProbe::Image {
+                path,
+                identity,
+                creation,
+            } if *identity == self.identity => {
+                let creation_time =
+                    creation_time(creation).map_err(|code| KeepRunningError::Failed {
+                        operation: "GetProcessTimes(observation)",
+                        code,
+                    })?;
+                Ok(Some(ObservedProcess {
+                    id,
+                    name: String::from_utf16_lossy(name),
+                    path: path.clone(),
+                    creation_time,
+                }))
+            }
+            _ => Ok(None),
+        }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct ProcessCatalog(OnceCell<CatalogRows>);
+
+struct CatalogRow {
+    id: u32,
+    name: Box<[u16]>,
+    probe: OnceCell<ProcessProbe<CreationTimeResult>>,
+}
+
+struct CatalogRows {
+    entries: Vec<CatalogRow>,
+    completion: Result<()>,
+}
+
+impl CatalogRows {
+    fn capture() -> Self {
+        let mut entries = Vec::new();
+        let completion = for_each_process(|id, name| {
+            entries.push(CatalogRow {
+                id,
+                name: name.into(),
+                probe: OnceCell::new(),
+            });
+            Ok(())
+        });
+        Self {
+            entries,
+            completion,
+        }
+    }
+}
+
+impl ProcessCatalog {
+    fn matching(
+        &self,
+        expected: &ExecutableMatch,
+        capture: impl FnOnce() -> CatalogRows,
+        probe: impl Fn(u32) -> ProcessProbe<CreationTimeResult>,
+    ) -> Result<Vec<ObservedProcess>> {
+        let rows = self.0.get_or_init(capture);
+        let mut matches = Vec::new();
+        for row in &rows.entries {
+            matches.extend(expected.candidate(
+                row.id,
+                &row.name,
+                row.probe.get_or_init(|| probe(row.id)),
+                |creation| *creation,
+            )?);
+        }
+        rows.completion.clone()?;
+        Ok(matches)
+    }
+}
+
+pub(crate) fn matching_processes(
+    spec: &LaunchSpec,
+    catalog: Option<&ProcessCatalog>,
+) -> Result<(ExecutableIdentity, Vec<ObservedProcess>)> {
+    let expected = ExecutableMatch {
+        identity: spec.identity()?,
+        basename: spec
+            .executable
+            .file_name()
+            .ok_or(KeepRunningError::Unsupported(
+                "Missing executable filename.",
+            ))?
+            .encode_wide()
+            .collect(),
+    };
+    let matches = if let Some(catalog) = catalog {
+        catalog.matching(&expected, CatalogRows::capture, |id| {
+            probe_process(id, |process| {
+                process.process_times().map(|(creation, _)| creation)
+            })
+        })?
+    } else {
+        let mut matches = Vec::new();
+        for_each_process(|id, name| {
+            matches.extend(expected.candidate(
+                id,
+                name,
+                &probe_process(id, |process| process),
+                |process| process.process_times().map(|(creation, _)| creation),
+            )?);
+            Ok(())
+        })?;
+        matches
+    };
+    Ok((expected.identity, matches))
+}
+
+fn for_each_process(mut visit: impl FnMut(u32, &[u16]) -> Result<()>) -> Result<()> {
     // SAFETY: this read-only snapshot owns only a process-list handle.
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
@@ -732,7 +874,6 @@ pub(crate) fn matching_processes(spec: &LaunchSpec) -> Result<Vec<ObservedProces
         dwSize: size_of::<PROCESSENTRY32W>() as u32,
         ..Default::default()
     };
-    let mut matches = Vec::new();
     // SAFETY: entry is the correctly sized writable process-snapshot record.
     let mut present = unsafe { Process32FirstW(snapshot.raw(), &mut entry) };
     while present != 0 {
@@ -741,55 +882,8 @@ pub(crate) fn matching_processes(spec: &LaunchSpec) -> Result<Vec<ObservedProces
             .iter()
             .position(|value| *value == 0)
             .unwrap_or(entry.szExeFile.len());
-        let candidate_name = OsString::from_wide(&entry.szExeFile[..length]);
-        let plausible = candidate_name
-            .to_string_lossy()
-            .eq_ignore_ascii_case(&name.to_string_lossy());
         if entry.th32ProcessID != 0 {
-            // SAFETY: snapshot PID is used only for a noninheritable query/synchronize handle.
-            let raw = unsafe {
-                OpenProcess(
-                    PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
-                    0,
-                    entry.th32ProcessID,
-                )
-            };
-            if raw.is_null() {
-                if plausible {
-                    return Err(KeepRunningError::Unsupported(
-                        "A possible matching app could not be inspected; absence is unknown.",
-                    ));
-                }
-            } else {
-                let process = WinHandle::new(raw);
-                if !wait(&process, 0)? {
-                    match image(&process)
-                        .and_then(|path| file_identity(&path).map(|identity| (path, identity)))
-                    {
-                        Ok((path, identity)) if identity == expected => {
-                            let creation_time = process
-                                .process_times()
-                                .map_err(|code| KeepRunningError::Failed {
-                                    operation: "GetProcessTimes(observation)",
-                                    code,
-                                })?
-                                .0;
-                            matches.push(ObservedProcess {
-                                id: entry.th32ProcessID,
-                                name: candidate_name.to_string_lossy().into_owned(),
-                                path,
-                                creation_time,
-                            });
-                        }
-                        Err(_) if plausible => {
-                            return Err(KeepRunningError::Unsupported(
-                                "A possible matching executable could not be verified; absence is unknown.",
-                            ));
-                        }
-                        _ => {}
-                    }
-                }
-            }
+            visit(entry.th32ProcessID, &entry.szExeFile[..length])?;
         }
         // SAFETY: entry remains correctly sized writable snapshot storage.
         present = unsafe { Process32NextW(snapshot.raw(), &mut entry) };
@@ -798,7 +892,7 @@ pub(crate) fn matching_processes(spec: &LaunchSpec) -> Result<Vec<ObservedProces
     if last_error() != windows_sys::Win32::Foundation::ERROR_NO_MORE_FILES {
         return Err(failed("Process32NextW"));
     }
-    Ok(matches)
+    Ok(())
 }
 
 struct AttributeList(Vec<usize>);
@@ -1148,6 +1242,12 @@ pub(crate) fn prepare(
     expected_binding: &str,
 ) -> std::result::Result<Box<PreparedLaunch>, PrepareFailure> {
     let executable_identity = spec.identity()?;
+    let directory = spec
+        .executable
+        .parent()
+        .ok_or(KeepRunningError::Unsupported(
+            "The executable directory could not be resolved.",
+        ))?;
     let context = DesktopContext::capture()?;
     if context.binding_key() != expected_binding {
         return Err(KeepRunningError::Unsupported(
@@ -1215,7 +1315,7 @@ pub(crate) fn prepare(
     )?;
     let environment = Environment(environment);
     let executable = wide(&spec.executable);
-    let directory = wide(&spec.directory);
+    let directory = wide(directory);
     let mut desktop: Vec<u16> = context.desktop.encode_utf16().chain(Some(0)).collect();
     let mut command = spec.command_line()?;
     let mut startup = STARTUPINFOEXW::default();
@@ -1375,8 +1475,119 @@ mod tests {
     }
 
     #[test]
+    fn shared_catalog_reuses_probes_and_keeps_uncertainty_rule_specific() {
+        use std::cell::{Cell, RefCell};
+
+        let selector = |file, basename: &str| ExecutableMatch {
+            identity: ExecutableIdentity {
+                volume: 1,
+                file: [file; 16],
+            },
+            basename: basename.encode_utf16().collect(),
+        };
+        let first = selector(1, "selected.exe");
+        let second = selector(2, "UNREADABLE.EXE");
+        let third = selector(3, "changed.exe");
+        let captures = Cell::new(0);
+        let capture = || {
+            captures.set(captures.get() + 1);
+            CatalogRows {
+                entries: [
+                    "unrelated.exe",
+                    "alias.exe",
+                    "unreadable.exe",
+                    "other-alias.exe",
+                ]
+                .into_iter()
+                .enumerate()
+                .map(|(index, name)| CatalogRow {
+                    id: index as u32 + 1,
+                    name: name.encode_utf16().collect(),
+                    probe: OnceCell::new(),
+                })
+                .collect(),
+                completion: Ok(()),
+            }
+        };
+        let queried = RefCell::new(Vec::new());
+        let probe = |id| {
+            queried.borrow_mut().push(id);
+            match id {
+                2 => ProcessProbe::Image {
+                    path: r"C:\Apps\alias.exe".into(),
+                    identity: first.identity.clone(),
+                    creation: Ok(10),
+                },
+                4 => ProcessProbe::Image {
+                    path: r"C:\Apps\other-alias.exe".into(),
+                    identity: third.identity.clone(),
+                    creation: Err(5),
+                },
+                _ => ProcessProbe::Unreadable("read denied"),
+            }
+        };
+
+        let catalog = ProcessCatalog::default();
+        for _ in 0..2 {
+            let matches = catalog.matching(&first, capture, probe).unwrap();
+            assert_eq!(matches.len(), 1);
+            assert_eq!((matches[0].id, matches[0].creation_time), (2, 10));
+            assert_eq!(matches[0].path, Path::new(r"C:\Apps\alias.exe"));
+        }
+        assert!(matches!(
+            catalog.matching(&second, capture, probe),
+            Err(KeepRunningError::Unsupported("read denied"))
+        ));
+        assert!(matches!(
+            catalog.matching(&third, capture, probe),
+            Err(KeepRunningError::Failed {
+                operation: "GetProcessTimes(observation)",
+                code: 5
+            })
+        ));
+        assert_eq!(captures.get(), 1);
+        assert_eq!(*queried.borrow(), [1, 2, 3, 4]);
+    }
+
+    #[test]
+    #[ignore = "Reads the native process catalog and executable file identities."]
+    fn native_catalog_verifies_the_configured_identity() {
+        use crate::platform::windows::process::{open, ProcessAccess};
+
+        let executable = std::env::current_exe().expect("test executable path");
+        let mut spec = LaunchSpec::new(&executable, "").expect("test launch spec");
+        let pid = std::process::id();
+        let process = open(pid, ProcessAccess::Observation).expect("open the test process");
+        let creation_time = process
+            .process_creation_time()
+            .expect("test process creation time");
+
+        let catalog = ProcessCatalog::default();
+        for catalog in [None, Some(&catalog), Some(&catalog)] {
+            let (identity, matches) =
+                matching_processes(&spec, catalog).expect("scan the native catalog");
+            assert!(identity == spec.executable_identity);
+            let own = matches
+                .iter()
+                .find(|candidate| candidate.id == pid)
+                .expect("find the test process");
+            assert_eq!(own.creation_time, creation_time);
+            assert!(file_identity(&own.path).expect("observed image file identity") == identity);
+        }
+
+        spec.executable_identity.file[0] ^= 1;
+        let error = matching_processes(&spec, Some(&catalog))
+            .err()
+            .expect("stale file identity must fail the scan");
+        assert_eq!(error.kind(), ErrorKind::Unsupported);
+    }
+
+    #[test]
     #[ignore = "Disposable subprocess fixture, invoked only by the native lifecycle test."]
     fn disposable_child() {
+        let executable = std::env::current_exe().unwrap().canonicalize().unwrap();
+        let directory = std::env::current_dir().unwrap().canonicalize().unwrap();
+        assert_eq!(Some(directory.as_path()), executable.parent());
         fs::write(marker(std::process::id()), b"started").unwrap();
         thread::sleep(Duration::from_millis(1500));
     }
@@ -1399,7 +1610,7 @@ mod tests {
             "--exact {}::disposable_child --ignored --nocapture",
             module_path!().split_once("::").unwrap().1
         );
-        let spec = LaunchSpec::new(&executable, &fixture, executable.parent().unwrap()).unwrap();
+        let spec = LaunchSpec::new(&executable, &fixture).unwrap();
         let mut canceled = prepare(&spec, context.binding_key())
             .unwrap_or_else(|failure| panic!("prepare cancellation: {}", failure.error));
         let canceled_marker = Marker(marker(canceled.identity().unwrap().id));

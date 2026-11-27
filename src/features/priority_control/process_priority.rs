@@ -17,8 +17,9 @@ use crate::{
         process::{ControlOwner, ProcessControlError, ProcessControlTarget, ProcessTargetKey},
     },
     foreground::{
-        is_foreground_process, process_executable_path, process_failure_key, process_session_id,
-        unique_app_names, ProtectedProcesses, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        is_foreground_process, process_executable_path, process_failure_key,
+        process_list::catalog_process_executable_path, process_session_id, ProtectedProcesses,
+        CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     runtime::observations::CycleObservations,
@@ -32,16 +33,19 @@ pub struct ProcessPrioritySnapshot {
     pub scanned_processes: usize,
     pub adjusted_processes: usize,
     pub skipped_processes: usize,
+    pub(crate) efficiency_mode_shadowed_processes: usize,
     pub failed_processes: usize,
-    pub adjusted_apps: Vec<String>,
     pub auto_excluded_processes: Vec<String>,
-    pub message: String,
+    pub(crate) observation_paused: bool,
+    pub(crate) waiting_for_power_source: bool,
     pub last_error: Option<String>,
 }
 
 #[derive(Default)]
 pub struct ProcessPriorityManager {
     failure_suppression: ExecutionFailureTracker,
+    non_release_failures: ProcessPriorityFailures,
+    release_error_reported: bool,
 }
 
 struct ProcessPriorityTarget {
@@ -50,13 +54,13 @@ struct ProcessPriorityTarget {
     executable_path: String,
     creation_time: u64,
     priority: PriorityClassValue,
-    tier: PriorityProcessTier,
+    preservation: PriorityClassPreservation,
 }
 
 impl ProcessPriorityManager {
     #[expect(
         clippy::too_many_arguments,
-        reason = "the policy boundary receives shared observations, exclusions, and its controller"
+        reason = "the policy boundary receives shared observations and its controller"
     )]
     pub(crate) fn update(
         &mut self,
@@ -65,10 +69,10 @@ impl ProcessPriorityManager {
         automation_enabled: bool,
         allow_cross_session_process_control: bool,
         foreground_process_id: Option<u32>,
-        excluded_process_ids: &BTreeSet<u32>,
         observations: &mut CycleObservations,
         action_log: &mut ActionLog,
     ) -> ProcessPrioritySnapshot {
+        self.non_release_failures = ProcessPriorityFailures::default();
         if !automation_enabled {
             return self.disabled_snapshot(controller, action_log, "automation disabled");
         }
@@ -80,15 +84,11 @@ impl ProcessPriorityManager {
             );
         }
 
-        let foreground_sensitive = settings.foreground_detection_enabled
-            && settings.foreground_priority != settings.background_priority;
-        if foreground_sensitive && foreground_process_id.is_none() {
-            return self.paused_snapshot(
-                controller,
-                action_log,
-                "foreground app is unknown",
-                "Paused: foreground app is unknown.",
-            );
+        let requires_focus = settings.foreground_detection_enabled
+            && (settings.child_protection.focused_app_children
+                || settings.foreground_priority != settings.background_priority);
+        if requires_focus && foreground_process_id.is_none() {
+            return self.pause_for_unknown_focus(controller, action_log);
         }
 
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
@@ -98,7 +98,7 @@ impl ProcessPriorityManager {
                 controller,
                 action_log,
                 "current Windows session is unknown",
-                "Paused: current Windows session is unknown.",
+                None,
             );
         };
 
@@ -109,10 +109,21 @@ impl ProcessPriorityManager {
                     controller,
                     action_log,
                     "process list unavailable",
-                    &error,
+                    Some(error),
                 );
             }
         };
+        let foreground_executable_path = foreground_process_id
+            .filter(|_| settings.foreground_detection_enabled)
+            .and_then(|id| catalog_process_executable_path(&processes, id));
+        let foreground_process_id =
+            foreground_process_id.filter(|_| foreground_executable_path.is_some());
+        let focus_unknown =
+            settings.foreground_detection_enabled && foreground_process_id.is_none();
+        if focus_unknown && requires_focus {
+            return self.pause_for_unknown_focus(controller, action_log);
+        }
+
         let scanned_processes = processes.len();
         let visible_processes = if settings.visible_window_detection_enabled {
             let Ok(process_ids) = observations.visible_window_process_ids() else {
@@ -120,75 +131,71 @@ impl ProcessPriorityManager {
                     controller,
                     action_log,
                     "visible windows are unavailable",
-                    "Paused: visible windows are unavailable.",
+                    None,
                 );
             };
             ProtectedProcesses::capture(processes.as_ref(), false, None, process_ids)
         } else {
             ProtectedProcesses::default()
         };
-        let foreground_executable_path = settings.foreground_detection_enabled.then(|| {
-            foreground_process_id.and_then(|id| {
-                processes
-                    .iter()
-                    .find(|process| process.id == id)
-                    .and_then(process_executable_path)
-            })
-        });
-        let foreground_executable_path = foreground_executable_path.flatten();
-
-        let targets = processes
-            .iter()
-            .filter_map(|process| {
-                if process.id == 0
-                    || process.id == current_process_id
-                    || process.is_critical != Some(false)
-                    || !process.can_set_information
-                    || excluded_process_ids.contains(&process.id)
-                    || (!allow_cross_session_process_control
-                        && process_session_id(process.id) != Some(current_session_id))
-                    || is_builtin_excluded(&process.name)
-                {
-                    return None;
-                }
-                let executable_path = process_executable_path(process)?;
-                let creation_time = process.creation_time?;
-                let foreground = settings.foreground_detection_enabled
-                    && is_foreground_process(
-                        process.id,
-                        &executable_path,
-                        foreground_process_id,
-                        foreground_executable_path.as_deref(),
-                    );
-                let visible_window = !foreground
-                    && settings.visible_window_detection_enabled
-                    && visible_processes.contains(process.id, &executable_path);
-                let tier = PriorityProcessTier::from_flags(foreground, visible_window);
-                let default_priority = tier.select(
-                    settings.foreground_priority,
-                    settings.visible_window_priority,
-                    settings.background_priority,
-                );
-                let configured_override = settings.override_for(
-                    executable_path.to_string_lossy().as_ref(),
-                    foreground,
-                    visible_window,
-                );
-                let priority = match configured_override {
-                    Some(Some(priority)) => priority,
-                    Some(None) => return None,
-                    None => default_priority,
-                };
-                PriorityClassValue::from_setting(priority).map(|priority| ProcessPriorityTarget {
-                    process_id: process.id,
-                    process_name: process.name.clone(),
-                    executable_path: executable_path.to_string_lossy().into_owned(),
-                    creation_time,
-                    priority,
-                    tier,
-                })
-            })
-            .collect::<Vec<_>>();
+        let child_protection = observations.priority_child_protection(
+            settings.child_protection,
+            &processes,
+            foreground_process_id,
+            &visible_processes,
+        );
+        let mut targets = Vec::new();
+        for process in processes.iter() {
+            if process.id == 0
+                || process.id == current_process_id
+                || process.is_critical != Some(false)
+                || !process.can_set_information
+                || (!allow_cross_session_process_control
+                    && process_session_id(process.id) != Some(current_session_id))
+                || is_builtin_excluded(&process.name)
+            {
+                continue;
+            }
+            let (Some(executable_path), Some(creation_time)) =
+                (process_executable_path(process), process.creation_time)
+            else {
+                continue;
+            };
+            let foreground = is_foreground_process(
+                process.id,
+                &executable_path,
+                foreground_process_id,
+                foreground_executable_path.as_deref(),
+            );
+            let visible_window = !foreground
+                && settings.visible_window_detection_enabled
+                && visible_processes.contains(process.id, &executable_path);
+            let tier = PriorityProcessTier::from_flags(foreground, visible_window);
+            if tier == PriorityProcessTier::Background && child_protection.contains(process.id) {
+                continue;
+            }
+            let Some(executable_path) = executable_path.to_str() else {
+                continue;
+            };
+            let policy = priority_policy(settings, executable_path, tier);
+            if focus_unknown
+                && policy
+                    != priority_policy(settings, executable_path, PriorityProcessTier::Foreground)
+            {
+                return self.pause_for_unknown_focus(controller, action_log);
+            }
+            let Some((priority, preservation)) = policy else {
+                continue;
+            };
+            targets.push(ProcessPriorityTarget {
+                process_id: process.id,
+                process_name: process.name.clone(),
+                executable_path: executable_path.to_owned(),
+                creation_time,
+                priority,
+                preservation,
+            });
+        }
 
         let active_targets = targets
             .iter()
@@ -200,15 +207,14 @@ impl ProcessPriorityManager {
             .collect::<BTreeSet<_>>();
         self.failure_suppression.retain_keys(&active_target_names);
 
-        let mut failures = ProcessPriorityFailures::default();
-        self.merge_release_summary(
+        self.record_policy_release(
             controller
                 .release_priority_policy_except(ControlOwner::ProcessPriority, &active_targets),
             action_log,
             "process is excluded or no longer matches Process Priority defaults",
-            &mut failures,
         );
         let mut skipped_processes = 0;
+        let mut efficiency_mode_shadowed_processes = 0;
         let mut applied_processes = 0;
         let mut auto_excluded_processes = BTreeSet::new();
 
@@ -232,12 +238,7 @@ impl ProcessPriorityManager {
                 ),
                 owner: ControlOwner::ProcessPriority,
                 priority: target.priority,
-                preservation: priority_preservation(
-                    target.tier,
-                    settings.preserve_foreground_priority,
-                    settings.preserve_visible_window_priority,
-                    settings.preserve_background_priority,
-                ),
+                preservation: target.preservation,
             };
             match controller.apply_priority_claim(claim, allow_cross_session_process_control) {
                 Ok(ProcessPropertyApplyOutcome::Applied) => {
@@ -246,8 +247,13 @@ impl ProcessPriorityManager {
                         .clear_process_failure(&target.executable_path);
                 }
                 Ok(
-                    ProcessPropertyApplyOutcome::Unchanged | ProcessPropertyApplyOutcome::Shadowed,
+                    outcome @ (ProcessPropertyApplyOutcome::Unchanged
+                    | ProcessPropertyApplyOutcome::Shadowed),
                 ) => {
+                    // Efficiency Mode is the only automatic priority claim above Process Priority.
+                    if outcome == ProcessPropertyApplyOutcome::Shadowed {
+                        efficiency_mode_shadowed_processes += 1;
+                    }
                     self.failure_suppression
                         .clear_process_failure(&target.executable_path);
                 }
@@ -274,8 +280,7 @@ impl ProcessPriorityManager {
                 Err(error) => {
                     self.failure_suppression
                         .record_process_failure(&target.executable_path);
-                    failures.record(
-                        "Apply",
+                    self.non_release_failures.record(
                         target.process_id,
                         &target.process_name,
                         error,
@@ -294,23 +299,68 @@ impl ProcessPriorityManager {
             );
         }
 
-        ProcessPrioritySnapshot {
-            enabled: true,
-            scanned_processes,
-            adjusted_processes: controller
-                .policy_managed_process_count(ControlOwner::ProcessPriority),
-            skipped_processes,
-            failed_processes: failures.count,
-            adjusted_apps: unique_app_names(
-                controller
-                    .policy_managed_process_names(ControlOwner::ProcessPriority)
-                    .iter()
-                    .map(String::as_str),
-            ),
-            auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
-            message: "Process priority defaults active.".to_owned(),
-            last_error: failures.last_error,
+        self.with_release_status(
+            controller,
+            ProcessPrioritySnapshot {
+                enabled: true,
+                scanned_processes,
+                adjusted_processes: controller
+                    .policy_managed_process_count(ControlOwner::ProcessPriority),
+                skipped_processes,
+                efficiency_mode_shadowed_processes,
+                auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
+                ..Default::default()
+            },
+        )
+    }
+
+    pub(crate) fn reported_release_is_resolved(
+        &self,
+        controller: &PriorityEfficiencyController,
+    ) -> bool {
+        self.release_error_reported
+            && controller
+                .process_priority_release_failures()
+                .next()
+                .is_none()
+    }
+
+    pub(crate) fn report_release_retry(
+        &mut self,
+        controller: &PriorityEfficiencyController,
+        restored: usize,
+        mut status: ProcessPrioritySnapshot,
+        action_log: &mut ActionLog,
+    ) -> ProcessPrioritySnapshot {
+        Self::record_restoration(action_log, restored, "restoration retry completed");
+        status.auto_excluded_processes.clear();
+        if status.enabled && !status.observation_paused {
+            status.adjusted_processes =
+                controller.policy_managed_process_count(ControlOwner::ProcessPriority);
         }
+        self.with_release_status(controller, status)
+    }
+
+    fn with_release_status(
+        &mut self,
+        controller: &PriorityEfficiencyController,
+        mut status: ProcessPrioritySnapshot,
+    ) -> ProcessPrioritySnapshot {
+        let mut failures = controller.process_priority_release_failures();
+        let first = failures.next();
+        self.release_error_reported = first.is_some();
+        status.failed_processes = self.non_release_failures.count
+            + usize::from(self.release_error_reported)
+            + failures.count();
+        status.last_error = first
+            .map(|failure| {
+                format!(
+                    "Restore {} {} ({}): {}",
+                    failure.property, failure.process_name, failure.process_id, failure.error,
+                )
+            })
+            .or_else(|| self.non_release_failures.last_error.clone());
+        status
     }
 
     fn disabled_snapshot(
@@ -319,24 +369,32 @@ impl ProcessPriorityManager {
         action_log: &mut ActionLog,
         reason: &str,
     ) -> ProcessPrioritySnapshot {
-        let mut failures = ProcessPriorityFailures::default();
-        self.merge_release_summary(
+        self.record_policy_release(
             controller.release_all_priority_policy(ControlOwner::ProcessPriority),
             action_log,
             reason,
-            &mut failures,
         );
         self.failure_suppression.clear();
+        self.with_release_status(controller, ProcessPrioritySnapshot::default())
+    }
+
+    fn pause_for_unknown_focus(
+        &mut self,
+        controller: &mut PriorityEfficiencyController,
+        action_log: &mut ActionLog,
+    ) -> ProcessPrioritySnapshot {
+        self.paused_snapshot(controller, action_log, "foreground app is unknown", None)
+    }
+
+    pub(crate) fn pause_for_power_source(
+        &mut self,
+        controller: &mut PriorityEfficiencyController,
+        action_log: &mut ActionLog,
+    ) -> ProcessPrioritySnapshot {
+        self.non_release_failures = ProcessPriorityFailures::default();
         ProcessPrioritySnapshot {
-            enabled: false,
-            failed_processes: failures.count,
-            message: if reason == "automation disabled" {
-                "Automation disabled.".to_owned()
-            } else {
-                "Process priority defaults disabled.".to_owned()
-            },
-            last_error: failures.last_error,
-            ..Default::default()
+            waiting_for_power_source: true,
+            ..self.paused_snapshot(controller, action_log, "power source is unknown", None)
         }
     }
 
@@ -345,52 +403,52 @@ impl ProcessPriorityManager {
         controller: &mut PriorityEfficiencyController,
         action_log: &mut ActionLog,
         reason: &str,
-        message: &str,
+        observation_error: Option<String>,
     ) -> ProcessPrioritySnapshot {
-        let mut failures = ProcessPriorityFailures::default();
-        self.merge_release_summary(
+        self.record_policy_release(
             controller.release_all_priority_policy(ControlOwner::ProcessPriority),
             action_log,
             reason,
-            &mut failures,
         );
-        ProcessPrioritySnapshot {
-            enabled: true,
-            failed_processes: failures.count,
-            message: message.to_owned(),
-            last_error: failures.last_error,
-            ..Default::default()
-        }
+        self.non_release_failures.last_error = observation_error;
+        self.with_release_status(
+            controller,
+            ProcessPrioritySnapshot {
+                enabled: true,
+                observation_paused: true,
+                ..Default::default()
+            },
+        )
     }
 
-    fn merge_release_summary(
+    fn record_policy_release(
         &mut self,
         summary: PriorityEfficiencyReleaseSummary,
         action_log: &mut ActionLog,
         reason: &str,
-        failures: &mut ProcessPriorityFailures,
     ) {
-        if summary.restored_processes > 0 {
+        Self::record_restoration(action_log, summary.restored_processes, reason);
+        for failure in summary.failures {
+            self.failure_suppression
+                .record_process_failure(&failure.executable_path);
+            action_log.record(
+                ActionLogFeature::ProcessPriority,
+                Some(failure.process_id),
+                failure.process_name,
+                ActionLogResult::Failed,
+                failure.error.to_string(),
+            );
+        }
+    }
+
+    fn record_restoration(action_log: &mut ActionLog, restored: usize, reason: &str) {
+        if restored > 0 {
             action_log.record(
                 ActionLogFeature::ProcessPriority,
                 None,
                 "",
                 ActionLogResult::Restored,
-                format!(
-                    "Restored process priority for {} process(es): {reason}.",
-                    summary.restored_processes
-                ),
-            );
-        }
-        for failure in summary.failures {
-            self.failure_suppression
-                .record_process_failure(&failure.executable_path);
-            failures.record(
-                &format!("Restore {}", failure.property),
-                failure.process_id,
-                &failure.process_name,
-                failure.error,
-                action_log,
+                format!("Restored process priority for {restored} process(es): {reason}."),
             );
         }
     }
@@ -435,7 +493,6 @@ struct ProcessPriorityFailures {
 impl ProcessPriorityFailures {
     fn record(
         &mut self,
-        action: &str,
         process_id: u32,
         process_name: &str,
         error: ProcessControlError,
@@ -443,7 +500,7 @@ impl ProcessPriorityFailures {
     ) {
         let message = error.to_string();
         if self.last_error.is_none() {
-            self.last_error = Some(format!("{action} {process_name} ({process_id}): {message}"));
+            self.last_error = Some(format!("Apply {process_name} ({process_id}): {message}"));
         }
         self.count += 1;
         action_log.record(
@@ -462,6 +519,34 @@ fn process_priority_target_key(target: &ProcessPriorityTarget) -> ProcessTargetK
         target.creation_time,
         Path::new(&target.executable_path),
     )
+}
+
+fn priority_policy(
+    settings: &ProcessPrioritySettings,
+    executable_path: &str,
+    tier: PriorityProcessTier,
+) -> Option<(PriorityClassValue, PriorityClassPreservation)> {
+    let priority = settings
+        .override_for(
+            executable_path,
+            tier == PriorityProcessTier::Foreground,
+            tier == PriorityProcessTier::VisibleWindow,
+        )
+        .unwrap_or_else(|| {
+            Some(tier.select(
+                settings.foreground_priority,
+                settings.visible_window_priority,
+                settings.background_priority,
+            ))
+        })?;
+    let priority = PriorityClassValue::from_setting(priority)?;
+    let preservation = priority_preservation(
+        tier,
+        settings.preserve_foreground_priority,
+        settings.preserve_visible_window_priority,
+        settings.preserve_background_priority,
+    );
+    Some((priority, preservation))
 }
 
 fn priority_preservation(
@@ -491,6 +576,146 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        config::{PriorityChildProtectionSettings, ProcessExclusionRule, ProcessPrioritySetting},
+        foreground::ProcessInfo,
+    };
+
+    #[test]
+    fn unverified_focus_pauses_only_focus_dependent_priority_policy() {
+        let mut manager = ProcessPriorityManager::default();
+        let mut controller = PriorityEfficiencyController::default();
+        let mut log = ActionLog::new(8);
+        let mut update = |settings: &ProcessPrioritySettings, processes| {
+            let mut observations = CycleObservations::with_processes(processes);
+            manager.update(
+                &mut controller,
+                settings,
+                true,
+                true,
+                Some(std::process::id()),
+                &mut observations,
+                &mut log,
+            )
+        };
+        let mut settings = ProcessPrioritySettings {
+            enabled: true,
+            child_protection: PriorityChildProtectionSettings {
+                focused_app_children: false,
+                visible_window_app_children: false,
+            },
+            ..Default::default()
+        };
+        assert!(update(&settings, vec![]).observation_paused);
+
+        settings.foreground_detection_enabled = false;
+        settings.child_protection.focused_app_children = true;
+        assert!(!update(&settings, vec![]).observation_paused);
+
+        settings.foreground_detection_enabled = true;
+        settings.background_priority = settings.foreground_priority;
+        let path = r"C:\Apps\helper.exe";
+        let helper = ProcessInfo {
+            id: u32::MAX,
+            creation_time: Some(1),
+            parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_service_account: None,
+            is_critical: Some(false),
+            can_set_information: true,
+            name: "helper.exe".to_owned(),
+            image_path: Some(path.into()),
+        };
+        assert!(update(&settings, vec![helper.clone()]).observation_paused);
+        settings.child_protection.focused_app_children = false;
+        assert!(!update(&settings, vec![helper.clone()]).observation_paused);
+
+        settings.exclusions.push(ProcessExclusionRule {
+            executable_path: path.to_owned(),
+            process_foreground_priority: Some(ProcessPrioritySetting::AboveNormal),
+            ..Default::default()
+        });
+        assert!(update(&settings, vec![helper]).observation_paused);
+        assert!(log.entries().is_empty());
+    }
+
+    #[test]
+    fn child_protection_omits_background_rules_and_keeps_direct_window_policy() {
+        let app_id = std::process::id();
+        // A nonexistent PID can demonstrate reaching the controller without changing OS state.
+        let child_id = u32::MAX;
+        let app = ProcessInfo {
+            id: app_id,
+            creation_time: Some(1),
+            parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_service_account: None,
+            is_critical: Some(false),
+            can_set_information: false,
+            name: "app.exe".to_owned(),
+            image_path: Some(r"C:\Apps\app.exe".into()),
+        };
+        let child_path = r"C:\Apps\helper.exe";
+        let child = ProcessInfo {
+            id: child_id,
+            creation_time: Some(2),
+            parent_id: Some(app_id),
+            can_set_information: true,
+            name: "helper.exe".to_owned(),
+            image_path: Some(child_path.into()),
+            ..app.clone()
+        };
+        for (
+            focus,
+            window_owner,
+            focused_app_children,
+            visible_window_app_children,
+            expected_attempts,
+        ) in [
+            (true, None, false, true, 1),
+            (true, None, true, false, 0),
+            (false, Some(app_id), true, false, 1),
+            (false, Some(app_id), false, true, 0),
+            (true, Some(child_id), true, true, 1),
+        ] {
+            let mut observations =
+                CycleObservations::with_processes(vec![app.clone(), child.clone()])
+                    .with_visible_windows(window_owner.into_iter().collect());
+            let settings = ProcessPrioritySettings {
+                enabled: true,
+                foreground_detection_enabled: focus,
+                visible_window_detection_enabled: window_owner.is_some(),
+                child_protection: PriorityChildProtectionSettings {
+                    focused_app_children,
+                    visible_window_app_children,
+                },
+                background_priority: ProcessPrioritySetting::Default,
+                exclusions: vec![ProcessExclusionRule {
+                    executable_path: child_path.to_owned(),
+                    process_visible_window_priority: Some(ProcessPrioritySetting::Idle),
+                    process_background_priority: Some(ProcessPrioritySetting::Idle),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let status = ProcessPriorityManager::default().update(
+                &mut PriorityEfficiencyController::default(),
+                &settings,
+                true,
+                true,
+                focus.then_some(app_id),
+                &mut observations,
+                &mut ActionLog::new(8),
+            );
+            assert!(!status.observation_paused);
+            assert_eq!(
+                status.skipped_processes + status.failed_processes,
+                expected_attempts
+            );
+        }
+    }
 
     #[test]
     fn repeated_failures_emit_one_process_priority_auto_exclusion_and_success_resets_it() {

@@ -1,5 +1,8 @@
-use std::{collections::HashMap, sync::LazyLock};
+use std::{cell::RefCell, collections::HashMap, sync::LazyLock};
 
+use iced::advanced::{graphics::geometry::Renderer as _, Renderer as _};
+use iced::widget::canvas;
+use iced::{mouse, Color, Element, Point, Rectangle, Renderer, Size, Theme, Vector};
 use icondata_core::IconData;
 
 pub(super) fn logo() -> iced::widget::image::Handle {
@@ -36,7 +39,6 @@ const ICON_ASSETS: &[(&str, &IconData)] = &[
     ("icons/cog.svg", icondata_lu::LuCog),
     ("icons/coffee.svg", icondata_lu::LuCoffee),
     ("icons/clock.svg", icondata_lu::LuClock),
-    ("icons/computer.svg", icondata_lu::LuComputer),
     ("icons/cpu.svg", icondata_lu::LuCpu),
     ("icons/drill.svg", icondata_lu::LuDrill),
     ("icons/flask-conical.svg", icondata_lu::LuFlaskConical),
@@ -66,7 +68,14 @@ const ICON_ASSETS: &[(&str, &IconData)] = &[
     ("icons/shield.svg", icondata_lu::LuShield),
     ("icons/circle-help.svg", icondata_lu::LuCircleHelp),
     ("icons/pencil.svg", icondata_lu::LuPencil),
-    ("icons/plus.svg", icondata_lu::LuPlus),
+    (
+        "icons/plus.svg",
+        &IconData {
+            // Keep both strokes in one fill so dimmed icons have uniform opacity.
+            data: r#"<path d="M5 12h14 M12 5v14" />"#,
+            ..*icondata_lu::LuPlus
+        },
+    ),
     ("icons/rotate-ccw.svg", icondata_lu::LuRotateCcw),
     ("icons/rotate-3d.svg", icondata_lu::LuRotate3d),
     ("icons/scale.svg", icondata_lu::LuScale),
@@ -110,47 +119,227 @@ fn push_attr(svg: &mut String, name: &str, value: Option<&str>) {
         svg.push('"');
     }
 }
-pub(crate) fn iced_icon(path: &str) -> Option<iced::widget::svg::Handle> {
-    static HANDLES: LazyLock<HashMap<&'static str, iced::widget::svg::Handle>> =
-        LazyLock::new(|| {
-            let mut handles: HashMap<_, _> = ICON_ASSETS
-                .iter()
-                .map(|(path, icon)| {
-                    (
-                        *path,
-                        iced::widget::svg::Handle::from_memory(lucide_svg(icon).into_bytes()),
-                    )
-                })
-                .collect();
-            handles.insert(
-                "icons/discord.svg",
-                iced::widget::svg::Handle::from_memory(
-                    include_bytes!("../../image/discord.svg").as_slice(),
-                ),
-            );
-            handles
-        });
-    HANDLES.get(path).cloned()
+
+const DISCORD: &str = "icons/discord.svg";
+static ICONS: LazyLock<HashMap<&'static str, VectorIcon>> = LazyLock::new(|| {
+    ICON_ASSETS
+        .iter()
+        .map(|(path, icon)| (*path, VectorIcon::parse(&lucide_svg(icon))))
+        .chain([(
+            DISCORD,
+            VectorIcon::parse(include_str!("../../image/discord.svg")),
+        )])
+        .collect()
+});
+
+struct VectorIcon {
+    viewport: Size,
+    shapes: Vec<Shape>,
 }
 
-// SVG-local rotation works with the unmodified software renderer.
-pub(super) fn chevron_frame(progress: f32) -> iced::widget::svg::Handle {
-    static FRAMES: LazyLock<[iced::widget::svg::Handle; 19]> = LazyLock::new(|| {
-        std::array::from_fn(|index| {
-            let icon = icondata_lu::LuChevronRight;
-            let svg = lucide_svg(icon).replace(
-                icon.data,
-                &format!(
-                    "<g transform=\"rotate({} 12 12)\">{}</g>",
-                    index * 5,
-                    icon.data
-                ),
-            );
-            iced::widget::svg::Handle::from_memory(svg.into_bytes())
-        })
-    });
-    FRAMES[(progress.clamp(0.0, 1.0) * 18.0).round() as usize].clone()
+struct Shape {
+    path: canvas::Path,
+    even_odd: bool,
+    opacity: f32,
 }
+
+impl VectorIcon {
+    fn parse(svg: &str) -> Self {
+        let tree = usvg::Tree::from_str(svg, &usvg::Options::default())
+            .expect("Bundled icons must be valid SVG");
+        let mut shapes = Vec::new();
+        collect_shapes(tree.root(), &mut shapes);
+        Self {
+            viewport: Size::new(tree.size().width(), tree.size().height()),
+            shapes,
+        }
+    }
+}
+
+fn collect_shapes(group: &usvg::Group, shapes: &mut Vec<Shape>) {
+    assert!(group.clip_path().is_none() && group.mask().is_none() && group.filters().is_empty());
+    assert_eq!(
+        group.opacity().get(),
+        1.0,
+        "Bundled icon groups must be opaque"
+    );
+    for child in group.children() {
+        match child {
+            usvg::Node::Group(group) => collect_shapes(group, shapes),
+            usvg::Node::Path(path) if path.is_visible() => {
+                let transform = path.abs_transform();
+                if let Some(fill) = path.fill() {
+                    shapes.push(shape(
+                        path.data().clone(),
+                        transform,
+                        fill.rule() == usvg::FillRule::EvenOdd,
+                        fill.opacity().get(),
+                    ));
+                }
+                if let Some(stroke) = path.stroke() {
+                    if let Some(outline) = path.data().stroke(&stroke.to_tiny_skia(), 1.0) {
+                        shapes.push(shape(outline, transform, false, stroke.opacity().get()));
+                    }
+                }
+            }
+            usvg::Node::Path(_) => {}
+            _ => panic!("Bundled icons must contain vector paths only"),
+        }
+    }
+}
+
+fn shape(
+    path: usvg::tiny_skia_path::Path,
+    transform: usvg::Transform,
+    even_odd: bool,
+    opacity: f32,
+) -> Shape {
+    use usvg::tiny_skia_path::PathSegment;
+    let path = path
+        .transform(transform)
+        .expect("Bundled icon transform is valid");
+    let point = |p: usvg::tiny_skia_path::Point| Point::new(p.x, p.y);
+    let path = canvas::Path::new(|builder| {
+        for segment in path.segments() {
+            match segment {
+                PathSegment::MoveTo(p) => builder.move_to(point(p)),
+                PathSegment::LineTo(p) => builder.line_to(point(p)),
+                PathSegment::QuadTo(a, b) => builder.quadratic_curve_to(point(a), point(b)),
+                PathSegment::CubicTo(a, b, c) => {
+                    builder.bezier_curve_to(point(a), point(b), point(c))
+                }
+                PathSegment::Close => builder.close(),
+            }
+        }
+    });
+    Shape {
+        path,
+        even_odd,
+        opacity,
+    }
+}
+
+struct IconProgram<F> {
+    path: &'static str,
+    color: F,
+}
+
+impl<M, F: Fn(&Theme) -> Color> canvas::Program<M> for IconProgram<F> {
+    type State = ();
+
+    fn draw(
+        &self,
+        _: &(),
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        vec![icon_geometry(
+            renderer,
+            self.path,
+            bounds.size(),
+            (self.color)(theme),
+            0.0,
+        )]
+    }
+}
+
+pub(super) fn icon<'a, M: 'a>(
+    path: &'static str,
+    size: u32,
+    color: impl Fn(&Theme) -> Color + 'a,
+) -> Element<'a, M> {
+    canvas::Canvas::new(IconProgram { path, color })
+        .width(size)
+        .height(size)
+        .into()
+}
+
+#[cfg(test)]
+pub(super) fn has_icon(path: &str) -> bool {
+    ICONS.contains_key(path)
+}
+
+pub(super) fn draw_icon(
+    renderer: &mut Renderer,
+    path: &'static str,
+    bounds: Rectangle,
+    color: Color,
+    quarter_turns: f32,
+) {
+    let geometry = icon_geometry(renderer, path, bounds.size(), color, quarter_turns);
+    renderer.with_translation(Vector::new(bounds.x, bounds.y), |renderer| {
+        renderer.draw_geometry(geometry)
+    });
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct IconFrame {
+    path: &'static str,
+    size: [u32; 2],
+    color: [u32; 4],
+    rotation: u8,
+}
+
+thread_local! {
+    static FRAMES: RefCell<HashMap<IconFrame, canvas::Cache>> = RefCell::default();
+}
+
+fn icon_geometry(
+    renderer: &Renderer,
+    path: &'static str,
+    size: Size,
+    color: Color,
+    quarter_turns: f32,
+) -> canvas::Geometry {
+    use iced::advanced::graphics::geometry::fill::Rule;
+    let rotation = (quarter_turns.clamp(0.0, 3.0) * 18.0).round() as u8;
+    let key = IconFrame {
+        path,
+        size: [size.width.to_bits(), size.height.to_bits()],
+        color: [color.r, color.g, color.b, color.a].map(f32::to_bits),
+        rotation,
+    };
+    FRAMES.with_borrow_mut(|frames| {
+        // Theme color previews can produce arbitrarily many tints.
+        if frames.len() >= 512 && !frames.contains_key(&key) {
+            frames.clear();
+        }
+        frames
+            .entry(key)
+            .or_default()
+            .draw(renderer, size, |frame| {
+                let icon = ICONS.get(path).expect("Every UI icon is bundled");
+                let scale =
+                    (size.width / icon.viewport.width).min(size.height / icon.viewport.height);
+                // Draw paths at the actual layout origin. SVG pixmap positions truncate fractional pixels.
+                frame.translate(Vector::new(size.width / 2.0, size.height / 2.0));
+                frame.rotate(iced::Radians((f32::from(rotation) * 5.0).to_radians()));
+                frame.scale(scale);
+                frame.translate(Vector::new(
+                    -icon.viewport.width / 2.0,
+                    -icon.viewport.height / 2.0,
+                ));
+                for shape in &icon.shapes {
+                    frame.fill(
+                        &shape.path,
+                        canvas::Fill {
+                            style: color.scale_alpha(shape.opacity).into(),
+                            rule: if shape.even_odd {
+                                Rule::EvenOdd
+                            } else {
+                                Rule::NonZero
+                            },
+                        },
+                    );
+                }
+            })
+    })
+}
+
+#[cfg(test)]
+mod centering_tests;
 
 #[cfg(test)]
 mod tests {
@@ -161,14 +350,9 @@ mod tests {
     #[test]
     fn icon_asset_paths_are_unique() {
         let mut paths = HashSet::new();
-        for path in ICON_ASSETS
-            .iter()
-            .map(|(path, _)| *path)
-            .chain(["icons/discord.svg"])
-        {
+        for path in ICON_ASSETS.iter().map(|(path, _)| *path).chain([DISCORD]) {
             assert!(paths.insert(path), "duplicate icon asset path: {path}");
-            let first = iced_icon(path).unwrap();
-            assert_eq!(first.id(), iced_icon(path).unwrap().id());
+            assert!(!ICONS[path].shapes.is_empty(), "empty icon: {path}");
         }
     }
 }

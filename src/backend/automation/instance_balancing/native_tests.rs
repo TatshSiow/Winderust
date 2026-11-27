@@ -93,10 +93,13 @@ fn shared(settings: &Arc<Settings>) -> Arc<SharedAutomationState> {
             pending_auto_exclusions_revision: None,
             pending_auto_exclusions_retry_at: None,
             process_control_commands: VecDeque::new(),
+            idle_action_log: Some(Default::default()),
             action_log_clear_requested: false,
             pending_events: AutomationWakeEvents::default(),
+            pending_keep_running_resets: Default::default(),
             pending_instance_limits_resets: super::super::instance_limits::PendingResets::default(),
             pending_instance_balancing_resets: PendingResets::default(),
+            pending_sleep_prevention_settings: Default::default(),
             input_activity: InputActivityTracker::default(),
             windows_event_watcher_active: false,
             worker_accepting_work: false,
@@ -133,18 +136,39 @@ fn tick(
         "Native smoke exceeded its 24-second deadline"
     );
     let watcher_active = lock_unpoisoned(&shared.state).windows_event_watcher_active;
-    let status = core.run_instance_balancing_update(shared, settings, settings, watcher_active);
+    let status =
+        core.run_instance_balancing_update(shared, settings, settings, None, watcher_active);
     assert!(
         Instant::now() < deadline,
         "Native producer exceeded its deadline"
     );
-    assert_eq!(status.last_error, None, "{}", status.message);
-    assert_eq!(status.failed_processes, 0, "{}", status.message);
-    if status.enabled && status.adjusted_processes == 0 {
+    assert_eq!(status.last_error, None, "{:?}", status.detail);
+    assert_eq!(status.failed_processes, 0, "{:?}", status.detail);
+    let rules = &settings.instance_balancing.rules;
+    if status.enabled {
+        let assigned = status.adjusted_processes;
+        let (result, detail) = if assigned == 0 {
+            (
+                ActionLogResult::Skipped,
+                InstanceBalancingDetail::WaitingForStableCohort,
+            )
+        } else {
+            (
+                ActionLogResult::Applied,
+                InstanceBalancingDetail::Assigned(assigned),
+            )
+        };
+        assert_eq!(status.detail.as_ref(), Some(&detail));
+        assert_eq!(status.rule_result(&rules[0]), Some((result, &detail)));
         assert_eq!(
-            status.message,
-            t!("instance_balancing.waiting_stable").to_string()
+            status.rule_result(&rules[1]),
+            Some((
+                ActionLogResult::Skipped,
+                &InstanceBalancingDetail::WaitingForInstances
+            ))
         );
+    } else {
+        assert!(rules.iter().all(|rule| status.rule_result(rule).is_none()));
     }
     status.adjusted_processes
 }
@@ -194,6 +218,9 @@ fn native_producer_replans_complete_cohorts_and_restores_on_disable() {
     std::fs::create_dir(&directory).unwrap();
     let image = Image(directory.join("balancing worker.exe"));
     std::fs::hard_link(std::env::current_exe().unwrap(), &image.0).unwrap();
+    let idle_image = Image(directory.join("unused").join(image.0.file_name().unwrap()));
+    std::fs::create_dir(idle_image.0.parent().unwrap()).unwrap();
+    std::fs::copy(&image.0, &idle_image.0).unwrap();
     let deadline = Instant::now() + Duration::from_secs(24);
     let mut workers = vec![Worker::start(&image), Worker::start(&image)];
     let mut current = members(&image, &workers, deadline);
@@ -205,10 +232,13 @@ fn native_producer_replans_complete_cohorts_and_restores_on_disable() {
     let mut settings = Arc::new(Settings {
         instance_balancing: InstanceBalancingSettings {
             enabled: true,
-            rules: vec![InstanceBalancingRule {
-                enabled: true,
-                executable_path: image.0.to_str().unwrap().into(),
-            }],
+            rules: [&image.0, &idle_image.0]
+                .into_iter()
+                .map(|path| InstanceBalancingRule {
+                    enabled: true,
+                    executable_path: path.to_str().unwrap().into(),
+                })
+                .collect(),
         },
         ..Settings::default()
     });
@@ -216,6 +246,7 @@ fn native_producer_replans_complete_cohorts_and_restores_on_disable() {
     let events = Arc::clone(&shared);
     let stopped = Arc::clone(&shared);
     let watcher = WindowsEventWatcher::start(
+        crate::backend::windows_events::WindowsEventWatcherMode::Full,
         Arc::new(move |event| notify_windows_event(&events, event)),
         Arc::new(move || set_windows_event_watcher_active(&stopped, false)),
     )
@@ -266,5 +297,6 @@ fn native_producer_replans_complete_cohorts_and_restores_on_disable() {
     drop(core);
     drop(watcher);
     drop(workers);
+    drop(idle_image);
     drop(image);
 }

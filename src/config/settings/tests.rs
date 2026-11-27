@@ -1,7 +1,57 @@
 use super::*;
 
 #[test]
-fn sleep_prevention_is_opt_in_and_round_trips_independent_power_profiles() {
+fn priority_child_protection_defaults_on_and_is_independent_by_feature_and_power_source() {
+    let default: PriorityChildProtectionSettings = toml::from_str("").unwrap();
+    assert!(default.focused_app_children && default.visible_window_app_children);
+
+    let mut settings = Settings::default();
+    for protection in [
+        settings.process_priority.child_protection,
+        settings.thread_priority.child_protection,
+        settings.dynamic_priority_boost.child_protection,
+        settings.io_priority.child_protection,
+        settings.gpu_priority.child_protection,
+        settings.memory_priority.child_protection,
+        settings.efficiency_mode.child_protection,
+    ] {
+        assert_eq!(protection, default);
+    }
+    let defaults = toml::to_string(&settings).unwrap();
+    assert!(!defaults.contains(".child_protection]"));
+
+    settings
+        .battery_profile_mut()
+        .io_priority
+        .child_protection
+        .visible_window_app_children = false;
+    settings
+        .process_priority
+        .child_protection
+        .focused_app_children = false;
+    settings.sync_shared_settings_to_battery();
+
+    let battery = settings.battery_profile();
+    assert_eq!(battery.process_priority.child_protection, default);
+    assert!(
+        !battery
+            .io_priority
+            .child_protection
+            .visible_window_app_children
+    );
+    assert_eq!(settings.io_priority.child_protection, default);
+    assert!(
+        !settings
+            .process_priority
+            .child_protection
+            .focused_app_children
+    );
+    let encoded = toml::to_string(&settings).unwrap();
+    assert_eq!(toml::from_str::<Settings>(&encoded).unwrap(), settings);
+}
+
+#[test]
+fn sleep_prevention_is_opt_in_and_round_trips_shared_policy() {
     let mut settings = Settings::default();
     assert!(!settings.sleep_prevention.enabled);
     assert!(settings.sleep_prevention.rules.is_empty());
@@ -13,7 +63,11 @@ fn sleep_prevention_is_opt_in_and_round_trips_independent_power_profiles() {
         executable_path: r"C:\Apps\worker.exe".into(),
         keep_display_on: true,
     });
-    assert!(!settings.battery_profile().sleep_prevention.enabled);
+    settings.sync_shared_settings_to_battery();
+    assert_eq!(
+        settings.battery_profile().sleep_prevention,
+        settings.sleep_prevention
+    );
     assert!(settings
         .sleep_prevention
         .contains_rule_for(r"c:/apps/WORKER.exe"));
@@ -29,7 +83,7 @@ fn sleep_prevention_is_opt_in_and_round_trips_independent_power_profiles() {
 }
 
 #[test]
-fn sleep_prevention_rejects_unqualified_paths_in_both_power_profiles() {
+fn sleep_prevention_validates_paths_in_the_shared_policy() {
     for battery in [false, true] {
         for path in ["", "worker.exe", r"C:\Apps\worker.exe\0"] {
             let path = path.replace("\\0", "\0");
@@ -44,12 +98,35 @@ fn sleep_prevention_rejects_unqualified_paths_in_both_power_profiles() {
                 executable_path: path,
                 keep_display_on: false,
             });
-            assert!(settings
-                .validate()
-                .unwrap_err()
-                .contains("Sleep Prevention"));
+            let result = settings.validate();
+            if battery {
+                assert!(result.is_ok());
+            } else {
+                assert!(result.unwrap_err().contains("Sleep Prevention"));
+            }
         }
     }
+}
+
+#[test]
+fn keep_running_and_resource_thresholds_validate_shared_settings() {
+    use crate::config::KeepRunningRule;
+
+    let mut settings = Settings::default();
+    let battery = settings.battery_profile_mut();
+    battery.resource_thresholds.sustained_seconds = 0;
+    battery
+        .keep_running
+        .rules
+        .push(KeepRunningRule::new("relative.exe".into()));
+
+    assert!(settings.validate().is_ok());
+
+    let battery = settings.on_battery.take().unwrap();
+    settings.resource_thresholds = battery.resource_thresholds;
+    settings.keep_running = battery.keep_running;
+    assert!(settings.validate_resource_thresholds().is_err());
+    assert!(settings.validate_keep_running().is_err());
 }
 
 #[test]
@@ -296,7 +373,7 @@ fn first_run_rule_modules_are_disabled() {
         settings.by_focus.enabled,
         settings.by_time.enabled,
         settings.by_cpu_load.enabled,
-        settings.background_efficiency.enabled,
+        settings.efficiency_mode.enabled,
         settings.app_suspension.enabled,
         settings.cpu_sets_soft.enabled,
         settings.processor_affinity_hard.enabled,
@@ -309,7 +386,7 @@ fn first_run_rule_modules_are_disabled() {
         settings.gpu_priority.enabled,
         settings.memory_priority.enabled,
         settings.memory_trim.enabled,
-        settings.watchdog.enabled,
+        settings.resource_thresholds.enabled,
         settings.timer_resolution.enabled,
     ]
     .into_iter()
@@ -329,70 +406,110 @@ fn cross_session_process_control_is_enabled_by_default() {
 fn appearance_indicators_are_enabled_by_default() {
     let general = Settings::default().general;
 
-    assert!(general.show_enabled_feature_counts_in_sidebar);
+    assert!(general.show_enabled_feature_counts);
     assert!(general.show_feature_status_on_cards);
 }
 
 #[test]
 fn network_threshold_units_convert_to_canonical_bytes() {
-    assert_eq!(
-        NetworkThresholdUnit::Bytes.threshold_bytes_from_value(42.0),
-        42
-    );
-    assert_eq!(
-        NetworkThresholdUnit::Kilobytes.threshold_bytes_from_value(1.5),
-        1_500
-    );
-    assert_eq!(
-        NetworkThresholdUnit::Megabytes.threshold_bytes_from_value(1.25),
-        1_250_000
-    );
-    assert_eq!(
-        NetworkThresholdUnit::Gigabytes.threshold_bytes_from_value(1.25),
-        1_250_000_000
-    );
-    assert_eq!(
-        NetworkThresholdUnit::Megabytes.threshold_value_from_bytes(1_250_000),
-        1.25
-    );
-    assert_eq!(
-        NetworkThresholdUnit::Bytes.threshold_bytes_from_value(1.1),
-        2
-    );
+    use NetworkThresholdUnit::{Bytes, Gigabytes, Kilobytes, Megabytes};
+    let max = i64::MAX as u64;
     for unit in NetworkThresholdUnit::ALL {
-        let raw = 1_250_000_000;
-        assert_eq!(
-            unit.threshold_bytes_from_value(unit.threshold_value_from_bytes(raw)),
-            raw
-        );
-        for invalid in [f64::NAN, f64::INFINITY, -1.0, 0.0] {
-            assert_eq!(unit.threshold_bytes_from_value(invalid), 0);
+        for bytes in [0, 1, 123, 2007, 1_250_000_000, (1 << 53) + 1, max] {
+            assert_eq!(
+                unit.parse_threshold(&unit.format_threshold(bytes)),
+                Some(bytes)
+            );
+        }
+        for invalid in ["NaN", "inf", "-1", "", ".", "1e-", "1e1000"] {
+            assert_eq!(unit.parse_threshold(invalid), None);
         }
     }
+    assert_eq!(Bytes.parse_threshold("1.1"), Some(2));
+    assert_eq!(Kilobytes.parse_threshold("2.007"), Some(2007));
+    assert_eq!(Megabytes.parse_threshold("0.000123"), Some(123));
+    assert_eq!(Gigabytes.parse_threshold("1.25e-2"), Some(12_500_000));
+    assert_eq!(Gigabytes.parse_threshold("9223372036.854775807"), Some(max));
+    assert_eq!(Gigabytes.parse_threshold("9223372036.8547758071"), None);
 }
 
 #[test]
-fn custom_rules_match_only_the_configured_executable_path() {
+fn restraint_scoped_background_processor_limit_requires_restraint() {
+    let mut settings = AdaptiveEngineProcessSettings {
+        limit_background_processors_enabled: true,
+        ..Default::default()
+    };
+    assert!(settings.background_processor_limit_enabled());
+    assert!(settings.has_enabled_policies());
+
+    settings.limit_background_processors_during_restraint = true;
+    assert!(!settings.background_processor_limit_enabled());
+    assert!(!settings.has_enabled_policies());
+
+    settings.cpu_pressure_restraint_enabled = true;
+    assert!(settings.background_processor_limit_enabled());
+    assert!(settings.has_enabled_policies());
+
+    settings.limit_background_processors_enabled = false;
+    assert!(!settings.background_processor_limit_enabled());
+    assert!(settings.has_enabled_policies());
+}
+
+#[test]
+fn placement_only_restraint_uses_the_limiter_without_changing_its_saved_scope() {
+    let mut settings = AdaptiveEngineProcessSettings {
+        restraint_priority: AdaptiveRestraintPriority::ProcessorPlacementOnly,
+        limit_background_processors_enabled: true,
+        ..Default::default()
+    };
+    assert!(!settings.has_enabled_policies());
+    assert!(!settings.background_processor_limit_enabled());
+
+    settings.cpu_pressure_restraint_enabled = true;
+    assert!(settings.placement_only_restraint_enabled());
+    assert!(settings.background_processor_limit_enabled());
+    assert!(settings.background_processor_limit_scoped());
+
+    let file = toml::to_string(&settings).unwrap();
+    assert!(file.contains("restraint_priority = \"processor_placement_only\""));
+    assert_eq!(
+        toml::from_str::<AdaptiveEngineProcessSettings>(&file).unwrap(),
+        settings
+    );
+
+    settings.restraint_priority = AdaptiveRestraintPriority::BelowNormal;
+    assert!(!settings.placement_only_restraint_enabled());
+    assert!(settings.background_processor_limit_enabled());
+    assert!(!settings.background_processor_limit_scoped());
+}
+
+#[test]
+fn adaptive_custom_rules_match_the_configured_selector_kind() {
     let settings = AdaptiveEngineProcessSettings {
         custom_rules: vec![
-            ProcessExclusionRule {
-                enabled: true,
-                executable_path: "C:\\Games\\game.exe".to_owned(),
-                ..Default::default()
-            },
-            ProcessExclusionRule {
+            AdaptiveEngineExclusionRule::exact_path(r"C:\Games\game.exe"),
+            AdaptiveEngineExclusionRule {
                 enabled: false,
-                executable_path: "C:\\Apps\\disabled.exe".to_owned(),
-                ..Default::default()
+                ..AdaptiveEngineExclusionRule::exact_path(r"C:\Apps\disabled.exe")
+            },
+            AdaptiveEngineExclusionRule::exact_name("Éditeur.exe"),
+            AdaptiveEngineExclusionRule {
+                enabled: false,
+                ..AdaptiveEngineExclusionRule::exact_name("disabled.exe")
             },
         ],
         ..Default::default()
     };
 
-    assert!(settings.custom_rule_enabled_for("c:/games/GAME.exe"));
-    assert!(!settings.custom_rule_enabled_for("C:\\Other\\game.exe"));
-    assert!(!settings.custom_rule_enabled_for("C:\\Games\\game*.exe"));
-    assert!(!settings.custom_rule_enabled_for("C:\\Apps\\disabled.exe"));
+    assert!(settings.excludes_executable_path("c:/games/GAME.exe"));
+    assert!(!settings.excludes_executable_path(r"C:\Other\game.exe"));
+    assert!(!settings.excludes_executable_path(r"C:\Games\game*.exe"));
+    assert!(!settings.excludes_executable_path(r"C:\Apps\disabled.exe"));
+    assert!(!settings.excludes_executable_name("game.exe"));
+    assert!(settings.excludes_executable_name("éditeur.EXE"));
+    assert!(!settings.excludes_executable_name("my-éditeur.exe"));
+    assert!(!settings.excludes_executable_name("disabled.exe"));
+    assert!(!settings.excludes_executable_path(r"C:\Apps\éditeur.exe"));
 }
 
 #[test]
@@ -476,7 +593,7 @@ fn timer_resolution_rules_match_only_the_foreground_executable_path() {
 
     assert_eq!(
         settings.desired_resolution_for_foreground("c:/games/GAME.exe"),
-        Some(("C:\\Games\\game.exe".to_owned(), 20_000))
+        Some(("C:\\Games\\game.exe", 20_000))
     );
     assert_eq!(
         settings.desired_resolution_for_foreground("C:\\Other\\game.exe"),
@@ -493,6 +610,7 @@ fn disabled_suspendable_apps_remain_configured_but_do_not_match() {
     let settings = AppSuspensionSettings {
         enabled: true,
         background_delay_seconds: 60,
+        auto_resume_when_focused: true,
         temporary_thaw_enabled: false,
         temporary_thaw_interval_seconds: default_temporary_thaw_interval_seconds(),
         temporary_thaw_duration_seconds: default_temporary_thaw_duration_seconds(),
@@ -517,6 +635,14 @@ fn disabled_suspendable_apps_remain_configured_but_do_not_match() {
     assert!(!settings.network_wake_enabled_for("chat.exe"));
     assert!(!settings.audio_wake_enabled_for("chat.exe"));
     assert_eq!(settings.network_wake_thresholds_for("chat.exe"), None);
+}
+
+#[test]
+fn app_suspension_enables_focus_resume_by_default() {
+    let settings: AppSuspensionSettings =
+        toml::from_str("enabled = false\nbackground_delay_seconds = 300").unwrap();
+    assert!(settings.auto_resume_when_focused);
+    assert!(AppSuspensionSettings::default().auto_resume_when_focused);
 }
 
 #[test]

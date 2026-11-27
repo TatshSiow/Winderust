@@ -1,7 +1,8 @@
 use super::design;
-use crate::power::PowerPlan;
-use iced::widget::{row, text};
-use iced::{Element, Fill};
+use crate::power::{PowerPlan, ProcessorBoostMode};
+use iced::widget::{column, container, responsive, row, text, Container, Row};
+use iced::{Element, Fill, Shrink};
+use std::{borrow::Cow, rc::Rc};
 
 pub(super) fn tooltip<'a, M: 'a>(
     content: impl Into<Element<'a, M>>,
@@ -32,14 +33,29 @@ pub(super) fn tooltip_surface(theme: &iced::Theme) -> iced::widget::container::S
 
 pub(super) const CARD_GAP: u32 = design::space::MEDIUM;
 pub(super) const CARD_PADDING: u32 = design::space::LARGE;
-pub(super) const SETTING_ROW_HEIGHT: u32 = 34;
-pub(super) const CARD_HEIGHT: u32 = SETTING_ROW_HEIGHT + 2 * CARD_PADDING;
+const CARD_ROW_MIN_HEIGHT: u32 = 40;
+const CARD_HEIGHT: u32 = CARD_ROW_MIN_HEIGHT + 2 * CARD_PADDING;
+pub(super) const RULE_ENABLE_WIDTH: u32 = 48;
+pub(super) const RULE_STATUS_WIDTH: u32 = 140;
+pub(super) const RULE_ACTIONS_WIDTH: u32 = 80;
+const SLIDER_CONTROL_WIDTH: u32 = 320;
+const SLIDER_INLINE_MIN_WIDTH: f32 = 600.0;
+const NUMERIC_INLINE_MIN_WIDTH: f32 = 400.0;
 
 pub(super) fn rules_table<'a, M: 'a>(
     header: iced::widget::Row<'a, M>,
-    rows: Element<'a, M>,
+    rows: Vec<(u64, Element<'a, M>)>,
+    min_width: f32,
 ) -> Element<'a, M> {
-    (iced::widget::container(iced::widget::column![
+    use iced::widget::{column, container, keyed_column};
+    let rows: Element<'_, M> = if rows.is_empty() {
+        container(text(rust_i18n::t!("common.no_custom_rules").to_string()).style(text::secondary))
+            .padding(CARD_PADDING as u16)
+            .into()
+    } else {
+        keyed_column(rows).into()
+    };
+    let content = column![
         iced::widget::container(header)
             .padding(CARD_PADDING as u16)
             .style(|theme: &iced::Theme| iced::widget::container::Style {
@@ -48,11 +64,12 @@ pub(super) fn rules_table<'a, M: 'a>(
             }),
         settings_divider(),
         rows,
-    ])
-    .width(Fill)
-    .clip(true)
-    .style(surface))
-    .into()
+    ];
+    container(super::scrolling::horizontal_table(content, min_width))
+        .width(Fill)
+        .clip(true)
+        .style(surface)
+        .into()
 }
 
 pub(super) fn table_frame<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
@@ -73,9 +90,7 @@ pub(super) fn process_rule_row<'a, M: Clone + 'a>(
             active,
             None,
             controls,
-            iced::widget::container(rule_delete_button(remove))
-                .center_x(80)
-                .into()
+            rule_actions(None, remove)
         ),
         settings_divider()
     ]
@@ -90,27 +105,118 @@ pub(super) fn process_rule_header<'a, M: 'a>(
     controls: Vec<Element<'a, M>>,
     action: Element<'a, M>,
 ) -> Element<'a, M> {
+    process_rule_header_with_target(
+        super::app_picker::app_name(path, candidates),
+        rule_path_text(path.to_owned()).into(),
+        active,
+        status,
+        controls,
+        action,
+    )
+}
+
+pub(super) fn process_rule_target<'a, M: 'a>(
+    value: &str,
+    name_match_key: Option<&str>,
+    candidates: &[super::app_picker::Candidate],
+) -> (Element<'a, M>, Element<'a, M>) {
+    match name_match_key {
+        Some(key) => (
+            super::app_picker::app_name(value, &[]),
+            iced::widget::column![
+                rule_path_text(rust_i18n::t!("common.any_path").to_string()),
+                text(rust_i18n::t!(key).to_string())
+                    .size(design::typography::CAPTION)
+                    .style(text::secondary),
+            ]
+            .spacing(design::space::TINY)
+            .into(),
+        ),
+        None => (
+            super::app_picker::app_name(value, candidates),
+            rule_path_text(value.to_owned()).into(),
+        ),
+    }
+}
+
+fn rule_path_text(path: String) -> iced::widget::Text<'static> {
+    text(path)
+        .style(text::secondary)
+        .wrapping(text::Wrapping::WordOrGlyph)
+}
+
+pub(super) fn process_rule_header_with_target<'a, M: 'a>(
+    app: Element<'a, M>,
+    target: Element<'a, M>,
+    active: Element<'a, M>,
+    status: Option<Element<'a, M>>,
+    controls: Vec<Element<'a, M>>,
+    action: Element<'a, M>,
+) -> Element<'a, M> {
+    process_rule_header_with_target_and_notify(app, target, active, None, status, controls, action)
+}
+
+pub(super) fn process_rule_header_with_notify<'a, M: 'a>(
+    path: &str,
+    candidates: &[super::app_picker::Candidate],
+    active: Element<'a, M>,
+    notify: Element<'a, M>,
+    status: Option<Element<'a, M>>,
+    controls: Vec<Element<'a, M>>,
+    action: Element<'a, M>,
+) -> Element<'a, M> {
+    process_rule_header_with_target_and_notify(
+        super::app_picker::app_name(path, candidates),
+        rule_path_text(path.to_owned()).into(),
+        active,
+        Some(notify),
+        status,
+        controls,
+        action,
+    )
+}
+
+pub(super) fn rule_notify_checkbox<'a, M: 'a>(
+    value: bool,
+    on_toggle: impl Fn(bool) -> M + 'a,
+) -> Element<'a, M> {
+    tooltip(
+        checkbox(value).on_toggle(on_toggle),
+        text(rust_i18n::t!("common.notify_rule").to_string()),
+        iced::widget::tooltip::Position::Top,
+    )
+    .into()
+}
+
+pub(super) fn process_rule_header_with_target_and_notify<'a, M: 'a>(
+    app: Element<'a, M>,
+    target: Element<'a, M>,
+    active: Element<'a, M>,
+    notify: Option<Element<'a, M>>,
+    status: Option<Element<'a, M>>,
+    controls: Vec<Element<'a, M>>,
+    action: Element<'a, M>,
+) -> Element<'a, M> {
     use iced::widget::container;
-    let mut cells = row![container(active).width(48)]
+    let mut cells = row![container(active).width(RULE_ENABLE_WIDTH)]
         .spacing(design::space::MEDIUM)
         .align_y(iced::Center);
+    if let Some(notify) = notify {
+        cells = cells.push(container(notify).width(RULE_ENABLE_WIDTH));
+    }
     if let Some(status) = status {
-        cells = cells.push(container(status).width(140));
+        cells = cells.push(container(status).width(RULE_STATUS_WIDTH));
     }
     let mut cells = cells
         .push(
-            container(super::app_picker::app_name(path, candidates))
+            container(app)
                 .width(iced::Length::FillPortion(2))
                 .clip(true),
         )
         .push(
-            container(
-                text(path.to_owned())
-                    .style(text::secondary)
-                    .wrapping(text::Wrapping::None),
-            )
-            .width(iced::Length::FillPortion(3))
-            .clip(true),
+            container(target)
+                .width(iced::Length::FillPortion(3))
+                .clip(true),
         );
     for control in controls {
         cells = cells.push(container(control).width(iced::Length::FillPortion(2)));
@@ -122,20 +228,17 @@ pub(super) fn process_rule_header<'a, M: 'a>(
 pub(super) fn rule_delete_button<'a, M: Clone + 'a>(remove: Option<M>) -> Element<'a, M> {
     use iced::widget::container;
     let removable = remove.is_some();
-    let delete = button(
-        iced::widget::svg(
-            super::assets::iced_icon("icons/trash-2.svg").expect("Trash icon is bundled"),
-        )
-        .width(design::ICON_SIZE)
-        .height(design::ICON_SIZE)
-        .style(move |theme: &iced::Theme, _| iced::widget::svg::Style {
-            color: Some(if removable {
+    let delete = button(super::assets::icon(
+        "icons/trash-2.svg",
+        design::ICON_SIZE,
+        move |theme| {
+            if removable {
                 theme.palette().danger
             } else {
                 muted_color(theme)
-            }),
-        }),
-    )
+            }
+        },
+    ))
     .padding(7)
     .width(32)
     .height(32)
@@ -166,51 +269,113 @@ pub(super) fn rule_delete_button<'a, M: Clone + 'a>(remove: Option<M>) -> Elemen
 pub(super) fn process_rules_table<'a, M: 'a>(
     tiers: impl IntoIterator<Item = String>,
     rows: Vec<(u64, Element<'a, M>)>,
-    empty: String,
-) -> Element<'a, M> {
-    process_rules_table_with_actions(tiers, rows, empty, 80, false)
-}
-
-pub(super) fn process_rules_table_with_actions<'a, M: 'a>(
-    tiers: impl IntoIterator<Item = String>,
-    rows: Vec<(u64, Element<'a, M>)>,
-    empty: String,
-    actions_width: u32,
     show_status: bool,
 ) -> Element<'a, M> {
-    use iced::widget::container;
+    process_rules_table_with_columns(
+        tiers,
+        rows,
+        show_status,
+        false,
+        "process_list.executable_path",
+    )
+}
+
+pub(super) fn process_rules_table_with_notify<'a, M: 'a>(
+    tiers: impl IntoIterator<Item = String>,
+    rows: Vec<(u64, Element<'a, M>)>,
+    show_status: bool,
+) -> Element<'a, M> {
+    process_rules_table_with_columns(
+        tiers,
+        rows,
+        show_status,
+        true,
+        "process_list.executable_path",
+    )
+}
+
+pub(super) fn process_rules_table_with_target<'a, M: 'a>(
+    rows: Vec<(u64, Element<'a, M>)>,
+    target_key: &str,
+) -> Element<'a, M> {
+    process_rules_table_with_columns([], rows, false, false, target_key)
+}
+
+fn process_rules_table_with_columns<'a, M: 'a>(
+    tiers: impl IntoIterator<Item = String>,
+    rows: Vec<(u64, Element<'a, M>)>,
+    show_status: bool,
+    show_notify: bool,
+    target_key: &str,
+) -> Element<'a, M> {
     let tiers: Vec<_> = tiers.into_iter().collect();
-    let min_width = 720.0 + 100.0 * tiers.len() as f32 + if show_status { 140.0 } else { 0.0 };
-    let mut header = row![text(rust_i18n::t!("common.enable").to_string()).width(48)]
-        .spacing(design::space::MEDIUM);
+    let min_width = 720.0
+        + 100.0 * tiers.len() as f32
+        + if show_notify {
+            (RULE_ENABLE_WIDTH + design::space::MEDIUM) as f32
+        } else {
+            0.0
+        }
+        + if show_status {
+            RULE_STATUS_WIDTH as f32
+        } else {
+            0.0
+        };
+    let mut header =
+        row![text(rust_i18n::t!("common.enable").to_string()).width(RULE_ENABLE_WIDTH)]
+            .spacing(design::space::MEDIUM)
+            .align_y(iced::Center);
+    if show_notify {
+        header =
+            header.push(text(rust_i18n::t!("common.notify").to_string()).width(RULE_ENABLE_WIDTH));
+    }
     if show_status {
-        header = header.push(text(rust_i18n::t!("common.status").to_string()).width(140));
+        header =
+            header.push(text(rust_i18n::t!("common.status").to_string()).width(RULE_STATUS_WIDTH));
     }
     let mut header = header
         .push(
             text(rust_i18n::t!("process_list.app_name").to_string())
                 .width(iced::Length::FillPortion(2)),
         )
-        .push(
-            text(rust_i18n::t!("process_list.executable_path").to_string())
-                .width(iced::Length::FillPortion(3)),
-        );
+        .push(text(rust_i18n::t!(target_key).to_string()).width(iced::Length::FillPortion(3)));
     for tier in tiers {
         header = header.push(text(tier).width(iced::Length::FillPortion(2)));
     }
     header = header.push(
         text(rust_i18n::t!("common.actions").to_string())
-            .width(actions_width)
+            .width(RULE_ACTIONS_WIDTH)
             .align_x(iced::Center),
     );
-    let rows = if rows.is_empty() {
-        container(text(empty).style(text::secondary))
-            .padding(design::space::LARGE as u16)
-            .into()
-    } else {
-        iced::widget::keyed_column(rows).into()
+    rules_table(header, rows, min_width)
+}
+
+pub(super) fn rule_actions<'a, M: Clone + 'a>(
+    edit: Option<M>,
+    remove: Option<M>,
+) -> Element<'a, M> {
+    let edit: Element<'_, M> = match edit {
+        Some(edit) => tooltip(
+            icon_button("icons/pencil.svg").on_press(edit),
+            text(rust_i18n::t!("common.edit").to_string()),
+            iced::widget::tooltip::Position::Top,
+        )
+        .into(),
+        None => iced::widget::Space::new()
+            .width(design::BUTTON_HEIGHT)
+            .into(),
     };
-    super::scrolling::horizontal_table(rules_table(header, rows), min_width)
+    iced::widget::container(row![edit, rule_delete_button(remove)].align_y(iced::Center))
+        .center_x(RULE_ACTIONS_WIDTH)
+        .into()
+}
+
+pub(super) fn rule_add_button<'a, M: Clone + 'a>(
+    add: Option<M>,
+) -> super::animated_controls::Button<'a, M> {
+    action_button(rust_i18n::t!("common.add_rule").to_string())
+        .style(primary_button)
+        .on_press_maybe(add)
 }
 
 pub(super) fn active_indicator<'a, M: 'a>(active: bool) -> Element<'a, M> {
@@ -221,7 +386,18 @@ pub(super) fn active_indicator<'a, M: 'a>(active: bool) -> Element<'a, M> {
             .width(3)
             .height(18)
             .style(move |theme: &iced::Theme| iced::widget::container::Style {
-                background: Some(theme.palette().primary.scale_alpha(progress.get()).into()),
+                background: Some(
+                    if design::is_contrast(theme) {
+                        theme.extended_palette().primary.base.text
+                    } else {
+                        accent_text(
+                            theme,
+                            Some(theme.palette().primary.scale_alpha(0.20).into()),
+                        )
+                    }
+                    .scale_alpha(progress.get())
+                    .into(),
+                ),
                 border: iced::border::rounded(2),
                 ..Default::default()
             }),
@@ -255,6 +431,61 @@ pub(super) fn panel_tab<'a, M: Clone + 'a>(
     .on_press(message)
 }
 
+pub(super) fn segmented_tabs<'a, M: Clone + 'a>(
+    tabs: impl IntoIterator<Item = (String, bool, M)>,
+) -> Element<'a, M> {
+    let tabs = tabs
+        .into_iter()
+        .fold(iced::widget::row![], |row, (label, selected, message)| {
+            row.push(panel_tab(label, selected, message))
+        });
+    iced::widget::container(tabs.wrap()).style(tab_bar).into()
+}
+
+pub(super) fn editor_tabs<'a, T: Copy + PartialEq + 'static, M: Clone + 'a>(
+    choices: impl IntoIterator<Item = (T, String)>,
+    selected: T,
+    compact: bool,
+    on_select: impl Fn(T) -> M + 'a,
+) -> Element<'a, M> {
+    if compact {
+        compact_header_select(choices, selected, 170, on_select)
+    } else {
+        segmented_tabs(
+            choices
+                .into_iter()
+                .map(|(value, label)| (label, value == selected, on_select(value))),
+        )
+    }
+}
+
+pub(super) fn compact_header_select<'a, T: Copy + PartialEq + 'static, M: Clone + 'a>(
+    choices: impl IntoIterator<Item = (T, String)>,
+    selected: T,
+    width: u32,
+    on_select: impl Fn(T) -> M + 'a,
+) -> Element<'a, M> {
+    #[derive(Clone, PartialEq)]
+    struct Choice<T>(T, String);
+
+    impl<T> std::fmt::Display for Choice<T> {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str(&self.1)
+        }
+    }
+
+    let options: Vec<_> = choices
+        .into_iter()
+        .map(|(value, label)| Choice(value, label))
+        .collect();
+    let selected = options.iter().find(|option| option.0 == selected).cloned();
+    pick_list(options, selected, move |choice| on_select(choice.0))
+        .same_option(|left, right| left.0 == right.0)
+        .compact_padding()
+        .width(width)
+        .into()
+}
+
 pub(super) fn tab_bar(theme: &iced::Theme) -> iced::widget::container::Style {
     let mut style = surface(theme);
     style.background = None;
@@ -269,39 +500,85 @@ pub(super) fn tab_style(
 ) -> iced::widget::button::Style {
     let mut style = quiet(theme, status);
     if active {
-        style.background = selected(theme, status).background;
+        let selected = selected(theme, status);
+        if design::is_contrast(theme) {
+            return selected;
+        }
+        style.background = selected.background;
+    } else if design::is_contrast(theme) {
+        return style;
     }
     style.border.width = 1.0;
     style.border.color = if active {
-        theme.palette().primary.scale_alpha(0.6)
+        accent_text(theme, style.background)
     } else {
         iced::Color::TRANSPARENT
     };
     style
 }
 
-pub(super) fn preset_footer<'a, M: Clone + 'a>(label: String, message: M) -> Element<'a, M> {
+pub(super) fn preset_list<'a, M: 'a>() -> iced::widget::Column<'a, M> {
+    iced::widget::Column::new()
+        .spacing(design::space::MEDIUM)
+        .padding([0, design::space::MEDIUM as u16])
+}
+
+pub(super) fn preset_row<'a, M: Clone + 'a>(
+    label: impl text::IntoFragment<'a>,
+    preview: M,
+    edit_and_delete: Option<(M, M)>,
+) -> Element<'a, M> {
+    let name = button(
+        text(label)
+            .size(design::typography::BODY)
+            .line_height(text::LineHeight::Absolute(iced::Pixels(
+                (design::BUTTON_HEIGHT - 2 * design::space::CONTROL) as f32,
+            )))
+            .wrapping(text::Wrapping::WordOrGlyph)
+            .width(Fill),
+    )
+    .width(Fill)
+    .padding([design::space::CONTROL as u16, design::space::MEDIUM as u16])
+    .style(quiet)
+    .on_press(preview);
+    let mut row = row![name]
+        .spacing(design::space::TIGHT)
+        .align_y(iced::Center);
+    if let Some((edit, delete)) = edit_and_delete {
+        row = row
+            .push(tooltip(
+                icon_button("icons/pencil.svg").on_press(edit),
+                text(rust_i18n::t!("common.edit").to_string()),
+                iced::widget::tooltip::Position::Top,
+            ))
+            .push(rule_delete_button(Some(delete)));
+    }
+    row.into()
+}
+
+pub(super) fn preset_panel<'a, M: Clone + 'a>(
+    list: iced::widget::Column<'a, M>,
+    label: String,
+    message: M,
+) -> Element<'a, M> {
+    iced::widget::column![
+        super::scrolling::scrollable(list).width(Fill).height(Fill),
+        preset_footer(label, message),
+    ]
+    .spacing(design::space::MEDIUM)
+    .height(Fill)
+    .into()
+}
+
+fn preset_footer<'a, M: Clone + 'a>(label: String, message: M) -> Element<'a, M> {
     iced::widget::column![
         iced::widget::rule::horizontal(1),
         iced::widget::container(
             button(
                 iced::widget::container(
-                    row![
-                        iced::widget::svg(
-                            super::assets::iced_icon("icons/plus.svg")
-                                .expect("Every UI icon is bundled")
-                        )
-                        .width(design::ICON_SIZE)
-                        .height(design::ICON_SIZE)
-                        .style(|theme: &iced::Theme, _| {
-                            iced::widget::svg::Style {
-                                color: Some(theme.extended_palette().primary.base.text),
-                            }
-                        }),
-                        text(label)
-                    ]
-                    .spacing(design::space::SMALL)
-                    .align_y(iced::Center)
+                    row![text("+").size(design::ICON_SIZE), text(label)]
+                        .spacing(design::space::SMALL)
+                        .align_y(iced::Center)
                 )
                 .center_x(Fill)
                 .center_y(Fill)
@@ -319,30 +596,40 @@ pub(super) fn preset_footer<'a, M: Clone + 'a>(label: String, message: M) -> Ele
 pub(super) fn rule_status_chip(theme: &iced::Theme, key: &str) -> iced::widget::container::Style {
     let color = match key {
         "common.applied" => theme.palette().success,
-        "common.waiting" => theme.palette().warning,
+        "common.waiting"
+        | "sidebar_status.paused"
+        | "cpu_limiter.restore_pending"
+        | "cpu_limiter.affinity_qualifying"
+        | "cpu_limiter.affinity_cooling_down" => theme.palette().warning,
         "common.error" => theme.palette().danger,
         "common.unknown" => muted_color(theme),
         _ => return indicator_chip(theme, false),
     };
+    let fill = super::animated_controls::color(
+        theme.extended_palette().background.weak.color,
+        color,
+        0.15,
+    );
     iced::widget::container::Style {
-        text_color: Some(color),
-        background: Some(color.scale_alpha(0.15).into()),
+        text_color: Some(design::readable_on(color, fill)),
+        background: Some(fill.into()),
         ..indicator_chip(theme, false)
     }
 }
 
 pub(super) fn indicator_chip(theme: &iced::Theme, active: bool) -> iced::widget::container::Style {
+    let background = if active {
+        theme.palette().primary.scale_alpha(0.15)
+    } else {
+        theme.extended_palette().background.neutral.color
+    };
     iced::widget::container::Style {
         text_color: Some(if active {
-            theme.palette().primary
+            accent_text(theme, Some(background.into()))
         } else {
             muted_color(theme)
         }),
-        background: Some(if active {
-            theme.palette().primary.scale_alpha(0.15).into()
-        } else {
-            theme.extended_palette().background.neutral.color.into()
-        }),
+        background: Some(background.into()),
         border: iced::border::rounded(design::CONTROL_RADIUS),
         ..Default::default()
     }
@@ -350,6 +637,22 @@ pub(super) fn indicator_chip(theme: &iced::Theme, active: bool) -> iced::widget:
 
 pub(super) fn muted_color(theme: &iced::Theme) -> iced::Color {
     theme.extended_palette().secondary.base.color
+}
+
+pub(super) fn accent_text(theme: &iced::Theme, fill: Option<iced::Background>) -> iced::Color {
+    let palette = theme.extended_palette();
+    let surface = if palette.is_dark {
+        palette.background.neutral.color
+    } else {
+        palette.background.weaker.color
+    };
+    let background = match fill {
+        Some(iced::Background::Color(color)) => {
+            super::animated_controls::color(surface, color, color.a)
+        }
+        _ => surface,
+    };
+    design::readable_on(theme.palette().primary, background)
 }
 
 fn control_border(theme: &iced::Theme) -> iced::Color {
@@ -377,7 +680,21 @@ pub(super) fn action_button<'a, M: 'a>(
 pub(super) fn icon_button<'a, M: 'a>(
     icon: &'static str,
 ) -> super::animated_controls::Button<'a, M> {
-    button(super::navigation::glyph(icon))
+    icon_button_with_opacity(icon, 1.0)
+}
+
+pub(super) fn icon_button_maybe<'a, M: 'a>(
+    icon: &'static str,
+    action: Option<M>,
+) -> super::animated_controls::Button<'a, M> {
+    icon_button_with_opacity(icon, if action.is_some() { 1.0 } else { 0.5 }).on_press_maybe(action)
+}
+
+fn icon_button_with_opacity<'a, M: 'a>(
+    icon: &'static str,
+    opacity: f32,
+) -> super::animated_controls::Button<'a, M> {
+    button(super::navigation::glyph_with_opacity(icon, opacity))
         .padding(7)
         .width(design::BUTTON_HEIGHT)
         .height(design::BUTTON_HEIGHT)
@@ -389,8 +706,32 @@ pub(super) fn primary_button(
     status: iced::widget::button::Status,
 ) -> iced::widget::button::Style {
     let mut style = iced::widget::button::primary(theme, status);
+    if status == iced::widget::button::Status::Hovered {
+        style.text_color = theme.extended_palette().primary.strong.text;
+    }
+    filled_button_outline(theme, status, style)
+}
+
+fn contrast_stroke_width(status: iced::widget::button::Status) -> f32 {
+    use iced::widget::button::Status;
+    match status {
+        Status::Hovered => 2.0,
+        Status::Pressed => 3.0,
+        _ => 1.0,
+    }
+}
+
+fn filled_button_outline(
+    theme: &iced::Theme,
+    status: iced::widget::button::Status,
+    mut style: iced::widget::button::Style,
+) -> iced::widget::button::Style {
     style.border.radius = design::CONTROL_RADIUS.into();
     style.border.width = 1.0;
+    if design::is_contrast(theme) && status != iced::widget::button::Status::Disabled {
+        style.border.color = style.text_color;
+        style.border.width = contrast_stroke_width(status);
+    }
     style
 }
 
@@ -401,17 +742,23 @@ pub(super) fn secondary_button(
     use iced::widget::button::Status;
     let mut style = quiet(theme, status);
     let disabled = status == Status::Disabled;
+    if design::is_contrast(theme) {
+        style.border.width = contrast_stroke_width(status);
+        style.border.color = theme
+            .palette()
+            .text
+            .scale_alpha(if disabled { 0.55 } else { 1.0 });
+        return style;
+    }
     style.border.width = 1.0;
     style.border.color = control_border(theme).scale_alpha(if disabled { 0.35 } else { 0.75 });
-    style.text_color = theme
-        .palette()
-        .primary
-        .scale_alpha(if disabled { 0.35 } else { 1.0 });
     style.background = match status {
         Status::Hovered => Some(theme.palette().primary.scale_alpha(0.08).into()),
         Status::Pressed => Some(theme.palette().primary.scale_alpha(0.14).into()),
         _ => None,
     };
+    style.text_color =
+        accent_text(theme, style.background).scale_alpha(if disabled { 0.35 } else { 1.0 });
     style
 }
 
@@ -421,6 +768,9 @@ pub(super) fn tertiary_button(
 ) -> iced::widget::button::Style {
     use iced::widget::button::Status;
     let mut style = secondary_button(theme, status);
+    if design::is_contrast(theme) {
+        return style;
+    }
     style.text_color = if status == Status::Disabled {
         muted_color(theme).scale_alpha(0.5)
     } else {
@@ -446,10 +796,7 @@ pub(super) fn danger_button(
     theme: &iced::Theme,
     status: iced::widget::button::Status,
 ) -> iced::widget::button::Style {
-    let mut style = iced::widget::button::danger(theme, status);
-    style.border.radius = design::CONTROL_RADIUS.into();
-    style.border.width = 1.0;
-    style
+    filled_button_outline(theme, status, iced::widget::button::danger(theme, status))
 }
 
 pub(super) const SEARCH_INPUT_PADDING: iced::Padding = iced::Padding {
@@ -492,11 +839,29 @@ pub(super) fn text_input<'a, M: Clone + 'a>(
             style.placeholder = muted_color(theme);
             style.background = theme.extended_palette().background.neutral.color.into();
             style.border.radius = design::CONTROL_RADIUS.into();
-            if matches!(status, iced::widget::text_input::Status::Active) {
-                style.border.color = control_border(theme);
+            match status {
+                iced::widget::text_input::Status::Active => {
+                    style.border.color = control_border(theme);
+                }
+                iced::widget::text_input::Status::Focused { .. } if design::is_contrast(theme) => {
+                    style.border.width = 2.0;
+                    style.border.color = accent_text(theme, None);
+                }
+                _ => {}
             }
             style
         })
+}
+
+pub(super) fn numeric_input<'a, M: Clone + 'a>(
+    placeholder: &str,
+    value: &str,
+) -> iced::widget::TextInput<'a, M> {
+    let line_height = design::BUTTON_HEIGHT - 2 * u32::from(design::INPUT_PADDING);
+    text_input(placeholder, value)
+        .line_height(iced::Pixels(line_height as f32))
+        .align_x(iced::Center)
+        .width(design::NUMERIC_WIDTH)
 }
 
 pub(super) fn pick_list<'a, T, L, V, M>(
@@ -505,16 +870,37 @@ pub(super) fn pick_list<'a, T, L, V, M>(
     on_selected: impl Fn(T) -> M + 'a,
 ) -> super::select::Select<'a, T, M>
 where
-    T: ToString + PartialEq + Clone + 'a,
-    L: Into<Vec<T>> + 'a,
+    T: ToString + PartialEq + Clone + 'static,
+    L: Into<Rc<[T]>> + 'a,
     V: std::borrow::Borrow<T> + 'a,
     M: Clone + 'a,
 {
     super::select::Select::new(
-        options.into(),
+        options,
         selected.map(|value| value.borrow().clone()),
         on_selected,
     )
+}
+
+pub(super) fn preset_select<'a, T, M>(
+    options: impl Into<Rc<[T]>> + 'a,
+    selected: Option<T>,
+    on_selected: impl Fn(T) -> M + 'a,
+) -> super::select::Select<'a, T, M>
+where
+    T: ToString + PartialEq + Clone + 'static,
+    M: Clone + 'a,
+{
+    pick_list(options, selected, on_selected)
+        .width(280)
+        .placeholder(rust_i18n::t!("common.custom").to_string())
+}
+
+pub(super) fn preset_picker_card<'a, M: 'a>(
+    label: &str,
+    control: impl Into<Element<'a, M>>,
+) -> Element<'a, M> {
+    settings_card(setting_row(label, control)).into()
 }
 
 pub(super) fn select_field(
@@ -528,15 +914,14 @@ pub(super) fn select_field(
     style.text_color = theme.palette().text;
     style.handle_color = muted_color(theme);
     style.border.radius = design::CONTROL_RADIUS.into();
-    style.border.color = match status {
-        Status::Active => control_border(theme),
-        Status::Hovered => theme.palette().primary.scale_alpha(0.55),
-        Status::Opened { .. } => theme.palette().primary,
-    };
-    if matches!(status, Status::Hovered) {
+    if matches!(status, Status::Hovered) && !design::is_contrast(theme) {
         style.background =
             iced::theme::palette::mix(background, theme.palette().primary, 0.08).into();
     }
+    style.border.color = match status {
+        Status::Active => control_border(theme),
+        Status::Hovered | Status::Opened { .. } => accent_text(theme, Some(style.background)),
+    };
     style
 }
 
@@ -545,10 +930,9 @@ pub(super) fn select_menu(theme: &iced::Theme) -> iced::widget::overlay::menu::S
     style.background = select_field(theme, iced::widget::pick_list::Status::Active).background;
     style.border.radius = design::CONTROL_RADIUS.into();
     style.text_color = theme.palette().text;
-    style.selected_text_color = theme.palette().text;
-    style.selected_background = selected_control(theme, iced::widget::button::Status::Active)
-        .background
-        .unwrap_or(style.background);
+    let selected = selected_control(theme, iced::widget::button::Status::Active);
+    style.selected_text_color = selected.text_color;
+    style.selected_background = selected.background.unwrap_or(style.background);
     style
 }
 
@@ -582,6 +966,8 @@ pub(super) fn checkbox_style(
         style.border.color = control_border(theme);
         style.background = theme.extended_palette().background.weak.color.into();
         style.text_color = Some(muted_color(theme));
+    } else if let iced::Background::Color(background) = style.background {
+        style.icon_color = design::readable_on(style.icon_color, background);
     }
     style
 }
@@ -596,7 +982,7 @@ pub(super) fn card_button<'a, M: Clone + 'a>(
             .spacing(design::space::LARGE),
     )
     .height(CARD_HEIGHT)
-    .padding([CARD_PADDING as u16, design::space::WIDE as u16])
+    .padding(CARD_PADDING as u16)
     .width(Fill)
     .style(card)
 }
@@ -656,8 +1042,11 @@ pub(super) fn toggle_card<'a, M: Clone + 'a>(
     value: bool,
     action: Option<impl Fn(bool) -> M + 'a>,
 ) -> Element<'a, M> {
-    let message = action.as_ref().map(|action| action(!value));
-    action_card(setting_row(key, switch(value, action)), message)
+    let message = action.map(|action| action(!value));
+    action_card(
+        setting_row(key, switch_control(value, message.clone(), false)),
+        message,
+    )
 }
 
 /// Separate complete settings, keeping each label, description, and control together.
@@ -691,32 +1080,7 @@ pub(super) fn setting_group<'a, M: Clone + 'a>(
     super::scrolling::repaint_group(
         iced::widget::container(
             iced::widget::column![
-                iced::widget::Stack::new()
-                    .push(
-                        iced::widget::container(
-                            row![
-                                iced::widget::container(setting_title(&label)).width(Fill),
-                                action.into(),
-                                super::motion::wrap(
-                                    super::navigation::glyph("icons/chevron-right.svg"),
-                                    expanded,
-                                    super::motion::Effect::Chevron
-                                )
-                            ]
-                            .spacing(design::space::SMALL)
-                            .align_y(iced::Center)
-                        )
-                        .padding(CARD_PADDING as u16)
-                        .width(Fill)
-                    )
-                    .push_under(
-                        button(iced::widget::Space::new())
-                            .padding(0)
-                            .width(Fill)
-                            .height(Fill)
-                            .style(quiet)
-                            .on_press(message)
-                    ),
+                setting_disclosure_header(&label, expanded, message, action),
                 super::motion::wrap(
                     iced::widget::column![
                         iced::widget::container(settings_divider())
@@ -734,6 +1098,40 @@ pub(super) fn setting_group<'a, M: Clone + 'a>(
     )
 }
 
+fn setting_disclosure_header<'a, M: Clone + 'a>(
+    key: &str,
+    expanded: bool,
+    message: M,
+    action: impl Into<Element<'a, M>>,
+) -> iced::widget::Stack<'a, M> {
+    iced::widget::Stack::new()
+        .push(
+            container(setting_row(
+                key,
+                row![
+                    action.into(),
+                    super::motion::wrap(
+                        super::navigation::glyph("icons/chevron-down.svg"),
+                        expanded,
+                        super::motion::Effect::DisclosureChevron
+                    )
+                ]
+                .spacing(design::space::SMALL)
+                .align_y(iced::Center),
+            ))
+            .padding(CARD_PADDING as u16)
+            .width(Fill),
+        )
+        .push_under(
+            button(iced::widget::Space::new())
+                .padding(0)
+                .width(Fill)
+                .height(Fill)
+                .style(quiet)
+                .on_press(message),
+        )
+}
+
 pub(super) fn setting_row<'a, M: 'a>(
     key: &str,
     action: impl Into<Element<'a, M>>,
@@ -746,16 +1144,104 @@ pub(super) fn setting_row_with_unit<'a, M: 'a>(
     unit: &str,
     action: impl Into<Element<'a, M>>,
 ) -> iced::widget::Row<'a, M> {
-    row![
-        iced::widget::container(setting_title_with_unit(key, unit)).width(Fill),
-        action.into()
+    setting_row_with_title(setting_title_with_unit(key, unit), action)
+}
+
+pub(super) fn setting_row_with_title<'a, M: 'a>(
+    title: iced::widget::Column<'a, M>,
+    action: impl Into<Element<'a, M>>,
+) -> Row<'a, M> {
+    let label = row![
+        title,
+        iced::widget::Space::new().height(CARD_ROW_MIN_HEIGHT)
     ]
-    .spacing(design::space::MEDIUM)
-    .align_y(iced::Center)
+    .width(Fill)
+    .align_y(iced::Center);
+    row![label, action.into()]
+        .spacing(design::space::MEDIUM)
+        .align_y(iced::Center)
+}
+
+pub(super) fn slider_setting<'a, M: 'a>(
+    key: &'a str,
+    unit: &'a str,
+    control: impl Fn() -> Row<'a, M> + 'a,
+) -> Element<'a, M> {
+    bounded_setting(
+        SLIDER_INLINE_MIN_WIDTH,
+        move || setting_title_with_unit(key, unit),
+        move || control().width(SLIDER_CONTROL_WIDTH).into(),
+    )
+}
+
+pub(super) fn numeric_setting<'a, M: 'a>(
+    key: &'a str,
+    unit: &'a str,
+    control: impl Fn() -> Element<'a, M> + 'a,
+) -> Element<'a, M> {
+    bounded_setting(
+        NUMERIC_INLINE_MIN_WIDTH,
+        move || setting_title_with_unit(key, unit),
+        control,
+    )
+}
+
+pub(super) fn slider_setting_with_help<'a, M: 'a>(
+    key: &'a str,
+    unit: &'a str,
+    help_key: &'a str,
+    control: impl Fn() -> Row<'a, M> + 'a,
+) -> Element<'a, M> {
+    bounded_setting(
+        SLIDER_INLINE_MIN_WIDTH,
+        move || setting_title_with_help(key, unit, help_key),
+        move || control().width(SLIDER_CONTROL_WIDTH).into(),
+    )
+}
+
+fn bounded_setting<'a, M: 'a>(
+    inline_min_width: f32,
+    title: impl Fn() -> iced::widget::Column<'a, M> + 'a,
+    control: impl Fn() -> Element<'a, M> + 'a,
+) -> Element<'a, M> {
+    responsive(move |size| {
+        let title = title();
+        let control = control();
+        if size.width >= inline_min_width {
+            setting_row_with_title(title, control).into()
+        } else {
+            column![title, container(control).align_right(Fill)]
+                .spacing(design::space::SMALL)
+                .into()
+        }
+    })
+    .height(Shrink)
+    .into()
+}
+
+pub(super) fn trailing_slider<'a, M: 'a>(control: Row<'a, M>) -> Container<'a, M> {
+    container(control.width(SLIDER_CONTROL_WIDTH)).align_right(Fill)
 }
 
 pub(super) fn setting_title<'a, M: 'a>(key: &str) -> Element<'a, M> {
     setting_title_with_unit(key, "").into()
+}
+
+pub(super) fn settings_section<'a, M: 'a>(
+    key: &str,
+    body: impl Into<Element<'a, M>>,
+) -> Element<'a, M> {
+    column![setting_title(key), body.into()]
+        .spacing(design::space::SMALL)
+        .into()
+}
+
+pub(super) fn help_text<'a>(key: &str) -> iced::widget::Text<'a> {
+    text(rust_i18n::t!(key).into_owned())
+        .size(design::typography::SECONDARY)
+        .style(text::secondary)
+        .wrapping(text::Wrapping::WordOrGlyph)
+        .width(Fill)
 }
 
 pub(super) fn setting_title_with_unit<'a, M: 'a>(
@@ -793,16 +1279,30 @@ pub(super) fn switch<'a, M: Clone + 'a>(
     value: bool,
     action: Option<impl Fn(bool) -> M + 'a>,
 ) -> Element<'a, M> {
-    let interactive = action.is_some();
+    switch_control(value, action.map(|action| action(!value)), true)
+}
+
+fn switch_control<'a, M: Clone + 'a>(
+    value: bool,
+    message: Option<M>,
+    keyboard: bool,
+) -> Element<'a, M> {
+    let interactive = message.is_some();
+    let on_toggle = message.clone().map(|message| move |_| message.clone());
+    let action = message
+        .filter(|_| keyboard)
+        .map(|message| Box::new(move || message.clone()) as super::motion::Action<'a, M>);
     row![
         text(rust_i18n::t!(if value { "common.on" } else { "common.off" }).to_string()),
-        super::motion::wrap(
+        super::motion::wrap_action(
             iced::widget::toggler(value)
                 .size(design::SWITCH_SIZE)
                 .style(toggle_style)
-                .on_toggle_maybe(action),
+                .on_toggle_maybe(on_toggle),
             value,
-            super::motion::Effect::Switch { interactive }
+            super::motion::Effect::Switch { interactive },
+            action,
+            None,
         )
     ]
     .spacing(design::space::SMALL)
@@ -816,7 +1316,13 @@ pub(super) fn toggle_style(
 ) -> iced::widget::toggler::Style {
     use iced::widget::toggler::Status;
     let mut style = iced::widget::toggler::default(theme, status);
-    if matches!(status, Status::Hovered { is_toggled: true }) {
+    if matches!(status, Status::Disabled { .. }) {
+        let fill = theme.extended_palette().background.neutral.color;
+        style.background = fill.into();
+        style.background_border_width = 1.0;
+        style.background_border_color = control_border(theme);
+        style.foreground = super::animated_controls::color(fill, muted_color(theme), 0.8).into();
+    } else if matches!(status, Status::Hovered { is_toggled: true }) {
         style.foreground = theme.extended_palette().primary.base.text.into();
     } else if matches!(
         status,
@@ -1002,6 +1508,7 @@ mod picker_tests {
     fn picker_overlays_render_and_cancel_or_submit_at_both_widths() {
         let mut settings = crate::config::Settings::default();
         settings.general.accent.custom_colors = vec![0x123456, 0xabcdef];
+        let mut settings = crate::application::SettingsEditor::with_settings(settings);
         for theme in [
             iced::Theme::custom_with_fn(
                 "picker",
@@ -1077,7 +1584,7 @@ mod picker_tests {
                 );
                 let messages = preview(
                     super::super::modal::picker(
-                        editor.view(Page::LanguageAndAppearance, &settings),
+                        editor.view(Page::LanguageAndAppearance, &settings, false, None),
                         true,
                         settings_pages::Message::CancelColorPicker,
                     ),
@@ -1105,26 +1612,103 @@ pub(super) fn stepper<'a, M: Clone + 'a>(
 ) -> Element<'a, M> {
     let (lower, upper) = step_values(value, range, step);
     row![
-        button(super::navigation::glyph("icons/minus.svg"))
-            .padding(7)
-            .height(32)
-            .style(control_button)
-            .width(design::STEPPER_BUTTON_WIDTH)
-            .on_press_maybe(lower.zip(action.as_ref()).map(|(v, f)| f(v.to_string()))),
-        text_input("", value)
-            .align_x(iced::alignment::Horizontal::Center)
-            .on_input_maybe(action.clone())
-            .width(design::NUMERIC_WIDTH),
-        button(super::navigation::glyph("icons/plus.svg"))
-            .padding(7)
-            .height(32)
-            .style(control_button)
-            .width(design::STEPPER_BUTTON_WIDTH)
-            .on_press_maybe(upper.zip(action.as_ref()).map(|(v, f)| f(v.to_string())))
+        step_button(
+            "icons/minus.svg",
+            lower.zip(action.as_ref()).map(|(v, f)| f(v.to_string()))
+        ),
+        numeric_input("", value).on_input_maybe(action.clone()),
+        step_button(
+            "icons/plus.svg",
+            upper.zip(action.as_ref()).map(|(v, f)| f(v.to_string()))
+        ),
     ]
     .spacing(design::space::CONTROL)
     .align_y(iced::Center)
     .into()
+}
+
+fn step_button<'a, M: 'a>(
+    icon: &'static str,
+    action: Option<M>,
+) -> super::animated_controls::Button<'a, M> {
+    icon_button_maybe(icon, action).style(|theme, status| {
+        use iced::widget::button::Status;
+        let mut style = control_button(theme, status);
+        if !design::is_contrast(theme) {
+            let surface = theme.extended_palette().background.neutral.color;
+            let tint = match status {
+                Status::Hovered => 0.10,
+                Status::Pressed => 0.18,
+                _ => 0.0,
+            };
+            style.background =
+                Some(iced::theme::palette::mix(surface, theme.palette().primary, tint).into());
+            if status != Status::Disabled {
+                style.border.color = control_border(theme);
+            }
+        }
+        style
+    })
+}
+
+pub(super) fn slider_controls<'a, M: Clone + 'a>(
+    track: impl Into<Element<'a, M>>,
+    decrease: Option<M>,
+    increase: Option<M>,
+    value: impl Into<Element<'a, M>>,
+) -> Row<'a, M> {
+    row![
+        step_button("icons/minus.svg", decrease),
+        track.into(),
+        step_button("icons/plus.svg", increase),
+        value.into(),
+    ]
+    .spacing(design::space::CONTROL)
+    .align_y(iced::Center)
+}
+
+pub(super) fn slider_stepper<'a, M: Clone + 'a>(
+    value: u64,
+    draft: Option<&str>,
+    range: std::ops::RangeInclusive<u32>,
+    step: u32,
+    action: impl Fn(String) -> M + Clone + 'a,
+) -> Row<'a, M> {
+    slider_stepper_with_input(value, draft, range, step, action, |input| {
+        numeric_input("", input)
+    })
+}
+
+pub(super) fn slider_stepper_with_input<'a, M: Clone + 'a>(
+    value: u64,
+    draft: Option<&str>,
+    range: std::ops::RangeInclusive<u32>,
+    step: u32,
+    action: impl Fn(String) -> M + Clone + 'a,
+    input: impl FnOnce(&str) -> iced::widget::TextInput<'a, M>,
+) -> Row<'a, M> {
+    let formatted;
+    let text = if let Some(draft) = draft {
+        draft
+    } else {
+        formatted = value.to_string();
+        &formatted
+    };
+    let stepper_range = u64::from(*range.start())..=u64::from(*range.end());
+    let slider_value = value.clamp(*stepper_range.start(), *stepper_range.end()) as u32;
+    let (lower, upper) = step_values(text, stepper_range, u64::from(step));
+    let on_slide = action.clone();
+    let slider = slider(range, slider_value, move |value| {
+        on_slide(value.to_string())
+    })
+    .step(step)
+    .width(Fill);
+    slider_controls(
+        slider,
+        lower.map(|v| action(v.to_string())),
+        upper.map(|v| action(v.to_string())),
+        input(text).on_input(action),
+    )
 }
 
 fn step_values(
@@ -1232,7 +1816,7 @@ mod card_hitbox_tests {
 
     fn group(expanded: bool) -> Element<'static, Message> {
         setting_group(
-            "watchdog.enable".into(),
+            "resource_thresholds.enable".into(),
             expanded,
             Message::Card,
             action_button("Header").width(120).on_press(Message::Header),
@@ -1255,6 +1839,52 @@ mod card_hitbox_tests {
     }
 
     #[test]
+    fn standard_cards_share_a_height_across_controls() {
+        let cards = [
+            toggle_card("instance_limits.enable", true, Some(Message::Toggle)),
+            settings_card(setting_row(
+                "memory_trim.manual_trim",
+                action_button("Trim now").on_press(Message::Body),
+            ))
+            .into(),
+            settings_card(setting_row(
+                "common.default",
+                pick_list(["Default", "Normal"], Some("Default"), |_| Message::Body)
+                    .width(design::SELECT_WIDTH),
+            ))
+            .into(),
+            settings_card(numeric_setting("common.default", "s", || {
+                stepper("5", 1..=10, 1, Some(Message::Input))
+            }))
+            .into(),
+            settings_card(slider_setting("common.default", "%", || {
+                slider_stepper(5, None, 1..=10, 1, Message::Input)
+            }))
+            .into(),
+            setting_group(
+                "instance_limits.enable".into(),
+                false,
+                Message::Card,
+                action_button("Header").on_press(Message::Header),
+                iced::widget::Column::new(),
+            ),
+            card_button(row![text("Open")])
+                .on_press(Message::Body)
+                .into(),
+        ];
+        for card in cards {
+            interact(
+                card,
+                |node| {
+                    assert_eq!(node.bounds().height, CARD_HEIGHT as f32);
+                    Point::new(-1.0, -1.0)
+                },
+                false,
+            );
+        }
+    }
+
+    #[test]
     fn expandable_card_labels_and_body_share_the_standard_inset() {
         fn first_leaf(layout: Layout<'_>) -> Rectangle {
             layout
@@ -1271,7 +1901,10 @@ mod card_hitbox_tests {
                     let foreground = header_layout(node).children().last().unwrap();
                     let label = first_leaf(foreground);
                     assert_eq!(label.x, CARD_PADDING as f32);
-                    assert_eq!(label.y, CARD_PADDING as f32);
+                    assert!(label.y >= CARD_PADDING as f32);
+                    assert!(
+                        label.y + label.height <= foreground.bounds().height - CARD_PADDING as f32
+                    );
                     if expanded {
                         let body = control_bounds(layout, 140.0).unwrap();
                         assert_eq!(body.x, label.x);
@@ -1361,8 +1994,11 @@ mod card_hitbox_tests {
                 Point::new(799.0, 1.0),
                 Point::new(760.0, 30.0),
             ] {
-                let card =
-                    toggle_card("watchdog.enable", false, enabled.then_some(Message::Toggle));
+                let card = toggle_card(
+                    "resource_thresholds.enable",
+                    false,
+                    enabled.then_some(Message::Toggle),
+                );
                 let (messages, _) = interact(card, |_| point, false);
                 assert_eq!(
                     messages,
@@ -1401,6 +2037,49 @@ mod step_tests {
     }
 
     #[test]
+    fn long_executable_paths_grow_rule_rows_without_moving_action_columns() {
+        use super::{process_rule_header, rule_actions};
+        use iced::advanced::{layout, widget::Tree};
+        use iced::{widget::text, Pixels, Renderer, Size};
+
+        let renderer = Renderer::new(super::design::typography::FONT, Pixels(14.0));
+        // Instance Balancing uses the smallest shared rule table with a Status column.
+        let limits = layout::Limits::new(Size::ZERO, Size::new(860.0, 620.0));
+        let measure = |path| {
+            let mut view = process_rule_header(
+                path,
+                &[],
+                super::checkbox(true).on_toggle(|_| ()).into(),
+                Some(text("Active").into()),
+                Vec::new(),
+                rule_actions(Some(()), Some(())),
+            );
+            let mut tree = Tree::new(&view);
+            let node = view.as_widget_mut().layout(&mut tree, &renderer, &limits);
+            let row = &node.children()[0];
+            let [_, _, _, path, actions] = row.children() else {
+                panic!("expected Enable, Status, App name, Executable path, and Actions");
+            };
+            (row.bounds(), path.bounds(), actions.bounds())
+        };
+        let (short_row, short_path, short_actions) = measure(r"C:\Apps\renderer.exe");
+        let (long_row, long_path, long_actions) = measure(concat!(
+            r"C:\Apps\",
+            "LongApplicationDirectoryNameWithoutAnySpacesOrHyphens",
+            "WithAnAdditionalPrefixToRequireMultipleLinesInTheCell",
+            r"\renderer.exe"
+        ));
+
+        assert_eq!(long_path.width, short_path.width);
+        assert!(long_path.height > short_path.height);
+        assert!(long_row.height > short_row.height);
+        assert_eq!(long_actions.x, short_actions.x);
+        assert_eq!(long_actions.size(), short_actions.size());
+        assert!(long_path.x + long_path.width <= long_actions.x);
+        assert!(long_actions.y + long_actions.height <= long_row.height);
+    }
+
+    #[test]
     fn setting_descriptions_wrap_without_clipping_rows_or_controls() {
         use iced::advanced::{layout, widget::Tree};
         let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
@@ -1423,7 +2102,7 @@ mod step_tests {
                 2,
                 "description must be visible without hover"
             );
-            assert!(label.bounds().height > super::SETTING_ROW_HEIGHT as f32);
+            assert!(label.children()[1].bounds().height > 0.0);
             let control = node.children()[1].bounds();
             assert_eq!(control.width, 120.0);
             assert_eq!(control.height, super::design::BUTTON_HEIGHT as f32);
@@ -1508,6 +2187,31 @@ mod step_tests {
     }
 
     #[test]
+    fn numeric_inputs_match_the_step_button_height() {
+        use super::design;
+        use iced::advanced::{layout, widget::Tree, Layout};
+
+        let views = [
+            (super::stepper("5", 1..=10, 1, Some(|_| ())), &[0, 1, 2][..]),
+            (
+                super::slider_stepper(5, None, 1..=10, 1, |_| ()).into(),
+                &[0, 2, 3][..],
+            ),
+        ];
+        let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        let limits = layout::Limits::new(iced::Size::ZERO, iced::Size::new(320.0, 50.0));
+        for (mut view, controls) in views {
+            let mut tree = Tree::new(&view);
+            let node = view.as_widget_mut().layout(&mut tree, &renderer, &limits);
+            for &index in controls {
+                let bounds = Layout::new(&node).children().nth(index).unwrap().bounds();
+                assert_eq!(bounds.y, 0.0);
+                assert_eq!(bounds.height, design::BUTTON_HEIGHT as f32);
+            }
+        }
+    }
+
+    #[test]
     fn stepper_keeps_bounds_and_invalid_drafts() {
         use super::step_values;
         assert_eq!(step_values("1", 1..=10, 3), (None, Some(4)));
@@ -1531,25 +2235,67 @@ impl<T> std::fmt::Display for Choice<T> {
     }
 }
 
+pub(super) fn processor_boost_mode_label(mode: ProcessorBoostMode) -> Cow<'static, str> {
+    rust_i18n::t!(match mode {
+        ProcessorBoostMode::Disabled => "processor_power.boost_disabled",
+        ProcessorBoostMode::Enabled => "processor_power.boost_enabled",
+        ProcessorBoostMode::Aggressive => "processor_power.boost_aggressive",
+        ProcessorBoostMode::EfficientEnabled => "processor_power.boost_efficient_enabled",
+        ProcessorBoostMode::EfficientAggressive => "processor_power.boost_efficient_aggressive",
+        ProcessorBoostMode::AggressiveAtGuaranteed =>
+            "processor_power.boost_aggressive_at_guaranteed",
+        ProcessorBoostMode::EfficientAggressiveAtGuaranteed => {
+            "processor_power.boost_efficient_aggressive_at_guaranteed"
+        }
+    })
+}
+
+pub(super) fn power_plan_label(plan: &PowerPlan) -> String {
+    if plan.active {
+        rust_i18n::t!("common.active_plan_name", name = plan.name.as_str()).to_string()
+    } else {
+        plan.name.clone()
+    }
+}
+
 pub(super) fn plan<M: Clone + 'static>(
     guid: Option<&str>,
     plans: &[PowerPlan],
     action: impl Fn(Option<String>) -> M + 'static,
 ) -> Element<'static, M> {
+    let (choices, selected) = power_plan_choices(guid, plans);
+    pick_list(choices, Some(selected), move |choice| action(choice.0))
+        .same_option(|left, right| left.0 == right.0)
+        .width(Fill)
+        .into()
+}
+
+fn power_plan_choices(
+    guid: Option<&str>,
+    plans: &[PowerPlan],
+) -> (Vec<Choice<Option<String>>>, Choice<Option<String>>) {
     let mut choices = vec![Choice(None, rust_i18n::t!("common.none").to_string())];
     choices.extend(
         plans
             .iter()
-            .map(|plan| Choice(Some(plan.guid.clone()), plan.display_name())),
+            .filter(|plan| !plan.managed_adaptive)
+            .map(|plan| Choice(Some(plan.guid.clone()), power_plan_label(plan))),
     );
     let selected = choices
         .iter()
-        .find(|choice| choice.0.as_deref() == guid)
+        .find(|choice| match (choice.0.as_deref(), guid) {
+            (Some(installed), Some(saved)) => installed.eq_ignore_ascii_case(saved),
+            (None, None) => true,
+            _ => false,
+        })
         .cloned()
-        .unwrap_or_else(|| Choice(guid.map(str::to_owned), guid.unwrap_or_default().to_owned()));
-    pick_list(choices, Some(selected), move |choice| action(choice.0))
-        .width(Fill)
-        .into()
+        .unwrap_or_else(|| {
+            Choice(
+                guid.map(str::to_owned),
+                rust_i18n::t!("common.selected_plan_unavailable").to_string(),
+            )
+        });
+    (choices, selected)
 }
 
 // Theme-derived surfaces and interaction states; controls remain standard Iced widgets.
@@ -1582,7 +2328,12 @@ pub(super) fn selected(
 ) -> iced::widget::button::Style {
     let mut style = quiet(theme, status);
     if status != iced::widget::button::Status::Disabled {
-        style.text_color = theme.palette().primary;
+        if design::is_contrast(theme) {
+            // Composite rows contain independently styled icons and status text.
+            style.border.color = accent_text(theme, None);
+            style.border.width = 2.0;
+            return style;
+        }
         style.background = Some(
             theme
                 .palette()
@@ -1594,6 +2345,7 @@ pub(super) fn selected(
                 })
                 .into(),
         );
+        style.text_color = accent_text(theme, style.background);
     }
     style
 }
@@ -1603,6 +2355,13 @@ pub(super) fn selected_control(
     status: iced::widget::button::Status,
 ) -> iced::widget::button::Style {
     let mut style = control_button(theme, status);
+    if design::is_contrast(theme) && status != iced::widget::button::Status::Disabled {
+        let highlight = theme.extended_palette().primary.base;
+        style.background = Some(highlight.color.into());
+        style.text_color = highlight.text;
+        style.border.color = highlight.text;
+        return style;
+    }
     if status == iced::widget::button::Status::Active {
         style.background = Some(theme.palette().primary.scale_alpha(0.15).into());
     }
@@ -1616,6 +2375,13 @@ pub(super) fn quiet(
     use iced::widget::button::{self, Status};
     let mut style = button::text(theme, status);
     style.border.radius = design::CONTROL_RADIUS.into();
+    if design::is_contrast(theme) {
+        if matches!(status, Status::Hovered | Status::Pressed) {
+            style.border.color = accent_text(theme, None);
+            style.border.width = contrast_stroke_width(status) - 1.0;
+        }
+        return style;
+    }
     style.background = match status {
         Status::Hovered => Some(theme.palette().primary.scale_alpha(0.10).into()),
         Status::Pressed => Some(theme.palette().primary.scale_alpha(0.20).into()),
@@ -1634,6 +2400,9 @@ pub(super) fn card(
     style.border = surface.border;
     if matches!(status, Status::Active | Status::Disabled) {
         style.background = surface.background;
+    } else if design::is_contrast(theme) {
+        style.border.width = 2.0;
+        style.border.color = accent_text(theme, None);
     }
     style
 }
@@ -1642,6 +2411,101 @@ pub(super) fn card(
 mod tests {
     use super::*;
     use iced::{widget::button::Status, Theme};
+
+    #[test]
+    fn windows_contrast_menu_uses_paired_selection_colors() {
+        use crate::platform::windows::appearance::ContrastColors;
+        let theme = design::contrast_theme(ContrastColors {
+            window: 0xffffff,
+            window_text: 0x000000,
+            highlight: 0x000000,
+            highlight_text: 0xffffff,
+        });
+        let control = selected_control(&theme, Status::Active);
+        let menu = select_menu(&theme);
+        assert_eq!(control.background, Some(iced::Color::BLACK.into()));
+        assert_eq!(control.text_color, iced::Color::WHITE);
+        assert_eq!(menu.selected_background, iced::Color::BLACK.into());
+        assert_eq!(menu.selected_text_color, iced::Color::WHITE);
+        let composite = selected(&theme, Status::Active);
+        assert_eq!(composite.background, None);
+        assert_eq!(composite.text_color, iced::Color::BLACK);
+        assert_eq!(composite.border.width, 2.0);
+        assert!(composite.border.color.relative_contrast(iced::Color::WHITE) >= 3.0);
+    }
+
+    #[test]
+    fn windows_contrast_buttons_show_hover_and_press_with_readable_outlines() {
+        use crate::platform::windows::appearance::ContrastColors;
+        use iced::{Background, Color};
+        let theme = design::contrast_theme(ContrastColors {
+            window: 0xffffff,
+            window_text: 0x000000,
+            highlight: 0x000000,
+            highlight_text: 0xffffff,
+        });
+        let statuses = [Status::Active, Status::Hovered, Status::Pressed];
+        for style in [
+            primary_button as fn(&Theme, Status) -> _,
+            danger_button,
+            secondary_button,
+            tertiary_button,
+            selected_control,
+        ] {
+            for (status, width) in statuses.into_iter().zip([1.0, 2.0, 3.0]) {
+                let state = style(&theme, status);
+                let fill = match state.background {
+                    Some(Background::Color(fill)) => fill,
+                    _ => Color::WHITE,
+                };
+                assert_eq!(state.border.width, width);
+                assert!(state.border.color.relative_contrast(fill) >= 3.0);
+                assert!(state.text_color.relative_contrast(fill) >= 4.5);
+                for normal in [Theme::Light, Theme::Dark] {
+                    assert_eq!(style(&normal, status).border.width, 1.0);
+                }
+            }
+        }
+        assert_eq!(
+            statuses.map(|status| quiet(&theme, status).border.width),
+            [0.0, 1.0, 2.0],
+        );
+    }
+
+    #[test]
+    fn power_plan_choices_match_saved_guid_casing_and_keep_unavailable_targets() {
+        let installed = "381b4222-f694-41f0-9685-ff5bb260df2e";
+        let managed = "11111111-aaaa-bbbb-cccc-222222222222";
+        let plans = [
+            PowerPlan {
+                guid: installed.into(),
+                name: "Balanced".into(),
+                active: false,
+                managed_adaptive: false,
+            },
+            PowerPlan {
+                guid: managed.into(),
+                name: "Winderust Adaptive".into(),
+                active: false,
+                managed_adaptive: true,
+            },
+        ];
+
+        let (choices, selected) = power_plan_choices(Some(&installed.to_ascii_uppercase()), &plans);
+        assert_eq!(choices.len(), 2);
+        assert_eq!(selected, Choice(Some(installed.into()), "Balanced".into()));
+        assert!(choices.contains(&selected));
+
+        let (choices, selected) = power_plan_choices(None, &plans);
+        assert_eq!(selected.0, None);
+        assert!(choices.contains(&selected));
+
+        for unavailable in [managed, "00000000-aaaa-bbbb-cccc-000000000000"] {
+            let (choices, selected) = power_plan_choices(Some(unavailable), &plans);
+            assert_eq!(selected.0.as_deref(), Some(unavailable));
+            assert!(!choices.contains(&selected));
+        }
+    }
 
     #[test]
     fn button_hierarchy_tracks_accent_and_keeps_tertiary_subdued() {
@@ -1759,10 +2623,7 @@ mod tests {
                     assert_eq!(inactive.text_color, quiet(theme, status).text_color);
                     assert_eq!(active.text_color, inactive.text_color);
                     assert_eq!(active.background, selected(theme, status).background);
-                    assert_eq!(
-                        active.border.color,
-                        theme.palette().primary.scale_alpha(0.6)
-                    );
+                    assert_eq!(active.border.color, accent_text(theme, active.background));
                 }
                 let field = select_field(theme, iced::widget::pick_list::Status::Active);
                 let hover = select_field(theme, iced::widget::pick_list::Status::Hovered);
@@ -1784,17 +2645,99 @@ mod tests {
     }
 
     #[test]
+    fn extreme_accents_keep_control_text_and_selection_readable() {
+        use iced::{Background, Color};
+
+        for accent in [Color::BLACK, Color::WHITE, Color::from_rgb8(255, 235, 20)] {
+            for theme in [
+                Theme::custom_with_fn(
+                    "light",
+                    design::palette(true, Some(accent)),
+                    design::extended_palette,
+                ),
+                Theme::custom_with_fn(
+                    "dark",
+                    design::palette(false, Some(accent)),
+                    design::extended_palette,
+                ),
+                design::amoled_theme(Some(accent)),
+            ] {
+                let colors = theme.extended_palette();
+                for status in [Status::Active, Status::Hovered, Status::Pressed] {
+                    let primary = primary_button(&theme, status);
+                    let Some(Background::Color(fill)) = primary.background else {
+                        panic!("primary buttons use a solid fill");
+                    };
+                    assert!(primary.text_color.relative_contrast(fill) >= 4.5);
+                    let tab = tab_style(&theme, status, true);
+                    for surface in [
+                        colors.background.weaker.color,
+                        colors.background.weak.color,
+                        colors.background.neutral.color,
+                    ] {
+                        let painted = |fill| match fill {
+                            Some(Background::Color(tint)) => {
+                                super::super::animated_controls::color(surface, tint, tint.a)
+                            }
+                            _ => surface,
+                        };
+                        for style in [secondary_button(&theme, status), selected(&theme, status)] {
+                            assert!(
+                                style
+                                    .text_color
+                                    .relative_contrast(painted(style.background))
+                                    >= 4.5
+                            );
+                        }
+                        assert!(tab.border.color.relative_contrast(painted(tab.background)) >= 3.0);
+                    }
+                }
+                for status in [
+                    iced::widget::checkbox::Status::Active { is_checked: true },
+                    iced::widget::checkbox::Status::Hovered { is_checked: true },
+                ] {
+                    let checkbox = checkbox_style(&theme, status);
+                    let Background::Color(fill) = checkbox.background else {
+                        panic!("checkboxes use a solid fill");
+                    };
+                    assert!(checkbox.icon_color.relative_contrast(fill) >= 3.0);
+                }
+                let disabled = toggle_style(
+                    &theme,
+                    iced::widget::toggler::Status::Disabled { is_toggled: false },
+                );
+                let (Background::Color(track), Background::Color(knob)) =
+                    (disabled.background, disabled.foreground)
+                else {
+                    panic!("disabled switches use solid colors");
+                };
+                assert!(knob.relative_contrast(track) >= 3.0);
+                for key in [
+                    "common.applied",
+                    "common.waiting",
+                    "common.error",
+                    "common.unknown",
+                    "common.inactive",
+                ] {
+                    let chip = rule_status_chip(&theme, key);
+                    let Some(Background::Color(fill)) = chip.background else {
+                        panic!("status chips use a solid fill");
+                    };
+                    assert_eq!(fill.a, 1.0);
+                    let text = chip.text_color.expect("status chips set a text color");
+                    assert!(
+                        text.relative_contrast(fill) >= 4.5,
+                        "{key}: {text:?} on {fill:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn interactive_surfaces_distinguish_hover_press_selection_and_disabled() {
         for theme in [Theme::CatppuccinLatte, Theme::CatppuccinMocha] {
             assert_ne!(selected(&theme, Status::Active).background, None);
-            assert_eq!(
-                selected(&theme, Status::Active).text_color,
-                theme.palette().primary
-            );
-            assert_eq!(
-                selected(&theme, Status::Hovered).text_color,
-                theme.palette().primary
-            );
             for style in [quiet, selected, card, control_button, selected_control] {
                 let active = style(&theme, Status::Active);
                 let hovered = style(&theme, Status::Hovered);
@@ -1850,6 +2793,33 @@ pub(super) fn modal_frame<'a, M: 'a>(
     .into()
 }
 
+pub(super) fn rule_dialog<'a, M: Clone + 'a>(
+    title: String,
+    body: impl Into<Element<'a, M>>,
+    cancel: M,
+    confirm: Option<M>,
+    size: (u32, u32),
+) -> Element<'a, M> {
+    modal_frame(
+        row![
+            heading(title, design::typography::SECTION).width(Fill),
+            icon_button("icons/x.svg").on_press(cancel.clone()),
+        ]
+        .align_y(iced::Center),
+        body,
+        row![
+            action_button(rust_i18n::t!("common.cancel").to_string())
+                .style(secondary_button)
+                .on_press(cancel),
+            action_button(rust_i18n::t!("common.ok").to_string())
+                .style(primary_button)
+                .on_press_maybe(confirm),
+        ]
+        .spacing(design::space::SMALL),
+        size,
+    )
+}
+
 pub(super) fn label_with_unit(label: &str, unit: &str) -> String {
     if unit.is_empty() {
         label.to_owned()
@@ -1860,10 +2830,20 @@ pub(super) fn label_with_unit(label: &str, unit: &str) -> String {
 
 // Fit list cells before drawing: overflowing text requires a software clip mask per cell.
 pub(super) fn fitted_text(content: &str, width: f32, size: u32) -> String {
-    if text_width(content, size) <= width {
+    fitted_text_with_font(content, width, size, design::typography::FONT)
+}
+
+pub(super) fn fitted_text_with_font(
+    content: &str,
+    width: f32,
+    size: u32,
+    font: iced::Font,
+) -> String {
+    let measure = |content: &str| text_width_with_font(content, size, font);
+    if measure(content) <= width {
         return content.to_owned();
     }
-    if text_width("\u{2026}", size) > width {
+    if measure("\u{2026}") > width {
         return String::new();
     }
     let boundaries: Vec<_> = content.char_indices().map(|(index, _)| index).collect();
@@ -1872,7 +2852,7 @@ pub(super) fn fitted_text(content: &str, width: f32, size: u32) -> String {
     while low < high {
         let middle = (low + high).div_ceil(2);
         let candidate = format!("{}\u{2026}", &content[..boundaries[middle - 1]]);
-        if text_width(&candidate, size) <= width {
+        if measure(&candidate) <= width {
             low = middle;
         } else {
             high = middle - 1;
@@ -1886,13 +2866,17 @@ pub(super) fn fitted_text(content: &str, width: f32, size: u32) -> String {
 }
 
 pub(super) fn text_width(content: &str, size: u32) -> f32 {
+    text_width_with_font(content, size, design::typography::FONT)
+}
+
+pub(super) fn text_width_with_font(content: &str, size: u32, font: iced::Font) -> f32 {
     use iced::advanced::text::{Paragraph, Renderer, Text};
     <iced::Renderer as Renderer>::Paragraph::with_text(Text {
         content,
         bounds: iced::Size::INFINITE,
         size: (size as f32).into(),
         line_height: Default::default(),
-        font: design::typography::FONT,
+        font,
         align_x: Default::default(),
         align_y: iced::alignment::Vertical::Center,
         shaping: iced::advanced::text::Shaping::Advanced,

@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     ffi::OsString,
     os::windows::ffi::{OsStrExt, OsStringExt},
@@ -12,6 +13,7 @@ use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::{
     cpu::ProcessCpuSample,
+    platform::windows::sid_bytes,
     win_util::{filetime_to_u64, WinHandle},
 };
 
@@ -29,7 +31,7 @@ use windows_sys::Win32::{
             CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
             TH32CS_SNAPPROCESS,
         },
-        ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS},
+        ProcessStatus::{K32EnumProcesses, K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX},
         RemoteDesktop::ProcessIdToSessionId,
         SystemInformation::GetSystemWindowsDirectoryW,
         Threading::{
@@ -128,12 +130,14 @@ pub struct ProcessResourceSample {
     pub cpu: ProcessCpuSample,
     pub creation_time: u64,
     pub working_set_bytes: Option<u64>,
+    pub private_commit_bytes: Option<u64>,
     pub efficiency_mode: Option<bool>,
 }
 
 #[derive(Clone, Copy)]
 pub enum ProcessResourceSampling {
-    UsageOnly,
+    CpuOnly,
+    CpuAndMemory,
     WithEfficiencyMode,
 }
 
@@ -143,7 +147,7 @@ impl ProcessResourceSampling {
         query_eco_qos: impl FnOnce() -> Option<bool>,
         query_priority_class: impl FnOnce() -> u32,
     ) -> Option<bool> {
-        if matches!(self, Self::UsageOnly) {
+        if !matches!(self, Self::WithEfficiencyMode) {
             return None;
         }
         if !query_eco_qos()? {
@@ -161,7 +165,9 @@ pub fn sample_process_resources(
     processes
         .iter()
         .filter_map(|process| {
-            sample_process_resource(process.id, sampling).map(|sample| (process.id, sample))
+            let creation_time = process.creation_time?;
+            let sample = sample_process_resource(process.id, sampling)?;
+            (sample.creation_time == creation_time).then_some((process.id, sample))
         })
         .collect()
 }
@@ -191,19 +197,23 @@ fn sample_process_resource(
         return None;
     }
 
-    let mut memory = PROCESS_MEMORY_COUNTERS {
-        cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+    let memory_size = std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
+    let mut memory = PROCESS_MEMORY_COUNTERS_EX {
+        cb: memory_size,
         ..Default::default()
     };
-    // SAFETY: handle is live and memory is writable for the supplied structure size.
-    let working_set_bytes = (unsafe {
-        K32GetProcessMemoryInfo(
-            handle.raw(),
-            &mut memory,
-            std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
-        )
-    } != 0)
-        .then_some(memory.WorkingSetSize as u64);
+    let memory_available = if matches!(sampling, ProcessResourceSampling::CpuOnly) {
+        false
+    } else {
+        // SAFETY: handle is live and the extended counter buffer is writable for this size.
+        unsafe {
+            K32GetProcessMemoryInfo(
+                handle.raw(),
+                std::ptr::from_mut(&mut memory).cast(),
+                memory_size,
+            ) != 0
+        }
+    };
 
     let efficiency_mode = sampling.efficiency_mode(
         || {
@@ -238,7 +248,8 @@ fn sample_process_resource(
             sampled_at: Instant::now(),
         },
         creation_time: filetime_to_u64(creation),
-        working_set_bytes,
+        working_set_bytes: memory_available.then_some(memory.WorkingSetSize as u64),
+        private_commit_bytes: memory_available.then_some(memory.PrivateUsage as u64),
         efficiency_mode,
     })
 }
@@ -620,15 +631,23 @@ pub struct ProcessCandidateInfo {
 }
 
 pub fn list_process_candidates() -> Result<Vec<ProcessCandidateInfo>, String> {
-    let mut processes = list_processes()?;
-    enrich_process_paths(&mut processes);
+    let processes = list_processes_with(|process, handle| {
+        if has_candidate_access(process) {
+            process.image_path = process_image_path_from_handle(handle);
+            process.is_service_account = process_runs_as_service_account_from_handle(handle);
+        }
+    })?;
     Ok(process_candidates_from_processes(&processes))
 }
 
+fn has_candidate_access(process: &ProcessInfo) -> bool {
+    process.is_critical == Some(false) && process.can_set_information
+}
+
 pub fn process_candidates_from_processes(processes: &[ProcessInfo]) -> Vec<ProcessCandidateInfo> {
-    let mut candidates: BTreeMap<String, ProcessCandidateInfo> = BTreeMap::new();
+    let mut candidates: BTreeMap<OsString, ProcessCandidateInfo> = BTreeMap::new();
     for process in processes {
-        if process.is_critical != Some(false) || !process.can_set_information {
+        if !has_candidate_access(process) {
             continue;
         }
         let Some(image_path) = process.image_path.as_ref() else {
@@ -637,11 +656,11 @@ pub fn process_candidates_from_processes(processes: &[ProcessInfo]) -> Vec<Proce
         let has_suspendable_instance = process.session_id.is_some_and(|session_id| session_id != 0)
             && process.is_service_account == Some(false);
         candidates
-            .entry(executable_path_key(image_path))
+            .entry(executable_grouping_key(image_path))
             .and_modify(|candidate| {
                 candidate.has_suspendable_instance |= has_suspendable_instance;
             })
-            .or_insert(ProcessCandidateInfo {
+            .or_insert_with(|| ProcessCandidateInfo {
                 name: process.name.clone(),
                 image_path: image_path.clone(),
                 has_suspendable_instance,
@@ -650,7 +669,60 @@ pub fn process_candidates_from_processes(processes: &[ProcessInfo]) -> Vec<Proce
     candidates.into_values().collect()
 }
 
-pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
+fn list_processes_with(
+    mut enrich: impl FnMut(&mut ProcessInfo, &WinHandle),
+) -> Result<Vec<ProcessInfo>, String> {
+    let mut processes = list_process_entries()?;
+    for process in &mut processes {
+        if let Some(handle) = observe_process_metadata(process) {
+            enrich(process, &handle);
+        }
+    }
+    Ok(processes)
+}
+
+fn observe_process_metadata(process: &mut ProcessInfo) -> Option<WinHandle> {
+    let handle = open_process_for_query(process.id);
+    process.session_id = process_session_id(process.id);
+    let handle = handle?;
+    process.creation_time = handle.process_creation_time();
+    process.is_critical = process_critical_from_handle(&handle);
+    process.can_set_information = process_protection_from_handle(&handle) == Some(false)
+        && process_has_access(process.id, PROCESS_SET_INFORMATION);
+    Some(handle)
+}
+
+pub(crate) fn observe_policy_process_metadata(process: &mut ProcessInfo, with_path: bool) {
+    let handle = observe_process_metadata(process);
+    if let Some(handle) = handle.filter(|_| with_path) {
+        read_policy_process_path(process, &handle);
+    }
+}
+
+pub(crate) fn list_process_ancestry(root: u32) -> Result<Vec<ProcessInfo>, String> {
+    let mut processes = list_process_entries()?;
+    let mut children = BTreeMap::<u32, Vec<u32>>::new();
+    for process in &processes {
+        if let Some(parent) = process.parent_id {
+            children.entry(parent).or_default().push(process.id);
+        }
+    }
+    let mut pending = vec![root];
+    let mut candidates = BTreeSet::new();
+    while let Some(id) = pending.pop() {
+        if candidates.insert(id) {
+            pending.extend(children.remove(&id).into_iter().flatten());
+        }
+    }
+    processes.retain(|process| candidates.contains(&process.id));
+    for process in &mut processes {
+        process.creation_time =
+            open_process_for_query(process.id).and_then(|handle| handle.process_creation_time());
+    }
+    Ok(processes)
+}
+
+pub(crate) fn list_process_entries() -> Result<Vec<ProcessInfo>, String> {
     let snapshot = process_snapshot()?;
     let mut entry = PROCESSENTRY32W {
         dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
@@ -666,7 +738,7 @@ pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
                 id: entry.th32ProcessID,
                 creation_time: None,
                 parent_id: (entry.th32ParentProcessID != 0).then_some(entry.th32ParentProcessID),
-                session_id: process_session_id(entry.th32ProcessID),
+                session_id: None,
                 user_name: None,
                 is_service_account: None,
                 is_critical: None,
@@ -681,63 +753,69 @@ pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
     }
     ensure_process_iteration_complete()?;
 
-    for process in &mut processes {
-        let Some(handle) = open_process_for_query(process.id) else {
-            continue;
-        };
-        process.creation_time = handle.process_creation_time();
-        process.is_critical = process_critical_from_handle(&handle);
-        process.can_set_information = process_protection_from_handle(&handle) == Some(false)
-            && process_has_access(process.id, PROCESS_SET_INFORMATION);
-    }
     Ok(processes)
 }
 
 pub fn list_processes_with_paths() -> Result<Vec<ProcessInfo>, String> {
-    let mut processes = list_processes()?;
-    enrich_process_metadata(&mut processes, process_identity_from_handle);
-    Ok(processes)
+    let mut account_names = BTreeMap::new();
+    list_processes_with(|process, handle| {
+        process.image_path = process_image_path_from_handle(handle);
+        (process.user_name, process.is_service_account) =
+            process_identity_from_handle(handle, &mut account_names);
+    })
 }
 
-pub(crate) fn enrich_process_paths(processes: &mut [ProcessInfo]) {
-    // Policy and picker scans need SID safety classification, not display names.
-    enrich_process_metadata(processes, |handle| {
-        (None, process_runs_as_service_account_from_handle(handle))
-    });
+fn read_policy_process_path(process: &mut ProcessInfo, handle: &WinHandle) {
+    // Policy scans need SID safety classification, not display names.
+    process.image_path = process_image_path_from_handle(handle);
+    process.user_name = None;
+    process.is_service_account = process_runs_as_service_account_from_handle(handle);
 }
 
-fn enrich_process_metadata(
-    processes: &mut [ProcessInfo],
-    identity: impl Fn(&WinHandle) -> (Option<String>, Option<bool>),
-) {
-    for process in processes {
-        let Some(handle) = open_process_for_query(process.id) else {
-            continue;
-        };
-        process.image_path = process_image_path_from_handle(&handle);
-        process.creation_time = handle.process_creation_time();
-        (process.user_name, process.is_service_account) = identity(&handle);
-        process.is_critical = process_critical_from_handle(&handle);
-    }
-}
-
-pub fn for_each_process_id(mut visit: impl FnMut(u32)) -> Result<(), String> {
-    let snapshot = process_snapshot()?;
-    let mut entry = PROCESSENTRY32W {
-        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
-        ..Default::default()
+pub(crate) fn enrich_policy_process_path(process: &mut ProcessInfo) {
+    let Some(handle) = open_process_for_query(process.id) else {
+        return;
     };
+    process.creation_time = handle.process_creation_time();
+    process.is_critical = process_critical_from_handle(&handle);
+    read_policy_process_path(process, &handle);
+}
 
-    // SAFETY: snapshot is live and entry declares its size and remains writable.
-    let mut has_entry = unsafe { Process32FirstW(snapshot.raw(), &mut entry) != 0 };
-    while has_entry {
-        visit(entry.th32ProcessID);
-        // SAFETY: snapshot remains live and entry remains writable for the next record.
-        has_entry = unsafe { Process32NextW(snapshot.raw(), &mut entry) != 0 };
+pub fn list_process_ids() -> Result<Vec<u32>, String> {
+    read_process_ids(|ids, bytes| {
+        let mut returned = 0;
+        // SAFETY: ids is writable for bytes and returned receives the initialized byte count.
+        if unsafe { K32EnumProcesses(ids.as_mut_ptr(), bytes, &mut returned) } == 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        Ok(returned)
+    })
+}
+
+fn read_process_ids(
+    mut read: impl FnMut(&mut [u32], u32) -> Result<u32, String>,
+) -> Result<Vec<u32>, String> {
+    const PID_BYTES: u32 = std::mem::size_of::<u32>() as u32;
+    let mut bytes = 512 * PID_BYTES;
+    let mut ids = Vec::new();
+    loop {
+        let slots = (bytes / PID_BYTES) as usize;
+        ids.try_reserve_exact(slots - ids.len())
+            .map_err(|error| error.to_string())?;
+        ids.resize(slots, 0);
+        let returned = read(&mut ids, bytes)?;
+        if returned > bytes || !returned.is_multiple_of(PID_BYTES) {
+            return Err("Windows returned an invalid process ID count.".to_owned());
+        }
+        if returned < bytes {
+            ids.truncate((returned / PID_BYTES) as usize);
+            return Ok(ids);
+        }
+        // Windows reports a full buffer even when it did not fit the complete list.
+        bytes = bytes
+            .checked_mul(2)
+            .ok_or("The process ID list is too large.")?;
     }
-    ensure_process_iteration_complete()?;
-
-    Ok(())
 }
 
 fn ensure_process_iteration_complete() -> Result<(), String> {
@@ -769,22 +847,6 @@ pub fn is_foreground_process(
             .is_some_and(|foreground| same_executable_path(foreground, executable_path))
 }
 
-pub fn should_ignore_foreground_process(
-    exclude_foreground_app: bool,
-    process_id: u32,
-    executable_path: &Path,
-    foreground_process_id: Option<u32>,
-    foreground_executable_path: Option<&Path>,
-) -> bool {
-    exclude_foreground_app
-        && is_foreground_process(
-            process_id,
-            executable_path,
-            foreground_process_id,
-            foreground_executable_path,
-        )
-}
-
 #[derive(Debug, Default)]
 pub struct ProtectedProcesses {
     process_ids: Arc<BTreeSet<u32>>,
@@ -807,7 +869,8 @@ impl ProtectedProcesses {
                 visible_window_process_ids.contains(&process.id)
                     || foreground_process_id == Some(process.id)
             })
-            .filter_map(process_executable_path)
+            .filter_map(verified_process_executable_path)
+            .map(Cow::into_owned)
             .collect();
         Self {
             process_ids: visible_window_process_ids,
@@ -823,6 +886,10 @@ impl ProtectedProcesses {
                 .executable_paths
                 .iter()
                 .any(|protected_path| same_executable_path(protected_path, executable_path))
+    }
+
+    pub(crate) fn window_owner_ids(&self) -> &BTreeSet<u32> {
+        &self.process_ids
     }
 
     /// A name match only permits a path lookup; it never establishes membership.
@@ -843,52 +910,125 @@ pub fn same_process_name(left: &str, right: &str) -> bool {
 }
 
 pub fn executable_path_key(path: &Path) -> String {
-    path.to_string_lossy()
-        .trim()
-        .replace('/', std::path::MAIN_SEPARATOR_STR)
+    let path = path.to_string_lossy();
+    normalize_path_slashes(path.trim()).into_owned()
 }
 
+pub(crate) fn executable_grouping_key(path: &Path) -> OsString {
+    match path.to_str() {
+        Some(path) => normalize_path_slashes(path).into_owned().into(),
+        None => path.as_os_str().to_owned(),
+    }
+}
+
+pub(crate) fn normalize_path_slashes(path: &str) -> Cow<'_, str> {
+    if path.contains('/') {
+        Cow::Owned(path.replace('/', std::path::MAIN_SEPARATOR_STR))
+    } else {
+        Cow::Borrowed(path)
+    }
+}
+
+pub(crate) fn power_profile_executable_path_key(path: &str) -> Cow<'_, str> {
+    let normalized = normalize_path_slashes(path);
+    // Preserve verbatim paths, including spellings that normalize to the verbatim prefix.
+    if normalized.starts_with(r"\\?\") {
+        Cow::Borrowed(path)
+    } else {
+        normalized
+    }
+}
+
+// Native executable paths preserve literal filename whitespace.
 pub fn same_executable_path(left: &Path, right: &Path) -> bool {
     if left.as_os_str() == right.as_os_str() {
         return true;
     }
-    let left_key = executable_path_key(left);
-    let right_key = executable_path_key(right);
+    // A lossy display string cannot establish identity between different native paths.
+    let Some((left_text, right_text)) = left.to_str().zip(right.to_str()) else {
+        return false;
+    };
+    let left_key = normalize_path_slashes(left_text);
+    let right_key = normalize_path_slashes(right_text);
     if left_key == right_key {
         return true;
     }
-    if !left_key.eq_ignore_ascii_case(&right_key) {
+    let ascii_case_match = left_key.eq_ignore_ascii_case(&right_key);
+    if !ascii_case_match && !unicode_case_match(&left_key, &right_key) {
         return false;
     }
 
     match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
-        (Ok(left), Ok(right)) => executable_path_key(&left) == executable_path_key(&right),
-        (Err(_), Err(_)) => true,
+        (Ok(left), Ok(right)) => {
+            left.as_os_str() == right.as_os_str()
+                || left
+                    .to_str()
+                    .zip(right.to_str())
+                    .is_some_and(|(left, right)| {
+                        normalize_path_slashes(left) == normalize_path_slashes(right)
+                    })
+        }
+        (Err(_), Err(_)) => ascii_case_match,
         _ => false,
     }
 }
 
+// Ordinal equality makes Unicode spellings candidates for full path verification.
+pub(crate) fn unicode_case_match(left: &str, right: &str) -> bool {
+    if left.is_ascii() && right.is_ascii() {
+        return false;
+    }
+    let mut left_buffer = [0; 128];
+    let mut right_buffer = [0; 128];
+    let left = utf16_for_ordinal(left, &mut left_buffer);
+    let right = utf16_for_ordinal(right, &mut right_buffer);
+    crate::platform::windows::ordinal_equal(&left, &right).unwrap_or(false)
+}
+
+fn utf16_for_ordinal<'a>(text: &str, buffer: &'a mut [u16]) -> Cow<'a, [u16]> {
+    // The UTF-8 byte length bounds the UTF-16 unit count.
+    if text.len() > buffer.len() {
+        return Cow::Owned(text.encode_utf16().collect());
+    }
+    let mut len = 0;
+    for unit in text.encode_utf16() {
+        buffer[len] = unit;
+        len += 1;
+    }
+    Cow::Borrowed(&buffer[..len])
+}
+
+pub(crate) fn same_executable_name(left: &str, right: &str) -> bool {
+    left.eq_ignore_ascii_case(right) || unicode_case_match(left, right)
+}
+
+pub(crate) fn path_has_executable_name(path: &Path, executable_name: &str) -> bool {
+    path.is_absolute()
+        && path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| same_executable_name(name, executable_name))
+}
+
+pub(crate) fn executable_basename_may_match(process_name: &str, basename: &str) -> bool {
+    same_executable_name(process_name.trim(), basename.trim())
+}
+
 pub fn process_matches_executable_path(process: &ProcessInfo, executable_path: &str) -> bool {
-    let executable_path = Path::new(executable_path.trim());
+    let executable_path = Path::new(executable_path);
     let Some(file_name) = executable_path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
-    if !same_process_name(&process.name, file_name) {
+    if !executable_basename_may_match(&process.name, file_name) {
         return false;
     }
 
-    if let Some(actual_path) = process.image_path.as_deref() {
-        return same_executable_path(actual_path, executable_path);
-    }
-    process_image_path(process.id)
+    verified_process_executable_path(process)
         .is_some_and(|actual_path| same_executable_path(&actual_path, executable_path))
 }
 
 pub fn process_executable_path(process: &ProcessInfo) -> Option<PathBuf> {
-    process
-        .image_path
-        .clone()
-        .or_else(|| process_image_path(process.id))
+    verified_process_executable_path(process).map(Cow::into_owned)
 }
 
 pub fn contains_process_name<T: AsRef<str>>(list: &[T], process_name: &str) -> bool {
@@ -897,16 +1037,7 @@ pub fn contains_process_name<T: AsRef<str>>(list: &[T], process_name: &str) -> b
 }
 
 pub fn process_failure_key(process_identity: &str) -> String {
-    executable_path_key(Path::new(process_identity))
-}
-
-pub fn unique_app_names<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
-    names
-        .map(|name| name.trim().to_ascii_lowercase())
-        .filter(|name| !name.is_empty())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect()
+    normalize_path_slashes(process_identity).into_owned()
 }
 
 pub fn process_count_label(count: usize) -> String {
@@ -945,9 +1076,54 @@ fn is_system_process_name(name: &str) -> bool {
     name.trim().eq_ignore_ascii_case("[system process]")
 }
 
-pub(crate) fn process_image_path(process_id: u32) -> Option<PathBuf> {
+/// Resolves an absolute image path for one generation in the process catalog.
+pub(crate) fn catalog_process_executable_path(
+    processes: &[ProcessInfo],
+    process_id: u32,
+) -> Option<Cow<'_, Path>> {
+    let process = processes.iter().find(|process| process.id == process_id)?;
+    verified_process_executable_path(process)
+}
+
+pub(crate) fn verified_process_executable_path(process: &ProcessInfo) -> Option<Cow<'_, Path>> {
+    process.creation_time?;
+    process
+        .image_path
+        .as_deref()
+        .map(Cow::Borrowed)
+        .or_else(|| observed_process_executable_path(process).map(Cow::Owned))
+        .filter(|path| path.is_absolute())
+}
+
+/// Reads the image only if the current handle still belongs to the observed process.
+pub(crate) fn observed_process_executable_path(process: &ProcessInfo) -> Option<PathBuf> {
+    let (handle, _, _) = query_observed_process_times(process)?;
+    process_image_path_from_handle(&handle)
+}
+
+pub(crate) fn observed_process_executable_path_and_cpu(
+    process: &ProcessInfo,
+) -> Option<(PathBuf, (ProcessCpuSample, u64))> {
+    let (handle, creation_time, cpu_time_100ns) = query_observed_process_times(process)?;
+    let sample = ProcessCpuSample {
+        cpu_time_100ns,
+        sampled_at: Instant::now(),
+    };
+    let path = process_image_path_from_handle(&handle).filter(|path| path.is_absolute())?;
+    Some((path, (sample, creation_time)))
+}
+
+fn query_observed_process_times(process: &ProcessInfo) -> Option<(WinHandle, u64, u64)> {
+    let expected_creation = process.creation_time?;
+    let handle = open_process_for_query(process.id)?;
+    let (creation_time, cpu_time_100ns) = handle.process_times().ok()?;
+    (creation_time == expected_creation).then_some((handle, creation_time, cpu_time_100ns))
+}
+
+pub(super) fn process_image_and_critical(process_id: u32) -> Option<(PathBuf, Option<bool>)> {
     let process = open_process_for_query(process_id)?;
-    process_image_path_from_handle(&process)
+    let path = process_image_path_from_handle(&process)?;
+    Some((path, process_critical_from_handle(&process)))
 }
 
 fn open_process_for_query(process_id: u32) -> Option<WinHandle> {
@@ -958,6 +1134,10 @@ fn open_process_for_query(process_id: u32) -> Option<WinHandle> {
     // SAFETY: process_id came from a current snapshot and no inherited handle is requested.
     let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
     (!process.is_null()).then(|| WinHandle::new(process))
+}
+
+pub(crate) fn process_cpu_times(process_id: u32) -> Option<(u64, u64)> {
+    open_process_for_query(process_id)?.process_times().ok()
 }
 
 fn process_has_access(process_id: u32, desired_access: u32) -> bool {
@@ -998,28 +1178,43 @@ fn process_protection_from_handle(process: &WinHandle) -> Option<bool> {
         .then_some(protection.ProtectionLevel != PROTECTION_LEVEL_NONE)
 }
 
-pub fn process_is_critical(process_id: u32) -> Option<bool> {
-    let process = open_process_for_query(process_id)?;
-    process_critical_from_handle(&process)
-}
-
 fn process_critical_from_handle(process: &WinHandle) -> Option<bool> {
     let mut critical = 0;
     // SAFETY: process is live with query access and critical is writable for the BOOL result.
     (unsafe { IsProcessCritical(process.raw(), &mut critical) } != 0).then_some(critical != 0)
 }
 
-fn process_identity_from_handle(process: &WinHandle) -> (Option<String>, Option<bool>) {
+fn process_identity_from_handle(
+    process: &WinHandle,
+    account_names: &mut BTreeMap<Vec<u8>, String>,
+) -> (Option<String>, Option<bool>) {
     let Some(token_buffer) = process_token_user_buffer(process) else {
         return (None, None);
     };
     // SAFETY: successful TokenUser output starts with a valid aligned TOKEN_USER whose SID remains
     // valid while token_buffer is alive.
     let token_user = unsafe { &*token_buffer.as_ptr().cast::<TOKEN_USER>() };
-    (
-        process_user_name_from_sid(token_user.User.Sid),
-        Some(sid_is_service_account(token_user.User.Sid)),
-    )
+    let Ok(sid) = sid_bytes(token_user.User.Sid, &token_buffer) else {
+        return (None, None);
+    };
+    let native_sid = sid.as_ptr().cast_mut().cast();
+    let name = cached_account_name(account_names, sid, || {
+        process_user_name_from_sid(native_sid)
+    });
+    (name, Some(sid_is_service_account(native_sid)))
+}
+
+fn cached_account_name(
+    account_names: &mut BTreeMap<Vec<u8>, String>,
+    sid: &[u8],
+    lookup: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    if let Some(name) = account_names.get(sid) {
+        return Some(name.clone());
+    }
+    let name = lookup()?;
+    account_names.insert(sid.to_vec(), name.clone());
+    Some(name)
 }
 
 fn process_user_name_from_sid(sid: PSID) -> Option<String> {
@@ -1168,23 +1363,20 @@ pub(crate) fn query_process_image_path(process: &WinHandle) -> Result<PathBuf, u
     }
 }
 
-pub(crate) fn process_handle_matches_executable_path(
-    process: &WinHandle,
-    expected_executable_path: &Path,
-) -> bool {
-    process_image_path_from_handle(process)
-        .is_some_and(|actual| same_executable_path(&actual, expected_executable_path))
-}
-
 #[cfg(test)]
 mod tests {
     #[test]
     fn usage_sampling_skips_efficiency_queries() {
-        let efficiency = ProcessResourceSampling::UsageOnly.efficiency_mode(
-            || panic!("usage-only sampling must not query EcoQoS"),
-            || panic!("usage-only sampling must not query priority"),
-        );
-        assert_eq!(efficiency, None);
+        for mode in [
+            ProcessResourceSampling::CpuOnly,
+            ProcessResourceSampling::CpuAndMemory,
+        ] {
+            let efficiency = mode.efficiency_mode(
+                || panic!("usage-only sampling must not query EcoQoS"),
+                || panic!("usage-only sampling must not query priority"),
+            );
+            assert_eq!(efficiency, None);
+        }
     }
 
     #[test]
@@ -1219,15 +1411,25 @@ mod tests {
     }
 
     #[test]
-    fn usage_only_sampling_keeps_process_identity_and_cpu_observations() {
+    fn resource_sampling_keeps_identity_and_cpu_and_reads_selected_counters() {
         let process_id = std::process::id();
-        let usage = sample_process_resource(process_id, ProcessResourceSampling::UsageOnly)
+        let cpu = sample_process_resource(process_id, ProcessResourceSampling::CpuOnly)
+            .expect("current-process CPU time should be readable");
+        let usage = sample_process_resource(process_id, ProcessResourceSampling::CpuAndMemory)
             .expect("current-process usage should be readable");
         let full = sample_process_resource(process_id, ProcessResourceSampling::WithEfficiencyMode)
             .expect("current-process resources should be readable");
 
+        assert_eq!(cpu.creation_time, usage.creation_time);
         assert_eq!(usage.creation_time, full.creation_time);
+        assert_eq!(cpu.working_set_bytes, None);
+        assert_eq!(cpu.private_commit_bytes, None);
+        assert_eq!(cpu.efficiency_mode, None);
+        assert!(usage.working_set_bytes.is_some() && usage.private_commit_bytes.is_some());
+        assert!(full.working_set_bytes.is_some() && full.private_commit_bytes.is_some());
         assert_eq!(usage.efficiency_mode, None);
+        assert!(usage.cpu.cpu_time_100ns >= cpu.cpu.cpu_time_100ns);
+        assert!(usage.cpu.sampled_at >= cpu.cpu.sampled_at);
         assert!(full.cpu.cpu_time_100ns >= usage.cpu.cpu_time_100ns);
         assert!(full.cpu.sampled_at >= usage.cpu.sampled_at);
     }
@@ -1420,15 +1622,11 @@ mod tests {
     #[test]
     fn path_enrichment_keeps_safety_metadata_and_limits_account_names_to_ui() {
         let process_id = std::process::id();
-        let mut current = list_processes()
+        let mut current = list_processes_with_paths()
             .expect("process snapshot is available")
             .into_iter()
             .find(|process| process.id == process_id)
             .expect("current process is present in its own snapshot");
-        enrich_process_metadata(
-            std::slice::from_mut(&mut current),
-            process_identity_from_handle,
-        );
         assert!(current
             .user_name
             .as_ref()
@@ -1440,25 +1638,164 @@ mod tests {
 
         let mut expected = current.clone();
         expected.user_name = None;
-        enrich_process_paths(std::slice::from_mut(&mut current));
+        enrich_policy_process_path(&mut current);
         assert!(
             current.user_name.is_none(),
             "runtime enrichment must omit account names"
         );
         assert_eq!(current, expected);
+
+        let mut fresh = list_process_entries()
+            .expect("process snapshot is available")
+            .into_iter()
+            .find(|process| process.id == process_id)
+            .expect("current process is present in its own snapshot");
+        observe_policy_process_metadata(&mut fresh, true);
+        assert_eq!(fresh, expected);
+    }
+
+    #[test]
+    fn account_name_cache_reuses_successes_by_sid_and_retries_failures() {
+        let mut names = BTreeMap::new();
+        assert_eq!(cached_account_name(&mut names, &[1], || None), None);
+        assert_eq!(
+            cached_account_name(&mut names, &[1], || Some("Alice".to_owned())).as_deref(),
+            Some("Alice")
+        );
+        assert_eq!(
+            cached_account_name(&mut names, &[1], || panic!("SID is already cached")).as_deref(),
+            Some("Alice")
+        );
+        assert_eq!(
+            cached_account_name(&mut names, &[2], || Some("Bob".to_owned())).as_deref(),
+            Some("Bob")
+        );
+        assert_eq!(names.len(), 2);
+    }
+
+    #[test]
+    fn process_id_capture_retries_a_full_buffer_before_returning_any_ids() {
+        let mut attempts = 0;
+        let ids = read_process_ids(|ids, bytes| {
+            attempts += 1;
+            if attempts == 1 {
+                assert_eq!(ids.len(), 512);
+                ids[0] = 123;
+                return Ok(bytes);
+            }
+            assert_eq!(ids.len(), 1024);
+            ids[..3].copy_from_slice(&[0, 20, 40]);
+            Ok(12)
+        })
+        .expect("the second scan fits");
+        assert_eq!(attempts, 2);
+        assert_eq!(ids, [0, 20, 40]);
+    }
+
+    #[test]
+    fn process_id_capture_rejects_failed_or_malformed_results() {
+        let mut attempts = 0;
+        let result = read_process_ids(|_, bytes| {
+            attempts += 1;
+            if attempts == 1 {
+                Ok(bytes)
+            } else {
+                Err("read failed".to_owned())
+            }
+        });
+        assert_eq!(result, Err("read failed".to_owned()));
+        for offset in [-1, 4] {
+            assert!(read_process_ids(|_, bytes| Ok(bytes.saturating_add_signed(offset))).is_err());
+        }
     }
 
     #[test]
     fn process_snapshot_captures_the_current_process_creation_time() {
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let process_id = unsafe { GetCurrentProcessId() };
-        let processes = list_processes().expect("process snapshot is available");
+        let processes = list_processes_with(|_, _| {}).expect("process snapshot is available");
         let current = processes
             .iter()
             .find(|process| process.id == process_id)
             .expect("current process is present in its own snapshot");
 
         assert!(current.creation_time.is_some());
+    }
+
+    #[test]
+    fn observed_image_and_visible_siblings_require_the_captured_generation() {
+        let id = std::process::id();
+        let handle = open_process_for_query(id).expect("current process should be queryable");
+        let (creation_time, initial_cpu_time) = handle
+            .process_times()
+            .expect("current process times should be readable");
+        let path =
+            query_process_image_path(&handle).expect("current image path should be readable");
+        let path_text = path.to_str().expect("current image path should be Unicode");
+        let mut observed = ProcessInfo {
+            id,
+            creation_time: Some(creation_time),
+            parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_service_account: None,
+            is_critical: None,
+            can_set_information: false,
+            name: path.file_name().unwrap().to_string_lossy().into_owned(),
+            image_path: Some(PathBuf::from("cached.exe")),
+        };
+
+        assert_eq!(
+            observed_process_executable_path(&observed),
+            Some(path.clone())
+        );
+        assert_eq!(process_executable_path(&observed), None);
+
+        let sibling_id = id ^ 1;
+        let capture = |process: &ProcessInfo| {
+            ProtectedProcesses::capture(
+                std::slice::from_ref(process),
+                false,
+                None,
+                BTreeSet::from([id]),
+            )
+        };
+        observed.image_path = None;
+        let (sample_path, (sample, sample_creation_time)) =
+            observed_process_executable_path_and_cpu(&observed)
+                .expect("current process image and CPU time should be readable");
+        assert_eq!(sample_path, path);
+        assert_eq!(sample_creation_time, creation_time);
+        assert!(sample.cpu_time_100ns >= initial_cpu_time);
+        assert!(sample.cpu_time_100ns <= handle.process_times().unwrap().1);
+        assert_eq!(
+            process_executable_path(&observed).as_deref(),
+            Some(path.as_path())
+        );
+        assert!(process_matches_executable_path(&observed, path_text));
+        assert!(capture(&observed).contains(sibling_id, &path));
+
+        observed.creation_time = Some(creation_time ^ 1);
+        assert_eq!(observed_process_executable_path(&observed), None);
+        assert_eq!(observed_process_executable_path_and_cpu(&observed), None);
+        assert_eq!(process_executable_path(&observed), None);
+        assert!(!process_matches_executable_path(&observed, path_text));
+        let stale = capture(&observed);
+        assert!(stale.contains(id, &path));
+        assert!(!stale.contains(sibling_id, &path));
+
+        observed.creation_time = None;
+        assert_eq!(observed_process_executable_path(&observed), None);
+        assert_eq!(observed_process_executable_path_and_cpu(&observed), None);
+        assert_eq!(process_executable_path(&observed), None);
+        assert!(!process_matches_executable_path(&observed, path_text));
+        let cached_path = PathBuf::from(r"C:\Apps\cached.exe");
+        observed.image_path = Some(cached_path.clone());
+        assert_eq!(process_executable_path(&observed), None);
+        assert!(!capture(&observed).contains(sibling_id, &cached_path));
+
+        observed.creation_time = Some(creation_time);
+        assert!(capture(&observed).contains(sibling_id, &cached_path));
     }
 
     #[test]
@@ -1600,6 +1937,39 @@ mod tests {
     }
 
     #[test]
+    fn catalog_keeps_suspendability_separate_for_lookalike_paths() {
+        let path = "C:\\Apps\\\u{fffd}\\editor.exe";
+        let valid = ProcessInfo {
+            id: 42,
+            creation_time: Some(1),
+            parent_id: None,
+            session_id: Some(0),
+            user_name: None,
+            is_service_account: Some(false),
+            is_critical: Some(false),
+            can_set_information: true,
+            name: "editor.exe".to_owned(),
+            image_path: Some(path.into()),
+        };
+        let malformed = path
+            .encode_utf16()
+            .map(|unit| if unit == 0xfffd { 0xd800 } else { unit })
+            .collect::<Vec<_>>();
+        let raw = ProcessInfo {
+            id: 43,
+            session_id: Some(1),
+            image_path: Some(OsString::from_wide(&malformed).into()),
+            ..valid.clone()
+        };
+
+        let candidates = process_candidates_from_processes(&[raw, valid]);
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates.iter().any(|candidate| {
+            candidate.image_path == Path::new(path) && !candidate.has_suspendable_instance
+        }));
+    }
+
+    #[test]
     fn windows_explorer_path_is_absolute_and_trusted() {
         let path = windows_explorer_path().expect("Windows directory is available");
 
@@ -1612,7 +1982,9 @@ mod tests {
         let path = Path::new(r"C:\Games\game.exe");
         for (other, expected) in [
             (r"C:\Games\game.exe", true),
-            (" C:/Games/game.exe ", true),
+            ("C:/Games/game.exe", true),
+            ("C:\\Games\\game.exe\u{3000}", false),
+            ("C:\\Games\\game.exe ", false),
             (r"c:\games\GAME.exe", true),
             (r"C:\Other\game.exe", false),
             (r"C:\Games\other.exe", false),
@@ -1621,6 +1993,59 @@ mod tests {
                 same_executable_path(path, Path::new(other)),
                 expected,
                 "{other}"
+            );
+        }
+    }
+
+    #[test]
+    fn executable_path_comparison_requires_exact_native_identity_for_non_unicode_paths() {
+        let native_path = |unit| {
+            let mut wide = r"C:\Games\directory-".encode_utf16().collect::<Vec<_>>();
+            wide.push(unit);
+            wide.extend(r"\game.exe".encode_utf16());
+            PathBuf::from(OsString::from_wide(&wide))
+        };
+        let path = native_path(0xd800);
+
+        assert!(same_executable_path(&path, &native_path(0xd800)));
+        assert!(!same_executable_path(&path, &native_path(0xd801)));
+        assert!(!same_executable_path(
+            &path,
+            Path::new("C:\\Games\\directory-\u{fffd}\\game.exe"),
+        ));
+    }
+
+    #[test]
+    fn executable_name_comparison_preserves_unicode_on_both_buffer_paths() {
+        for prefix in [String::new(), "a".repeat(128)] {
+            let upper = format!("{prefix}Ü\u{1f680}.EXE");
+            let lower = format!("{prefix}ü\u{1f680}.exe");
+            let different = format!("{prefix}ü\u{1f681}.exe");
+            assert!(same_executable_name(&upper, &lower));
+            assert!(!same_executable_name(&upper, &different));
+        }
+    }
+
+    #[test]
+    fn power_profile_keys_preserve_verbatim_path_spellings() {
+        for (left, right, equivalent) in [
+            (r"C:\Apps\worker.exe", "C:/Apps/worker.exe", true),
+            (
+                r"\\server\share\Apps\worker.exe",
+                "//server/share/Apps/worker.exe",
+                true,
+            ),
+            (r"\\?\C:\Apps\worker.exe", r"\\?\C:\Apps/worker.exe", false),
+            (r"\\?\C:\Apps\worker.exe", "//?/C:/Apps/worker.exe", false),
+            (
+                r"\\?\UNC\server\share\Apps\worker.exe",
+                r"\\?\UNC\server\share\Apps/worker.exe",
+                false,
+            ),
+        ] {
+            assert_eq!(
+                power_profile_executable_path_key(left) == power_profile_executable_path_key(right),
+                equivalent
             );
         }
     }
@@ -1665,6 +2090,14 @@ mod tests {
             &process,
             r"C:\Games\game.exe"
         ));
+
+        let unicode_path = r"C:\Games\éditeur.exe";
+        let process = ProcessInfo {
+            name: "Éditeur.exe".into(),
+            image_path: Some(unicode_path.into()),
+            ..process
+        };
+        assert!(process_matches_executable_path(&process, unicode_path));
     }
 
     #[test]

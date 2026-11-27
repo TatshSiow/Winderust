@@ -1,0 +1,2181 @@
+use std::{
+    borrow::Cow,
+    cmp::Reverse,
+    collections::{btree_map::Entry, BTreeMap, BTreeSet},
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+
+use crate::{
+    action_log::{ActionLog, ActionLogFeature, ActionLogResult},
+    audio_activity::active_audio_process_ids,
+    config::{
+        AdaptiveEngineProcessSettings, AdaptivePressureSource, AdaptiveRestraintPriority,
+        BackgroundProcessorSelection, CpuAllocationMethod, PowerSourceProfile,
+    },
+    control::{
+        cpu_allocation::{CpuAllocationCoordinator, CpuAllocationReconciliationSummary},
+        priority_efficiency::{
+            AdaptiveRestraintProcess, AdaptiveRestraintState, PriorityClassClaim,
+            PriorityClassPreservation, PriorityClassValue, PriorityEfficiencyController,
+            PriorityEfficiencyReleaseSummary, ProcessPropertyApplyOutcome,
+        },
+        process::{
+            ControlOwner, ProcessControlError, ProcessControlTarget, ProcessIdentity,
+            ProcessTargetKey,
+        },
+    },
+    cpu::{process_cpu_demand_percent, PerProcessorUsageMonitor, ProcessCpuSample},
+    cpu_allocation::{
+        self, CpuAllocationManager, CpuAllocationMode, CpuAllocationTarget, LogicalProcessorInfo,
+        LogicalProcessorKind,
+    },
+    cpu_topology::{CpuSelection, CpuTopology},
+    foreground::{
+        contains_process_name, process_count_label, process_failure_key,
+        process_list::{
+            observed_process_executable_path_and_cpu, verified_process_executable_path,
+        },
+        process_session_id, same_executable_path, ProcessInfo, ProtectedProcesses,
+        EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
+    },
+    rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
+    runtime::observations::{
+        foreground_process_group_ids, AdaptiveWorkload, CycleObservations, ForegroundCpuHistory,
+    },
+};
+
+mod policy;
+mod process_control;
+
+pub use policy::is_builtin_excluded;
+pub(crate) use policy::{focus_and_launch_profile_eligible, focus_process_priority_eligible};
+
+use policy::*;
+use process_control::*;
+
+#[cfg(feature = "runtime-benchmark")]
+use crate::runtime::pressure_trace::{self, PressureEvent};
+
+const BUILT_IN_EXCLUSIONS: &[&str] = EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS;
+const ADAPTIVE_ENGINE_PROCESS_RECOVERY_BAND_PERCENT: u8 = 5;
+const ADAPTIVE_ENGINE_PROCESS_CORE_REBALANCE_INTERVAL_SECS: u64 = 3;
+const ADAPTIVE_ENGINE_PROCESS_CORE_REBALANCE_IMPROVEMENT_PERCENT: f32 = 15.0;
+const ADAPTIVE_ENGINE_PROCESS_SELECTION_STICKINESS_TENTHS: u32 = 50;
+const FOCUS_AND_LAUNCH_PROFILE_WINDOW: Duration = Duration::from_secs(8);
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AdaptiveEngineProcessSnapshot {
+    pub(crate) source: Option<PowerSourceProfile>,
+    pub(crate) waiting_for_power_source: bool,
+    pub zones: DynamicResourceZoneSnapshot,
+    pub enabled: bool,
+    pub observation_paused: bool,
+    pub scanned_processes: usize,
+    pub adjusted_processes: usize,
+    pub cpu_pressure_restraint_active: bool,
+    pub(crate) restraint_idle_pause: Option<RestraintIdlePause>,
+    pub(crate) restraint_processes: Option<Arc<[AdaptiveRestraintProcess]>>,
+    pub foreground_cpu_usage_tenths: Option<u16>,
+    pub skipped_processes: usize,
+    pub failed_processes: usize,
+    pub auto_excluded_processes: Vec<String>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RestraintIdlePause {
+    Idle,
+    Unavailable,
+}
+
+impl RestraintIdlePause {
+    fn detect(
+        settings: &AdaptiveEngineProcessSettings,
+        user_idle_for: Option<Duration>,
+    ) -> Option<Self> {
+        if !settings.cpu_pressure_restraint_enabled || !settings.pause_restraint_when_idle {
+            return None;
+        }
+        match user_idle_for {
+            Some(idle_for)
+                if idle_for >= Duration::from_secs(settings.restraint_idle_timeout_seconds) =>
+            {
+                Some(Self::Idle)
+            }
+            Some(_) => None,
+            None => Some(Self::Unavailable),
+        }
+    }
+
+    fn release_reason(self) -> &'static str {
+        match self {
+            Self::Idle => "CPU Pressure Restraint paused after user inactivity",
+            Self::Unavailable => "user activity is unavailable",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ZoneStatus {
+    #[default]
+    Disabled,
+    Waiting,
+    Applying,
+    Active,
+    Overridden,
+    Degraded,
+    Unavailable,
+}
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DynamicResourceZoneSnapshot {
+    pub status: ZoneStatus,
+    pub reason: &'static str,
+    pub foreground_targets: usize,
+    pub background_targets: usize,
+    pub foreground_processors: u32,
+    pub background_processors: u32,
+    pub background_limit_targets: usize,
+}
+
+pub struct AdaptiveEngineProcessManager {
+    foreground_cpu_history: ForegroundCpuHistory,
+    tracked_processes: BTreeMap<u32, AdaptiveEngineProcessProcess>,
+    background_pressure_active: bool,
+    source_release: Option<PriorityFailures>,
+    cpu_allocation: CpuAllocationManager,
+    cpu_allocation_selection: [Option<CpuAllocationSelection>; 2],
+    allocation_settings: Option<AdaptiveEngineProcessSettings>,
+    allocation_foreground: Option<AdaptiveWorkload>,
+    per_processor_usage: PerProcessorUsageMonitor,
+    failure_suppression: ExecutionFailureTracker,
+}
+
+impl Default for AdaptiveEngineProcessManager {
+    fn default() -> Self {
+        Self {
+            foreground_cpu_history: ForegroundCpuHistory::default(),
+            tracked_processes: BTreeMap::new(),
+            background_pressure_active: false,
+            source_release: None,
+            cpu_allocation: CpuAllocationManager::with_action_log_feature(
+                ActionLogFeature::AdaptiveEngine,
+            ),
+            cpu_allocation_selection: [None; 2],
+            allocation_settings: None,
+            allocation_foreground: None,
+            per_processor_usage: PerProcessorUsageMonitor::default(),
+            failure_suppression: ExecutionFailureTracker::default(),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct AdaptiveEngineProcessProcess {
+    executable_path: String,
+    creation_time: u64,
+    tier: AdaptiveEngineProcessTier,
+    previous_cpu_time: Option<ProcessCpuSample>,
+    last_usage_tenths: Option<u16>,
+    pressure_restraint: PressureRestraintEpisode,
+    below_since: Option<Instant>,
+    active_since: Option<Instant>,
+    selected: bool,
+}
+
+impl AdaptiveEngineProcessProcess {
+    fn clear_restraint(&mut self) {
+        self.below_since = None;
+        self.active_since = None;
+        self.selected = false;
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AdaptiveEngineProcessDecision {
+    LowerPriority,
+    LimitProcessors,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AdaptiveEngineProcessTier {
+    Focused,
+    VisibleWindow,
+    Background,
+}
+
+struct AdaptiveEngineProcessCandidate {
+    process_id: u32,
+    decision: AdaptiveEngineProcessDecision,
+    usage_tenths: Option<u16>,
+    score: u32,
+}
+
+#[derive(Clone, Copy)]
+struct CpuAllocationSelection {
+    mask: u64,
+    kind: Option<LogicalProcessorKind>,
+    percent: u8,
+    domain: u64,
+    selected_at: Instant,
+}
+
+#[derive(Clone, Copy)]
+enum CpuAllocationPolicy {
+    BackgroundLimit,
+    ScopedRestraint,
+    ResourceZones,
+}
+
+#[derive(Clone, Default)]
+struct PressureRestraintEpisode {
+    hot_since: Option<Instant>,
+    selected_since: Option<Instant>,
+    below_since: Option<Instant>,
+}
+
+impl PressureRestraintEpisode {
+    fn qualifies(
+        &mut self,
+        settings: &AdaptiveEngineProcessSettings,
+        now: Instant,
+        usage_tenths: u16,
+    ) -> bool {
+        if settings.maximum_restraint_time_ms != 0
+            && self.selected_since.is_some_and(|selected_since| {
+                now.duration_since(selected_since)
+                    >= Duration::from_millis(settings.maximum_restraint_time_ms)
+            })
+        {
+            *self = Self::default();
+            return false;
+        }
+        let threshold = u16::from(settings.background_app_cpu_threshold_percent.min(100)) * 10;
+        if usage_tenths >= threshold {
+            self.below_since = None;
+            let hot_since = *self.hot_since.get_or_insert(now);
+            return self.selected_since.is_some()
+                || (now > hot_since
+                    && now.duration_since(hot_since)
+                        >= Duration::from_millis(settings.restraint_trigger_time_ms));
+        }
+
+        self.hot_since = None;
+        let Some(selected_since) = self.selected_since else {
+            return false;
+        };
+        let recovery_threshold =
+            (u16::from(settings.cpu_recovery_threshold_percent) * 10).min(threshold);
+        if usage_tenths > recovery_threshold
+            || now.duration_since(selected_since)
+                < Duration::from_millis(settings.minimum_restraint_time_ms)
+        {
+            self.below_since = None;
+            return true;
+        }
+
+        let below_since = *self.below_since.get_or_insert(now);
+        if now.duration_since(below_since) < Duration::from_secs(settings.cpu_recovery_time_seconds)
+        {
+            return true;
+        }
+        *self = Self::default();
+        false
+    }
+}
+
+pub struct AdaptiveEngineProcessUpdate<'a> {
+    pub settings: &'a AdaptiveEngineProcessSettings,
+    pub automation_enabled: bool,
+    pub allow_cross_session_process_control: bool,
+    pub foreground_process_id: Option<u32>,
+    pub total_cpu_usage_percent: Option<f32>,
+    pub user_idle_for: Option<Duration>,
+    pub excluded_process_id: Option<u32>,
+    pub explicit_cpu_allocation_paths: &'a [String],
+    pub observations: &'a mut CycleObservations,
+}
+
+impl AdaptiveEngineProcessManager {
+    pub(crate) fn invalidate_allocation_selection(&mut self) {
+        self.cpu_allocation_selection = [None; 2];
+        self.cpu_allocation.invalidate_zone_generation();
+    }
+
+    pub(crate) fn reset_pressure_observations(&mut self, _reason: &str) {
+        #[cfg(feature = "runtime-benchmark")]
+        if self.background_pressure_active {
+            pressure_trace::record(|| PressureEvent::Reset {
+                reason: _reason.to_owned(),
+            });
+        }
+        self.foreground_cpu_history = ForegroundCpuHistory::default();
+        self.tracked_processes.clear();
+        self.background_pressure_active = false;
+        self.per_processor_usage = PerProcessorUsageMonitor::default();
+    }
+
+    pub(crate) fn pause_for_unknown_power_source(
+        &mut self,
+        cpu_allocation_coordinator: &mut CpuAllocationCoordinator,
+        priority_efficiency_controller: &mut PriorityEfficiencyController,
+        action_log: &mut ActionLog,
+    ) -> AdaptiveEngineProcessSnapshot {
+        let owner = ControlOwner::AdaptiveEngine;
+        let mut failed = self.source_release.take().unwrap_or_else(|| {
+            self.invalidate_allocation_selection();
+            self.clear_all(
+                cpu_allocation_coordinator,
+                priority_efficiency_controller,
+                action_log,
+                "power source is unknown",
+            )
+        });
+        // The controllers retain and retry failed restores at their own cadence.
+        if failed.count > 0
+            && cpu_allocation_coordinator.policy_managed_process_count(owner) == 0
+            && priority_efficiency_controller.policy_managed_process_count(owner) == 0
+        {
+            failed = PriorityFailures::default();
+        }
+        let status = AdaptiveEngineProcessSnapshot {
+            waiting_for_power_source: true,
+            enabled: true,
+            observation_paused: true,
+            failed_processes: failed.count,
+            last_error: failed.last_error.clone(),
+            ..Default::default()
+        };
+        self.source_release = Some(failed);
+        status
+    }
+
+    pub fn update(
+        &mut self,
+        input: AdaptiveEngineProcessUpdate<'_>,
+        cpu_allocation_coordinator: &mut CpuAllocationCoordinator,
+        priority_efficiency_controller: &mut PriorityEfficiencyController,
+        action_log: &mut ActionLog,
+    ) -> AdaptiveEngineProcessSnapshot {
+        self.update_with_activity(
+            input,
+            cpu_allocation_coordinator,
+            priority_efficiency_controller,
+            action_log,
+            process_cpu_sample,
+            active_audio_process_ids,
+        )
+    }
+
+    fn update_with_activity(
+        &mut self,
+        input: AdaptiveEngineProcessUpdate<'_>,
+        cpu_allocation_coordinator: &mut CpuAllocationCoordinator,
+        priority_efficiency_controller: &mut PriorityEfficiencyController,
+        action_log: &mut ActionLog,
+        mut sample_process_cpu: impl FnMut(u32) -> Option<(ProcessCpuSample, u64)>,
+        read_active_audio: impl FnOnce() -> Result<BTreeSet<u32>, String>,
+    ) -> AdaptiveEngineProcessSnapshot {
+        self.source_release = None;
+        let AdaptiveEngineProcessUpdate {
+            settings,
+            automation_enabled,
+            allow_cross_session_process_control,
+            foreground_process_id,
+            total_cpu_usage_percent,
+            user_idle_for,
+            excluded_process_id,
+            explicit_cpu_allocation_paths,
+            observations,
+        } = input;
+
+        cpu_allocation_coordinator.set_restore_child_affinity(
+            automation_enabled
+                && settings.restore_child_affinity
+                && settings.cpu_allocation_method.is_hard_affinity(),
+        );
+        if !automation_enabled {
+            let failed = self.clear_all(
+                cpu_allocation_coordinator,
+                priority_efficiency_controller,
+                action_log,
+                "automation disabled",
+            );
+            self.failure_suppression.clear();
+            return AdaptiveEngineProcessSnapshot {
+                zones: DynamicResourceZoneSnapshot {
+                    status: if failed.count > 0 {
+                        ZoneStatus::Degraded
+                    } else {
+                        ZoneStatus::Disabled
+                    },
+                    reason: if failed.count > 0 { "zone_retry" } else { "" },
+                    ..Default::default()
+                },
+                enabled: false,
+                failed_processes: failed.count,
+                last_error: failed.last_error,
+                ..Default::default()
+            };
+        }
+
+        if !settings.has_enabled_policies() {
+            let failed = self.clear_all(
+                cpu_allocation_coordinator,
+                priority_efficiency_controller,
+                action_log,
+                "Adaptive Engine disabled",
+            );
+            self.failure_suppression.clear();
+            return AdaptiveEngineProcessSnapshot {
+                zones: DynamicResourceZoneSnapshot {
+                    status: if failed.count > 0 {
+                        ZoneStatus::Degraded
+                    } else {
+                        ZoneStatus::Disabled
+                    },
+                    reason: if failed.count > 0 { "zone_retry" } else { "" },
+                    ..Default::default()
+                },
+                enabled: false,
+                failed_processes: failed.count,
+                last_error: failed.last_error,
+                ..Default::default()
+            };
+        }
+
+        let placement_only = settings.placement_only_restraint_enabled();
+        let limit_during_restraint = settings.background_processor_limit_scoped();
+        let background_limit_enabled = settings.background_processor_limit_enabled();
+        let independent_limit_enabled = background_limit_enabled && !limit_during_restraint;
+        let restraint_idle_pause = RestraintIdlePause::detect(settings, user_idle_for);
+        if let Some(pause) = restraint_idle_pause
+            .filter(|_| !independent_limit_enabled && !settings.dynamic_resource_zones_enabled)
+        {
+            let failed = self.clear_all(
+                cpu_allocation_coordinator,
+                priority_efficiency_controller,
+                action_log,
+                pause.release_reason(),
+            );
+            return AdaptiveEngineProcessSnapshot {
+                enabled: true,
+                restraint_idle_pause,
+                failed_processes: failed.count,
+                last_error: failed.last_error,
+                ..Default::default()
+            };
+        }
+
+        let Some(foreground_id) = foreground_process_id else {
+            return self.pause_for_unknown_focus(
+                settings.dynamic_resource_zones_enabled,
+                restraint_idle_pause,
+                cpu_allocation_coordinator,
+                priority_efficiency_controller,
+                action_log,
+            );
+        };
+
+        // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
+        let current_process_id = unsafe { GetCurrentProcessId() };
+        let Some(current_session_id) = process_session_id(current_process_id) else {
+            let failed = self.clear_all(
+                cpu_allocation_coordinator,
+                priority_efficiency_controller,
+                action_log,
+                "current Windows session is unknown",
+            );
+            return AdaptiveEngineProcessSnapshot {
+                zones: DynamicResourceZoneSnapshot {
+                    status: if settings.dynamic_resource_zones_enabled {
+                        ZoneStatus::Unavailable
+                    } else {
+                        ZoneStatus::Disabled
+                    },
+                    reason: "zone_observations",
+                    ..Default::default()
+                },
+                enabled: true,
+                failed_processes: failed.count,
+                observation_paused: true,
+                restraint_idle_pause,
+                last_error: failed.last_error,
+                ..Default::default()
+            };
+        };
+
+        let exact_paths_required = settings.custom_rules.iter().any(|rule| {
+            rule.enabled
+                && rule
+                    .selector
+                    .exact_path()
+                    .is_some_and(|path| Path::new(path.trim()).is_absolute())
+        });
+        let name_exclusions_enabled = settings
+            .custom_rules
+            .iter()
+            .any(|rule| rule.enabled && rule.selector.exact_path().is_none());
+        let excluded_by_name = |process: &ProcessInfo| {
+            name_exclusions_enabled && settings.excludes_executable_name(&process.name)
+        };
+        let read_background_processes = |observations: &mut CycleObservations| {
+            if exact_paths_required {
+                observations.processes_with_paths()
+            } else {
+                observations.processes()
+            }
+        };
+        let system_pressure_started =
+            cpu_pressure_restraint_should_run(settings, None, total_cpu_usage_percent);
+        let system_pressure_held = !system_pressure_started
+            && self.can_hold_background_pressure(settings)
+            && cpu_pressure_above_recovery_threshold(settings, None, total_cpu_usage_percent);
+        // With only system pressure enabled, a quiet cycle cannot admit any new targets.
+        // Leave shared observations untouched so Adaptive Processor Power can sample independently.
+        let quiet_system_only = settings.pressure_source == AdaptivePressureSource::System
+            && !settings.dynamic_resource_zones_enabled
+            && !self.background_pressure_active
+            && total_cpu_usage_percent.is_some_and(|usage| {
+                (0.0..f32::from(settings.pressure_thresholds().0)).contains(&usage)
+            })
+            && !cpu_allocation_coordinator.needs_topology_observation()
+            && !cpu_allocation_coordinator.has_adaptive_child_affinity_candidates();
+        let (foreground_processes, foreground_workload) = if quiet_system_only {
+            (Arc::from([]), Arc::default())
+        } else {
+            // A system-pressure catalog already contains the foreground ancestry.
+            let foreground_processes = match if system_pressure_started || system_pressure_held {
+                read_background_processes(observations)
+            } else {
+                observations.foreground_process_ancestry(foreground_id)
+            } {
+                Ok(processes) => processes,
+                Err(error) => {
+                    let reason = if system_pressure_held {
+                        "process list unavailable"
+                    } else {
+                        "foreground app is unknown"
+                    };
+                    return self.pause_for_observation_failure(
+                        settings.dynamic_resource_zones_enabled,
+                        restraint_idle_pause,
+                        cpu_allocation_coordinator,
+                        priority_efficiency_controller,
+                        action_log,
+                        (reason, Some(error)),
+                    );
+                }
+            };
+            let foreground_workload = observations.adaptive_workload(&foreground_processes);
+            if foreground_workload.is_empty() {
+                return self.pause_for_unknown_focus(
+                    settings.dynamic_resource_zones_enabled,
+                    restraint_idle_pause,
+                    cpu_allocation_coordinator,
+                    priority_efficiency_controller,
+                    action_log,
+                );
+            }
+            (foreground_processes, foreground_workload)
+        };
+        let foreground_changed = self.allocation_foreground.as_ref() != Some(&foreground_workload);
+        let foreground_cpu_usage_percent = if settings.pressure_source
+            != AdaptivePressureSource::System
+            || settings.dynamic_resource_zones_enabled
+        {
+            let sample = observations.adaptive_cpu_sample(&foreground_workload);
+            self.foreground_cpu_history
+                .update(Arc::clone(&foreground_workload), sample)
+        } else {
+            self.foreground_cpu_history = ForegroundCpuHistory::default();
+            None
+        };
+        let foreground_cpu_usage_tenths = foreground_cpu_usage_percent.map(percent_tenths);
+        let background_pressure_triggered = self.update_background_pressure(
+            settings,
+            foreground_cpu_usage_percent,
+            total_cpu_usage_percent,
+        );
+        let background_observations = if background_pressure_triggered {
+            let background_observations = read_background_processes(observations)
+                .map_err(|error| ("process list unavailable", Some(error)))
+                .and_then(|processes| {
+                    observations
+                        .visible_window_process_ids()
+                        .map(|windows| (processes, windows))
+                        .map_err(|_| ("visible windows are unavailable", None))
+                });
+            match background_observations {
+                Ok(observations) => Some(observations),
+                Err(failure) => {
+                    return self.pause_for_observation_failure(
+                        settings.dynamic_resource_zones_enabled,
+                        restraint_idle_pause,
+                        cpu_allocation_coordinator,
+                        priority_efficiency_controller,
+                        action_log,
+                        failure,
+                    );
+                }
+            }
+        } else {
+            None
+        };
+        let processes = background_observations
+            .as_ref()
+            .map_or(&[][..], |(processes, _)| processes.as_ref());
+        let scanned_processes = processes.len();
+        let foreground_group = if !background_pressure_triggered {
+            BTreeSet::new()
+        } else if std::ptr::eq(processes, foreground_processes.as_ref()) {
+            foreground_workload.keys().copied().collect()
+        } else {
+            let group = foreground_process_group_ids(processes, foreground_process_id);
+            // A new child or reused PID in the full scan invalidates the sampled workload.
+            if group.len() != foreground_workload.len()
+                || foreground_workload.iter().any(|(&id, &creation)| {
+                    !group.contains(&id)
+                        || !processes.iter().any(|process| {
+                            process.id == id && process.creation_time == Some(creation)
+                        })
+                })
+            {
+                return self.pause_for_unknown_focus(
+                    settings.dynamic_resource_zones_enabled,
+                    restraint_idle_pause,
+                    cpu_allocation_coordinator,
+                    priority_efficiency_controller,
+                    action_log,
+                );
+            }
+            group
+        };
+        let mut executable_paths = BTreeMap::new();
+        let visible_window_process_group_ids = background_observations
+            .as_ref()
+            .map(|(_, windows)| {
+                visible_window_group_ids(
+                    processes,
+                    &foreground_group,
+                    windows,
+                    &mut executable_paths,
+                )
+            })
+            .unwrap_or_default();
+        if let Some(previous) = self.allocation_settings.as_mut() {
+            if previous.placement_only_restraint_enabled() != placement_only
+                || previous.cpu_pressure_restraint_enabled
+                    != settings.cpu_pressure_restraint_enabled
+                || previous.background_app_cpu_threshold_percent
+                    != settings.background_app_cpu_threshold_percent
+                || previous.foreground_or_system_cpu_threshold_percent
+                    != settings.foreground_or_system_cpu_threshold_percent
+                || previous.reaction_time_ms != settings.reaction_time_ms
+                || previous.restraint_trigger_time_ms != settings.restraint_trigger_time_ms
+                || previous.pause_restraint_when_idle != settings.pause_restraint_when_idle
+                || previous.protect_non_normal_priority != settings.protect_non_normal_priority
+                || previous.restraint_idle_timeout_seconds
+                    != settings.restraint_idle_timeout_seconds
+                || previous.minimum_restraint_time_ms != settings.minimum_restraint_time_ms
+                || previous.cpu_recovery_threshold_percent
+                    != settings.cpu_recovery_threshold_percent
+                || previous.cpu_recovery_time_seconds != settings.cpu_recovery_time_seconds
+            {
+                for process in self.tracked_processes.values_mut() {
+                    process.pressure_restraint = PressureRestraintEpisode::default();
+                }
+            } else if pressure_gate_changed(previous, settings) {
+                for process in self.tracked_processes.values_mut() {
+                    process.pressure_restraint.hot_since = None;
+                    process.pressure_restraint.below_since = None;
+                }
+            }
+            // Changes to restraint-only controls do not reset CPU placement selections.
+            previous.restraint_trigger_time_ms = settings.restraint_trigger_time_ms;
+            previous.pause_restraint_when_idle = settings.pause_restraint_when_idle;
+            previous.protect_focused_app = settings.protect_focused_app;
+            previous.protect_focused_children = settings.protect_focused_children;
+            previous.protect_non_normal_priority = settings.protect_non_normal_priority;
+            previous.restraint_idle_timeout_seconds = settings.restraint_idle_timeout_seconds;
+            previous.maximum_restraint_time_ms = settings.maximum_restraint_time_ms;
+            previous.restraint_priority = settings.restraint_priority;
+            if previous.pressure_thresholds() == settings.pressure_thresholds() {
+                previous.foreground_cpu_threshold_percent =
+                    settings.foreground_cpu_threshold_percent;
+            }
+        }
+        if self.allocation_settings.as_ref() != Some(settings) || foreground_changed {
+            self.invalidate_allocation_selection();
+            self.allocation_settings = Some(settings.clone());
+            self.allocation_foreground = Some(foreground_workload);
+        }
+        let mut failures = PriorityFailures::default();
+        let focus_and_launch_profile_target = (background_limit_enabled
+            || settings.dynamic_resource_zones_enabled)
+            && foreground_processes
+                .iter()
+                .find(|process| process.id == foreground_id)
+                .is_some_and(|process| {
+                    excluded_process_id != Some(foreground_id)
+                        && !excluded_by_name(process)
+                        && focus_process_priority_eligible(
+                            foreground_id,
+                            &process.name,
+                            current_process_id,
+                            current_session_id,
+                        )
+                        && process.creation_time.is_some_and(|created| {
+                            focus_and_launch_profile_eligible(foreground_id, created)
+                        })
+                        && (!exact_paths_required
+                            || !cached_executable_path(process, &mut executable_paths)
+                                .is_some_and(|path| settings.excludes_executable_path(path)))
+                });
+        let cpu_pressure_restraint_applies = settings.cpu_pressure_restraint_enabled
+            && restraint_idle_pause.is_none()
+            && background_pressure_triggered
+            && (foreground_cpu_usage_percent.is_some() || total_cpu_usage_percent.is_some());
+        let cpu_allocation_applies = background_limit_enabled
+            && background_pressure_triggered
+            && !focus_and_launch_profile_target
+            && (!limit_during_restraint || cpu_pressure_restraint_applies);
+        let zone_grace = focus_and_launch_profile_target;
+        let dynamic_resource_zones_apply = settings.dynamic_resource_zones_enabled
+            && !zone_grace
+            && foreground_cpu_usage_percent.is_some()
+            && !foreground_changed
+            && cpu_pressure_restraint_should_run(
+                settings,
+                foreground_cpu_usage_percent,
+                total_cpu_usage_percent,
+            );
+        let placement_applies = cpu_allocation_applies || dynamic_resource_zones_apply;
+        let independent_placement_applies =
+            (cpu_allocation_applies && !limit_during_restraint) || dynamic_resource_zones_apply;
+        let restore_child_affinity =
+            cpu_allocation_coordinator.has_adaptive_child_affinity_candidates();
+        let service_process_ids = if settings.exclude_service_hosts
+            && (cpu_pressure_restraint_applies || placement_applies || restore_child_affinity)
+        {
+            match observations.service_process_ids() {
+                Ok(ids) => Some(ids),
+                Err(error) => {
+                    return self.pause_for_observation_failure(
+                        settings.dynamic_resource_zones_enabled,
+                        restraint_idle_pause,
+                        cpu_allocation_coordinator,
+                        priority_efficiency_controller,
+                        action_log,
+                        ("Windows service hosts unavailable", Some(error)),
+                    );
+                }
+            }
+        } else {
+            None
+        };
+        let excluded_service_host = |process: &ProcessInfo| {
+            service_process_ids.as_ref().is_some_and(|ids| {
+                process.session_id.is_none_or(|id| id == 0)
+                    || process.is_service_account == Some(true)
+                    || ids.contains(&process.id)
+            })
+        };
+        if restore_child_affinity {
+            if let Ok(catalog) = read_background_processes(observations) {
+                let release = cpu_allocation_coordinator.restore_adaptive_child_affinity(
+                    &catalog,
+                    |process, path| {
+                        let path = path.to_string_lossy();
+                        process.is_critical == Some(false)
+                            && process.can_set_information
+                            && !excluded_service_host(process)
+                            && !excluded_by_name(process)
+                            && !should_skip_process(
+                                process.id,
+                                &process.name,
+                                current_process_id,
+                                false,
+                                excluded_process_id,
+                            )
+                            && !settings.excludes_executable_path(&path)
+                            && !cpu_allocation::contains_process(
+                                explicit_cpu_allocation_paths,
+                                &path,
+                            )
+                    },
+                    allow_cross_session_process_control,
+                );
+                cpu_allocation::record_cpu_allocation_restorations(
+                    release.restored_owners,
+                    "restored original affinity for a child of a restricted process",
+                    action_log,
+                );
+                for failure in release.failures {
+                    failures.record_control_error(
+                        "Restore inherited processor affinity",
+                        failure.process_id,
+                        &failure.process_name,
+                        failure.error,
+                        action_log,
+                    );
+                }
+            }
+        }
+        let mut restrainable_processes = BTreeMap::new();
+        for process in processes.iter() {
+            let focused_workload = should_skip_foreground_process(
+                process.id,
+                foreground_process_id,
+                &foreground_group,
+            );
+            let protect_focus = if process.id == foreground_id {
+                settings.protect_focused_app
+            } else {
+                settings.protect_focused_children
+            };
+            if process.is_critical != Some(false)
+                || !process.can_set_information
+                || excluded_service_host(process)
+                || excluded_by_name(process)
+                || should_skip_process(
+                    process.id,
+                    &process.name,
+                    current_process_id,
+                    focused_workload && (protect_focus || !cpu_pressure_restraint_applies),
+                    excluded_process_id,
+                )
+            {
+                continue;
+            }
+
+            if !allow_cross_session_process_control
+                && process_session_id(process.id) != Some(current_session_id)
+            {
+                continue;
+            }
+
+            let tier = if focused_workload {
+                AdaptiveEngineProcessTier::Focused
+            } else if visible_window_process_group_ids.contains(&process.id) {
+                AdaptiveEngineProcessTier::VisibleWindow
+            } else {
+                AdaptiveEngineProcessTier::Background
+            };
+            restrainable_processes.insert(process.id, (process, tier));
+        }
+        let mut zones = DynamicResourceZoneSnapshot {
+            status: if settings.dynamic_resource_zones_enabled {
+                ZoneStatus::Waiting
+            } else {
+                ZoneStatus::Disabled
+            },
+            reason: if zone_grace {
+                "zone_grace"
+            } else {
+                "zone_waiting"
+            },
+            ..Default::default()
+        };
+        let mut zone_background_targets = Vec::new();
+        let mut zone_foreground_targets = Vec::new();
+        let mut auto_excluded_processes = BTreeSet::new();
+
+        let mut cpu_allocation_targets = Vec::new();
+        let mut restraint_allocation_selection = None;
+        let mut restraint_candidates = Vec::new();
+        let topology_observation = (placement_applies
+            || cpu_allocation_coordinator.needs_topology_observation())
+        .then(|| observations.cpu_topology());
+        let topology = topology_observation
+            .as_ref()
+            .map(|value| value.as_deref().map_err(String::as_str));
+        let mut allocation_error = None;
+        let fixed_selection = settings.cpu_allocation_method.uses_processor_selection();
+        let needs_load = (cpu_allocation_applies
+            && fixed_selection
+            && settings.background_processor_selection.uses_percentage())
+            || (dynamic_resource_zones_apply
+                && settings
+                    .dynamic_resource_zone_settings
+                    .background_processor_selection
+                    .uses_percentage());
+        if !needs_load {
+            self.per_processor_usage = PerProcessorUsageMonitor::default();
+        }
+        let audio_process_ids = cpu_pressure_restraint_applies
+            .then(|| {
+                read_active_audio().map_err(|error| {
+                    failures.last_error = Some(format!(
+                        "CPU Pressure Restraint is waiting for audio activity: {error}"
+                    ));
+                })
+            })
+            .and_then(Result::ok);
+        if audio_process_ids.is_some() || independent_placement_applies {
+            let now = Instant::now();
+            let processors = topology
+                .and_then(Result::ok)
+                .map(cpu_allocation::logical_processors_for_group_zero)
+                .unwrap_or_default();
+            let zone_domain_available = topology.and_then(Result::ok).is_some_and(|topology| {
+                topology.groups().len() == 1
+                    && cpu_allocation::zone_domain_supported(1, &processors)
+            });
+            let limiter_error = topology
+                .filter(|_| cpu_allocation_applies)
+                .and_then(|topology| {
+                    if fixed_selection {
+                        saved_processor_selection_error(
+                            settings.background_processor_selection,
+                            &settings.specific_processors,
+                            topology,
+                        )
+                    } else {
+                        topology.ok().and_then(|topology| {
+                            (topology.groups().len() != 1 || processors.len() < 2).then(|| {
+                                "Reduce affinity requires at least two logical processors in one active processor group (group 0).".to_owned()
+                            })
+                        })
+                    }
+                });
+            let zone_error =
+                topology
+                    .filter(|_| dynamic_resource_zones_apply)
+                    .and_then(|topology| {
+                        saved_processor_selection_error(
+                            settings
+                                .dynamic_resource_zone_settings
+                                .background_processor_selection,
+                            &settings.dynamic_resource_zone_settings.specific_processors,
+                            topology,
+                        )
+                    });
+            allocation_error = limiter_error.clone().or_else(|| zone_error.clone());
+            let usages = needs_load
+                .then(|| self.per_processor_usage.sample())
+                .flatten();
+            let cpu_allocation_mask = (cpu_allocation_applies && limiter_error.is_none())
+                .then(|| {
+                    if !fixed_selection {
+                        return Some(cpu_allocation::logical_processor_mask(&processors));
+                    }
+                    self.cpu_allocation_mask(
+                        settings.background_processor_selection,
+                        &settings.specific_processors,
+                        topology?.ok()?,
+                        settings.processor_limit_percent,
+                        if limit_during_restraint {
+                            CpuAllocationPolicy::ScopedRestraint
+                        } else {
+                            CpuAllocationPolicy::BackgroundLimit
+                        },
+                        &processors,
+                        usages.as_deref(),
+                        now,
+                    )
+                })
+                .flatten();
+            let zone_masks = if dynamic_resource_zones_apply {
+                if settings
+                    .dynamic_resource_zone_settings
+                    .validate(true)
+                    .is_err()
+                {
+                    None
+                } else if zone_domain_available && zone_error.is_none() {
+                    let config = &settings.dynamic_resource_zone_settings;
+                    let load_complete = !config.background_processor_selection.uses_percentage()
+                        || usages.as_ref().is_some_and(|loads| {
+                            processors.iter().all(|processor| {
+                                loads
+                                    .get(processor.index)
+                                    .is_some_and(|load| load.is_finite())
+                            })
+                        });
+                    let background = load_complete
+                        .then(|| {
+                            self.cpu_allocation_mask(
+                                config.background_processor_selection,
+                                &config.specific_processors,
+                                topology?.ok()?,
+                                dynamic_background_zone_percent(config.foreground_share_percent),
+                                CpuAllocationPolicy::ResourceZones,
+                                &processors,
+                                usages.as_deref(),
+                                now,
+                            )
+                        })
+                        .flatten();
+                    background.and_then(|mask| {
+                        dynamic_resource_zone_masks(
+                            cpu_allocation::logical_processor_mask(&processors),
+                            mask,
+                        )
+                    })
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let cpu_allocation_selection = cpu_allocation_mask
+                .and_then(|mask| CpuSelection::from_group_zero_mask(topology?.ok()?, mask).ok());
+            let zone_selections = zone_masks.and_then(|(foreground, background)| {
+                let topology = topology?.ok()?;
+                Some((
+                    CpuSelection::from_group_zero_mask(topology, foreground).ok()?,
+                    CpuSelection::from_group_zero_mask(topology, background).ok()?,
+                ))
+            });
+            let independent_limit = cpu_allocation_selection
+                .as_ref()
+                .filter(|_| !limit_during_restraint);
+            let zone_threshold = zone_selections
+                .as_ref()
+                .map(|_| settings.background_app_cpu_threshold_percent);
+            if dynamic_resource_zones_apply && zone_masks.is_none() {
+                zones.status = ZoneStatus::Unavailable;
+                zones.reason = "zone_unavailable";
+            }
+            let mut actionable_process_ids = BTreeSet::new();
+            let mut adaptive_engine_process_candidates = Vec::new();
+            for (process_id, (process, tier)) in &restrainable_processes {
+                if *tier == AdaptiveEngineProcessTier::VisibleWindow {
+                    continue;
+                }
+                let mut observed_sample = None;
+                let Some(executable_path) =
+                    cached_executable_path_with(*process_id, &mut executable_paths, || {
+                        if exact_paths_required || process.image_path.is_some() {
+                            return verified_process_executable_path(process);
+                        }
+                        let (path, sample) = observed_process_executable_path_and_cpu(process)?;
+                        observed_sample = Some(sample);
+                        Some(Cow::Owned(path))
+                    })
+                else {
+                    continue;
+                };
+                if exact_paths_required && settings.excludes_executable_path(executable_path) {
+                    continue;
+                }
+                actionable_process_ids.insert(*process_id);
+                // CPU counters belong to the same generation as the catalog path. The
+                // controller checks both again on its handle before writing process state.
+                let sample = observed_sample
+                    .or_else(|| sample_process_cpu(*process_id))
+                    .filter(|(_, creation_time)| Some(*creation_time) == process.creation_time);
+                let decision = self.update_adaptive_engine_process_sample(
+                    *process_id,
+                    executable_path,
+                    settings,
+                    *tier,
+                    sample,
+                );
+                let Some(state) = self.tracked_processes.get_mut(process_id) else {
+                    continue;
+                };
+                if let Some(decision) = decision.filter(|_| {
+                    independent_placement_applies
+                        && *tier == AdaptiveEngineProcessTier::Background
+                        && !cpu_allocation::contains_process(
+                            explicit_cpu_allocation_paths,
+                            executable_path,
+                        )
+                }) {
+                    adaptive_engine_process_candidates.push(adaptive_engine_process_candidate(
+                        *process_id,
+                        state,
+                        decision,
+                    ));
+                }
+                let pressure_sample = sample.zip(state.last_usage_tenths).filter(|_| {
+                    audio_process_ids
+                        .as_ref()
+                        .is_some_and(|playing| !playing.contains(process_id))
+                });
+                let Some(((sample, creation_time), usage)) = pressure_sample else {
+                    state.pressure_restraint = PressureRestraintEpisode::default();
+                    continue;
+                };
+                if priority_efficiency_controller.adaptive_restraint_restore_pending(
+                    *process_id,
+                    creation_time,
+                    Path::new(executable_path),
+                ) {
+                    state.pressure_restraint = PressureRestraintEpisode::default();
+                    continue;
+                }
+                if placement_only
+                    && state.pressure_restraint.selected_since.is_some()
+                    && cpu_allocation_coordinator
+                        .verified_adaptive_episode_placement(&ProcessTargetKey::new(
+                            *process_id,
+                            creation_time,
+                            Path::new(executable_path),
+                        ))
+                        .is_none()
+                {
+                    state.pressure_restraint = PressureRestraintEpisode::default();
+                }
+                if state
+                    .pressure_restraint
+                    .qualifies(settings, sample.sampled_at, usage)
+                {
+                    let selected = state.pressure_restraint.selected_since.is_some();
+                    let score = u32::from(usage)
+                        + u32::from(selected) * ADAPTIVE_ENGINE_PROCESS_SELECTION_STICKINESS_TENTHS;
+                    restraint_candidates.push((
+                        score,
+                        sample.sampled_at,
+                        ProcessControlTarget::automatic(
+                            *process_id,
+                            process.name.clone(),
+                            PathBuf::from(executable_path),
+                            creation_time,
+                        ),
+                    ));
+                }
+            }
+            self.tracked_processes
+                .retain(|process_id, _| actionable_process_ids.contains(process_id));
+
+            let selected_candidates = select_adaptive_engine_process_candidates(
+                adaptive_engine_process_candidates,
+                settings.maximum_restrained_apps,
+                independent_limit.is_some(),
+                zone_threshold,
+            );
+            let selected_ids = selected_candidates
+                .iter()
+                .map(|candidate| candidate.process_id)
+                .collect::<BTreeSet<_>>();
+            for (process_id, process) in &mut self.tracked_processes {
+                // Keep the cooldown clock without using a placement slot.
+                if process.active_since.is_some()
+                    && process.below_since.is_none()
+                    && !selected_ids.contains(process_id)
+                {
+                    process.selected = false;
+                }
+            }
+
+            for candidate in selected_candidates {
+                let Some((process, _)) = restrainable_processes.get(&candidate.process_id) else {
+                    continue;
+                };
+                let Some(executable_path) = cached_executable_path(process, &mut executable_paths)
+                else {
+                    continue;
+                };
+                let Some(creation_time) = process.creation_time else {
+                    continue;
+                };
+                if let Some(process) = self.tracked_processes.get_mut(&candidate.process_id) {
+                    process.selected = true;
+                }
+                if let Some(selection) = independent_limit.filter(|_| {
+                    candidate.decision == AdaptiveEngineProcessDecision::LimitProcessors
+                }) {
+                    cpu_allocation_targets.push(CpuAllocationTarget {
+                        process_id: candidate.process_id,
+                        process_name: process.name.clone(),
+                        executable_path: executable_path.to_owned(),
+                        mode: cpu_allocation_method(settings),
+                        selection: selection.clone(),
+                        creation_time,
+                    });
+                }
+                if let Some((foreground, background)) = zone_selections.as_ref().filter(|_| {
+                    fresh_background_competition(
+                        candidate.usage_tenths,
+                        settings.background_app_cpu_threshold_percent,
+                    )
+                }) {
+                    zones.foreground_processors = foreground.processors().len() as u32;
+                    zones.background_processors = background.processors().len() as u32;
+                    zone_background_targets.push(CpuAllocationTarget {
+                        process_id: candidate.process_id,
+                        process_name: process.name.clone(),
+                        executable_path: executable_path.to_owned(),
+                        mode: CpuAllocationMode::SoftCpuSets,
+                        selection: background.clone(),
+                        creation_time,
+                    });
+                }
+            }
+            if let Some((foreground_selection, _)) = zone_selections
+                .as_ref()
+                .filter(|_| !zone_background_targets.is_empty())
+            {
+                let processes_by_id = processes
+                    .iter()
+                    .map(|process| (process.id, process))
+                    .collect::<BTreeMap<_, _>>();
+                for process_id in &foreground_group {
+                    let Some(process) = processes_by_id.get(process_id) else {
+                        continue;
+                    };
+                    if process.is_critical != Some(false)
+                        || !process.can_set_information
+                        || excluded_service_host(process)
+                        || excluded_process_id == Some(*process_id)
+                        || excluded_by_name(process)
+                        || !focus_process_priority_eligible(
+                            *process_id,
+                            &process.name,
+                            current_process_id,
+                            current_session_id,
+                        )
+                    {
+                        continue;
+                    }
+                    let Some(executable_path) =
+                        cached_executable_path(process, &mut executable_paths)
+                    else {
+                        continue;
+                    };
+                    if (exact_paths_required && settings.excludes_executable_path(executable_path))
+                        || cpu_allocation::contains_process(
+                            explicit_cpu_allocation_paths,
+                            executable_path,
+                        )
+                    {
+                        continue;
+                    }
+                    let Some(creation_time) = process.creation_time else {
+                        continue;
+                    };
+                    zone_foreground_targets.push(CpuAllocationTarget {
+                        process_id: *process_id,
+                        process_name: process.name.clone(),
+                        executable_path: executable_path.to_owned(),
+                        mode: CpuAllocationMode::SoftCpuSets,
+                        selection: foreground_selection.clone(),
+                        creation_time,
+                    });
+                }
+            }
+            if !zone_foreground_targets
+                .iter()
+                .any(|target| Some(target.process_id) == foreground_process_id)
+            {
+                zone_foreground_targets.clear();
+            }
+            if limit_during_restraint {
+                restraint_allocation_selection = cpu_allocation_selection;
+            }
+        } else {
+            self.tracked_processes.clear();
+            self.cpu_allocation_selection = [None; 2];
+        }
+
+        restraint_candidates
+            .sort_unstable_by_key(|(score, _, target)| (Reverse(*score), target.id));
+        let qualified_episodes = restraint_candidates
+            .iter()
+            .filter(|_| !placement_only)
+            .map(|(_, _, target)| target.key())
+            .collect::<BTreeSet<_>>();
+        if !self.failure_suppression.is_empty() {
+            self.failure_suppression.retain_keys(
+                &restraint_candidates
+                    .iter()
+                    .map(|(_, _, target)| {
+                        process_failure_key(&target.executable_path.to_string_lossy())
+                    })
+                    .collect(),
+            );
+        }
+        let mut skipped_processes = 0;
+        let mut selected_candidates = Vec::new();
+        let target_limit = usize::from(settings.maximum_restrained_apps.max(1));
+        let priority_action = match settings.restraint_priority {
+            AdaptiveRestraintPriority::BelowNormal => Some((
+                PriorityClassValue::BelowNormal,
+                "Lowered process priority to Below Normal during sustained CPU pressure.",
+            )),
+            AdaptiveRestraintPriority::Idle => Some((
+                PriorityClassValue::Idle,
+                "Lowered process priority to Idle during sustained CPU pressure.",
+            )),
+            AdaptiveRestraintPriority::ProcessorPlacementOnly => None,
+        };
+        for (_, sampled_at, target) in restraint_candidates {
+            if !placement_only && selected_candidates.len() == target_limit {
+                break;
+            }
+            let executable_path = target.executable_path.to_string_lossy();
+            if placement_only
+                && (restraint_allocation_selection.is_none()
+                    || cpu_allocation::contains_process(
+                        explicit_cpu_allocation_paths,
+                        &executable_path,
+                    ))
+            {
+                continue;
+            }
+            if self.is_executable_path_suppressed(
+                target.id,
+                &target.name,
+                &executable_path,
+                action_log,
+                &mut auto_excluded_processes,
+            ) {
+                skipped_processes += 1;
+                continue;
+            }
+            match priority_efficiency_controller.can_apply_adaptive_restraint(
+                &target,
+                allow_cross_session_process_control,
+                priority_action.map(|(class, _)| class),
+                settings.protect_non_normal_priority,
+            ) {
+                Ok(true) => selected_candidates.push((sampled_at, target)),
+                Ok(false) => self.clear_process_failure(&executable_path),
+                Err(error) => {
+                    skipped_processes += usize::from(self.record_restraint_failure(
+                        &target,
+                        error,
+                        action_log,
+                        &mut failures,
+                    ));
+                }
+            }
+        }
+        let active_targets = selected_candidates
+            .iter()
+            .map(|(_, target)| target.key())
+            .collect::<BTreeSet<_>>();
+        let selected_ids = active_targets
+            .iter()
+            .map(|key| key.id)
+            .collect::<BTreeSet<_>>();
+        for (process_id, process) in &mut self.tracked_processes {
+            if !selected_ids.contains(process_id) {
+                if placement_only && process.pressure_restraint.selected_since.is_some() {
+                    process.pressure_restraint = PressureRestraintEpisode::default();
+                } else {
+                    process.pressure_restraint.selected_since = None;
+                    process.pressure_restraint.below_since = None;
+                }
+            }
+        }
+        let no_targets = BTreeSet::new();
+        let active_priority_targets = if placement_only {
+            &no_targets
+        } else {
+            &active_targets
+        };
+        let release = priority_efficiency_controller
+            .reconcile_adaptive_restraint_targets(active_priority_targets, &qualified_episodes);
+        // A process awaiting restoration can still occupy a restraint slot.
+        if !release.failures.is_empty()
+            || (placement_only
+                && priority_efficiency_controller
+                    .adaptive_restraint_processes()
+                    .next()
+                    .is_some())
+        {
+            selected_candidates.clear();
+        }
+        self.merge_controller_release(
+            release,
+            action_log,
+            restraint_idle_pause.map_or(
+                "process no longer qualifies for CPU Pressure Restraint",
+                RestraintIdlePause::release_reason,
+            ),
+            "process priority",
+            &mut failures,
+        );
+        if !placement_only {
+            let (release, pending) =
+                cpu_allocation_coordinator.release_adaptive_episode_placements_except(&no_targets);
+            if pending {
+                selected_candidates.clear();
+            }
+            failures.count += release.failures.len();
+            if failures.last_error.is_none() {
+                failures.last_error = release
+                    .failures
+                    .first()
+                    .map(|failure| failure.error.to_string());
+            }
+            cpu_allocation::record_cpu_allocation_reconciliation(
+                CpuAllocationReconciliationSummary {
+                    releases: release,
+                    ..Default::default()
+                },
+                action_log,
+            );
+        }
+        let priority_preservation = if settings.protect_non_normal_priority {
+            PriorityClassPreservation::OnlyNormal
+        } else {
+            PriorityClassPreservation::LowerKnownClass
+        };
+        let mut successful_priority_targets = BTreeSet::new();
+        let mut placement_attempts = Vec::new();
+        for (sampled_at, target) in selected_candidates {
+            let Some((restraint_priority, restraint_message)) = priority_action else {
+                if let Some(selection) = restraint_allocation_selection.as_ref() {
+                    placement_attempts.push((sampled_at, target.key()));
+                    cpu_allocation_targets.push(CpuAllocationTarget {
+                        process_id: target.id,
+                        process_name: target.name,
+                        executable_path: target.executable_path.to_string_lossy().into_owned(),
+                        mode: cpu_allocation_method(settings),
+                        selection: selection.clone(),
+                        creation_time: target.creation_time,
+                    });
+                }
+                continue;
+            };
+            let process_id = target.id;
+            let executable_path = target.executable_path.to_string_lossy();
+            let result = priority_efficiency_controller.apply_priority_claim(
+                PriorityClassClaim {
+                    target: target.clone(),
+                    owner: ControlOwner::AdaptiveEngine,
+                    priority: restraint_priority,
+                    preservation: priority_preservation,
+                },
+                allow_cross_session_process_control,
+            );
+            if let Some(process) = self.tracked_processes.get_mut(&process_id).filter(|_| {
+                matches!(
+                    result,
+                    Ok(ProcessPropertyApplyOutcome::Applied
+                        | ProcessPropertyApplyOutcome::Unchanged)
+                )
+            }) {
+                process
+                    .pressure_restraint
+                    .selected_since
+                    .get_or_insert(sampled_at);
+                if restraint_allocation_selection.is_some() {
+                    successful_priority_targets.insert(target.key());
+                }
+            }
+            match result {
+                Ok(ProcessPropertyApplyOutcome::Applied) => {
+                    self.clear_process_failure(&executable_path);
+                    action_log.record(
+                        ActionLogFeature::AdaptiveEngine,
+                        Some(process_id),
+                        target.name,
+                        ActionLogResult::Applied,
+                        restraint_message,
+                    );
+                }
+                Ok(ProcessPropertyApplyOutcome::Preserved) => {
+                    self.clear_process_failure(&executable_path);
+                    skipped_processes += 1;
+                }
+                Ok(
+                    ProcessPropertyApplyOutcome::Unchanged | ProcessPropertyApplyOutcome::Shadowed,
+                ) => {
+                    self.clear_process_failure(&executable_path);
+                }
+                Err(error) => {
+                    skipped_processes += usize::from(self.record_restraint_failure(
+                        &target,
+                        error,
+                        action_log,
+                        &mut failures,
+                    ));
+                }
+            }
+        }
+        if let Some(selection) = restraint_allocation_selection.filter(|_| !placement_only) {
+            cpu_allocation_targets = verified_restraint_allocation_targets(
+                priority_efficiency_controller.adaptive_restraint_processes(),
+                &successful_priority_targets,
+                explicit_cpu_allocation_paths,
+                cpu_allocation_method(settings),
+                &selection,
+            );
+        }
+
+        let attempted_zones =
+            !zone_background_targets.is_empty() && !zone_foreground_targets.is_empty();
+        if dynamic_resource_zones_apply
+            && !zone_background_targets.is_empty()
+            && zone_foreground_targets.is_empty()
+            && zones.status != ZoneStatus::Unavailable
+        {
+            zones.status = ZoneStatus::Overridden;
+            zones.reason = "zone_foreground_unavailable";
+        }
+        if attempted_zones {
+            zones.status = ZoneStatus::Applying;
+        }
+        let allocation = if let Some(topology) = topology {
+            self.cpu_allocation.reconcile_targets(
+                cpu_allocation_coordinator,
+                topology,
+                ControlOwner::AdaptiveEngine,
+                cpu_allocation_targets,
+                placement_only.then_some(target_limit),
+                attempted_zones.then_some((zone_background_targets, zone_foreground_targets)),
+                scanned_processes,
+                allow_cross_session_process_control,
+                action_log,
+            )
+        } else {
+            self.cpu_allocation.reconcile_empty_generation(
+                cpu_allocation_coordinator,
+                ControlOwner::AdaptiveEngine,
+                scanned_processes,
+                action_log,
+            )
+        };
+        for (sampled_at, key) in placement_attempts {
+            let Some(process) = self.tracked_processes.get_mut(&key.id) else {
+                continue;
+            };
+            if cpu_allocation_coordinator
+                .verified_adaptive_episode_placement(&key)
+                .is_some()
+            {
+                process
+                    .pressure_restraint
+                    .selected_since
+                    .get_or_insert(sampled_at);
+            } else if process.pressure_restraint.selected_since.is_some() {
+                process.pressure_restraint = PressureRestraintEpisode::default();
+            }
+        }
+        let mut cpu_allocation_snapshot = allocation.snapshot;
+        if let Some(error) = allocation_error {
+            cpu_allocation_snapshot.last_error.get_or_insert(error);
+        }
+        if let Some((foreground, background)) = allocation.zone_counts {
+            zones.status = ZoneStatus::Active;
+            zones.reason = "zone_active";
+            zones.foreground_targets = foreground;
+            zones.background_targets = background;
+        } else {
+            zones.foreground_processors = 0;
+            zones.background_processors = 0;
+            zones.background_limit_targets = allocation.fallback_count;
+            if attempted_zones {
+                use crate::cpu_allocation::ZoneAllocationFailure;
+                (zones.status, zones.reason) = match allocation.zone_failure {
+                    ZoneAllocationFailure::Waiting => (ZoneStatus::Waiting, "zone_waiting"),
+                    ZoneAllocationFailure::Overridden => {
+                        (ZoneStatus::Overridden, "zone_foreground_unavailable")
+                    }
+                    ZoneAllocationFailure::Unavailable => {
+                        (ZoneStatus::Unavailable, "zone_unavailable")
+                    }
+                    ZoneAllocationFailure::Degraded => (ZoneStatus::Degraded, "zone_retry"),
+                };
+            }
+        }
+        if cpu_allocation_snapshot.failed_processes > 0 && settings.dynamic_resource_zones_enabled {
+            zones.status = ZoneStatus::Degraded;
+            zones.reason = "zone_retry";
+        }
+        auto_excluded_processes.extend(
+            cpu_allocation_snapshot
+                .auto_excluded_processes
+                .iter()
+                .cloned(),
+        );
+        failures.count += cpu_allocation_snapshot.failed_processes;
+        if failures.last_error.is_none() {
+            failures.last_error = cpu_allocation_snapshot.last_error.clone();
+        }
+        AdaptiveEngineProcessSnapshot {
+            source: None,
+            waiting_for_power_source: false,
+            zones,
+            enabled: true,
+            observation_paused: false,
+            scanned_processes,
+            adjusted_processes: 0,
+            cpu_pressure_restraint_active: cpu_pressure_restraint_applies,
+            restraint_idle_pause,
+            restraint_processes: None,
+            foreground_cpu_usage_tenths,
+            skipped_processes,
+            failed_processes: failures.count,
+            auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
+            last_error: failures.last_error,
+        }
+    }
+
+    fn pause_for_unknown_focus(
+        &mut self,
+        zones_enabled: bool,
+        restraint_idle_pause: Option<RestraintIdlePause>,
+        cpu_allocation_coordinator: &mut CpuAllocationCoordinator,
+        priority_efficiency_controller: &mut PriorityEfficiencyController,
+        action_log: &mut ActionLog,
+    ) -> AdaptiveEngineProcessSnapshot {
+        self.pause_for_observation_failure(
+            zones_enabled,
+            restraint_idle_pause,
+            cpu_allocation_coordinator,
+            priority_efficiency_controller,
+            action_log,
+            ("foreground app is unknown", None),
+        )
+    }
+
+    fn pause_for_observation_failure(
+        &mut self,
+        zones_enabled: bool,
+        restraint_idle_pause: Option<RestraintIdlePause>,
+        cpu_allocation_coordinator: &mut CpuAllocationCoordinator,
+        priority_efficiency_controller: &mut PriorityEfficiencyController,
+        action_log: &mut ActionLog,
+        (reason, error): (&str, Option<String>),
+    ) -> AdaptiveEngineProcessSnapshot {
+        let failed = self.clear_all(
+            cpu_allocation_coordinator,
+            priority_efficiency_controller,
+            action_log,
+            reason,
+        );
+        let (status, reason) = if !zones_enabled {
+            (ZoneStatus::Disabled, "")
+        } else if failed.count > 0 {
+            (ZoneStatus::Degraded, "zone_retry")
+        } else {
+            (ZoneStatus::Unavailable, "zone_observations")
+        };
+        AdaptiveEngineProcessSnapshot {
+            zones: DynamicResourceZoneSnapshot {
+                status,
+                reason,
+                ..Default::default()
+            },
+            enabled: true,
+            failed_processes: failed.count,
+            observation_paused: true,
+            restraint_idle_pause,
+            last_error: failed.last_error.or(error),
+            ..Default::default()
+        }
+    }
+
+    fn clear_all(
+        &mut self,
+        cpu_allocation_coordinator: &mut CpuAllocationCoordinator,
+        priority_efficiency_controller: &mut PriorityEfficiencyController,
+        action_log: &mut ActionLog,
+        reason: &str,
+    ) -> PriorityFailures {
+        let mut failures = PriorityFailures::default();
+        self.merge_controller_release(
+            priority_efficiency_controller
+                .release_all_priority_policy(ControlOwner::AdaptiveEngine),
+            action_log,
+            reason,
+            "process priority",
+            &mut failures,
+        );
+        self.reset_pressure_observations(reason);
+        let cpu_allocation_snapshot = self.cpu_allocation.clear_discovered_targets(
+            cpu_allocation_coordinator,
+            ControlOwner::AdaptiveEngine,
+            reason,
+            action_log,
+        );
+        failures.count += cpu_allocation_snapshot.failed_processes;
+        if failures.last_error.is_none() {
+            failures.last_error = cpu_allocation_snapshot.last_error;
+        }
+        failures
+    }
+
+    fn merge_controller_release(
+        &mut self,
+        summary: PriorityEfficiencyReleaseSummary,
+        action_log: &mut ActionLog,
+        reason: &str,
+        property: &str,
+        failures: &mut PriorityFailures,
+    ) {
+        if summary.restored_processes > 0 {
+            action_log.record(
+                ActionLogFeature::AdaptiveEngine,
+                None,
+                "",
+                ActionLogResult::Restored,
+                format!(
+                    "Restored {property} for {}: {reason}.",
+                    process_count_label(summary.restored_processes)
+                ),
+            );
+        }
+        for failure in summary.failures {
+            self.record_process_failure(&failure.executable_path);
+            failures.record_control_error(
+                &format!("Restore {}", failure.property),
+                failure.process_id,
+                &failure.process_name,
+                failure.error,
+                action_log,
+            );
+        }
+    }
+
+    fn is_executable_path_suppressed(
+        &mut self,
+        process_id: u32,
+        process_name: &str,
+        executable_path: &str,
+        action_log: &mut ActionLog,
+        auto_excluded_processes: &mut BTreeSet<String>,
+    ) -> bool {
+        let suppression = self
+            .failure_suppression
+            .process_suppression(executable_path);
+        if !suppression.suppressed {
+            return false;
+        }
+
+        if suppression.newly_suppressed {
+            auto_excluded_processes.insert(executable_path.to_owned());
+            action_log.record(
+                ActionLogFeature::AdaptiveEngine,
+                Some(process_id),
+                process_name.trim().to_owned(),
+                ActionLogResult::Skipped,
+                format!(
+                    "Stopped retrying Adaptive Engine after {} failed attempts.",
+                    execution_failure_suppression_threshold(),
+                ),
+            );
+        }
+
+        true
+    }
+
+    #[cfg(test)]
+    fn is_process_suppressed(
+        &mut self,
+        process_id: u32,
+        process_name: &str,
+        action_log: &mut ActionLog,
+        auto_excluded_processes: &mut BTreeSet<String>,
+    ) -> bool {
+        self.is_executable_path_suppressed(
+            process_id,
+            process_name,
+            process_name,
+            action_log,
+            auto_excluded_processes,
+        )
+    }
+
+    fn record_process_failure(&mut self, process_name: &str) {
+        self.failure_suppression
+            .record_process_failure(process_name);
+    }
+
+    fn record_restraint_failure(
+        &mut self,
+        target: &ProcessControlTarget,
+        error: ProcessControlError,
+        action_log: &mut ActionLog,
+        failures: &mut PriorityFailures,
+    ) -> bool {
+        let executable_path = target.executable_path.to_string_lossy();
+        match error {
+            ProcessControlError::ProcessExited => true,
+            ProcessControlError::AccessDenied(error) => {
+                self.failure_suppression
+                    .suppress_process_failure(&executable_path);
+                action_log.record(
+                    ActionLogFeature::AdaptiveEngine,
+                    Some(target.id),
+                    &target.name,
+                    ActionLogResult::Skipped,
+                    error,
+                );
+                true
+            }
+            error => {
+                self.record_process_failure(&executable_path);
+                failures.record_control_error(
+                    "Apply CPU Pressure Restraint",
+                    target.id,
+                    &target.name,
+                    error,
+                    action_log,
+                );
+                false
+            }
+        }
+    }
+
+    fn clear_process_failure(&mut self, process_name: &str) {
+        self.failure_suppression.clear_process_failure(process_name);
+    }
+
+    fn can_hold_background_pressure(&self, settings: &AdaptiveEngineProcessSettings) -> bool {
+        self.background_pressure_active
+            && !self
+                .allocation_settings
+                .as_ref()
+                .is_some_and(|previous| pressure_gate_changed(previous, settings))
+    }
+
+    fn update_background_pressure(
+        &mut self,
+        settings: &AdaptiveEngineProcessSettings,
+        foreground_cpu_usage_percent: Option<f32>,
+        total_cpu_usage_percent: Option<f32>,
+    ) -> bool {
+        let either_pressure_unknown = settings.pressure_source == AdaptivePressureSource::Either
+            && foreground_cpu_usage_percent.is_none()
+            && total_cpu_usage_percent.is_none();
+        let triggered = cpu_pressure_restraint_should_run(
+            settings,
+            foreground_cpu_usage_percent,
+            total_cpu_usage_percent,
+        );
+        let can_hold = !triggered && self.can_hold_background_pressure(settings);
+        let held = can_hold
+            && (either_pressure_unknown
+                || cpu_pressure_above_recovery_threshold(
+                    settings,
+                    foreground_cpu_usage_percent,
+                    total_cpu_usage_percent,
+                ));
+        let active = triggered || held;
+        #[cfg(feature = "runtime-benchmark")]
+        pressure_trace::record(|| {
+            let was_active = self.background_pressure_active;
+            let missing_sample = match settings.pressure_source {
+                AdaptivePressureSource::System => total_cpu_usage_percent.is_none(),
+                AdaptivePressureSource::Foreground => foreground_cpu_usage_percent.is_none(),
+                AdaptivePressureSource::Either => either_pressure_unknown,
+                AdaptivePressureSource::Both => {
+                    total_cpu_usage_percent.is_none() || foreground_cpu_usage_percent.is_none()
+                }
+            };
+            let decision = if triggered {
+                "trigger_threshold"
+            } else if held && either_pressure_unknown {
+                "holding_during_missing_sample"
+            } else if held {
+                "recovery_band"
+            } else if was_active && !can_hold {
+                "pressure_settings_changed"
+            } else if missing_sample {
+                "missing_sample"
+            } else if was_active {
+                "below_recovery_threshold"
+            } else {
+                "below_trigger_threshold"
+            };
+            let (system_threshold, foreground_threshold) = settings.pressure_thresholds();
+            PressureEvent::Gate {
+                source: settings.pressure_source,
+                system_cpu_percent: total_cpu_usage_percent,
+                foreground_cpu_percent: foreground_cpu_usage_percent,
+                system_threshold,
+                foreground_threshold,
+                recovery_band: ADAPTIVE_ENGINE_PROCESS_RECOVERY_BAND_PERCENT,
+                was_active,
+                active,
+                decision,
+            }
+        });
+        self.background_pressure_active = active;
+        self.background_pressure_active
+    }
+
+    fn update_adaptive_engine_process_sample(
+        &mut self,
+        process_id: u32,
+        executable_path: &str,
+        settings: &AdaptiveEngineProcessSettings,
+        tier: AdaptiveEngineProcessTier,
+        sample: Option<(ProcessCpuSample, u64)>,
+    ) -> Option<AdaptiveEngineProcessDecision> {
+        let Some((current, creation_time)) = sample else {
+            self.tracked_processes.remove(&process_id);
+            return None;
+        };
+        let now = current.sampled_at;
+        let threshold = f32::from(settings.background_app_cpu_threshold_percent.min(100));
+        let recovery_threshold = f32::from(
+            settings
+                .cpu_recovery_threshold_percent
+                .min(settings.background_app_cpu_threshold_percent)
+                .min(100),
+        );
+        let minimum_restraint_time = Duration::from_millis(settings.minimum_restraint_time_ms);
+        let cpu_recovery_time = Duration::from_secs(settings.cpu_recovery_time_seconds);
+        if self
+            .tracked_processes
+            .get(&process_id)
+            .is_some_and(|process| {
+                process.creation_time != creation_time
+                    || process.tier != tier
+                    || !same_executable_path(
+                        Path::new(&process.executable_path),
+                        Path::new(executable_path),
+                    )
+            })
+        {
+            self.tracked_processes.remove(&process_id);
+        }
+        let state = self.tracked_processes.entry(process_id).or_insert_with(|| {
+            AdaptiveEngineProcessProcess {
+                executable_path: executable_path.to_owned(),
+                creation_time,
+                tier,
+                previous_cpu_time: None,
+                last_usage_tenths: None,
+                pressure_restraint: PressureRestraintEpisode::default(),
+                below_since: None,
+                active_since: None,
+                selected: false,
+            }
+        });
+        executable_path.clone_into(&mut state.executable_path);
+
+        let usage = state
+            .previous_cpu_time
+            .and_then(|previous| process_cpu_demand_percent(previous, current));
+        state.previous_cpu_time = Some(current);
+
+        state.last_usage_tenths = None;
+        let Some(usage) = usage else {
+            state.clear_restraint();
+            state.pressure_restraint = PressureRestraintEpisode::default();
+            return None;
+        };
+        state.last_usage_tenths = Some(percent_tenths(usage));
+        if usage >= threshold {
+            state.below_since = None;
+            state.active_since.get_or_insert(now);
+            return Some(adaptive_engine_process_process_decision(settings, tier));
+        }
+
+        let Some(active_since) = state.active_since.filter(|_| state.selected) else {
+            state.clear_restraint();
+            return None;
+        };
+
+        if usage > recovery_threshold || now.duration_since(active_since) < minimum_restraint_time {
+            state.below_since = None;
+            return Some(adaptive_engine_process_process_decision(settings, tier));
+        }
+
+        let below_since = *state.below_since.get_or_insert(now);
+        if now.duration_since(below_since) < cpu_recovery_time {
+            return Some(AdaptiveEngineProcessDecision::LowerPriority);
+        }
+        state.clear_restraint();
+        None
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "both policies share one topology and load observation"
+    )]
+    fn cpu_allocation_mask(
+        &mut self,
+        selection: BackgroundProcessorSelection,
+        specific_processors: &CpuSelection,
+        topology: &CpuTopology,
+        percent: u8,
+        policy: CpuAllocationPolicy,
+        processors: &[LogicalProcessorInfo],
+        usages: Option<&[f32]>,
+        now: Instant,
+    ) -> Option<u64> {
+        match selection {
+            BackgroundProcessorSelection::LeastUsed => {
+                return self.load_aware_cpu_allocation_mask(
+                    percent, None, policy, processors, usages?, now,
+                );
+            }
+            BackgroundProcessorSelection::LeastUsedPerformanceCores => {
+                return self.load_aware_cpu_allocation_mask(
+                    percent,
+                    Some(LogicalProcessorKind::Performance),
+                    policy,
+                    processors,
+                    usages?,
+                    now,
+                );
+            }
+            BackgroundProcessorSelection::LeastUsedEfficiencyCores => {
+                return self.load_aware_cpu_allocation_mask(
+                    percent,
+                    Some(LogicalProcessorKind::Efficiency),
+                    policy,
+                    processors,
+                    usages?,
+                    now,
+                );
+            }
+            _ => {}
+        }
+
+        self.cpu_allocation_selection
+            [usize::from(matches!(policy, CpuAllocationPolicy::ResourceZones))] = None;
+        selected_background_processor_mask(processors, selection, specific_processors, topology)
+    }
+
+    fn load_aware_cpu_allocation_mask(
+        &mut self,
+        percent: u8,
+        kind: Option<LogicalProcessorKind>,
+        policy: CpuAllocationPolicy,
+        processors: &[LogicalProcessorInfo],
+        usages: &[f32],
+        now: Instant,
+    ) -> Option<u64> {
+        let slot = usize::from(matches!(policy, CpuAllocationPolicy::ResourceZones));
+        let selection = &mut self.cpu_allocation_selection[slot];
+        let domain = kind.map_or_else(
+            || cpu_allocation::logical_processor_mask(processors),
+            |kind| cpu_allocation::logical_processor_kind_mask(processors, kind),
+        );
+        let next_mask = load_aware_limited_core_mask(processors, usages, percent, kind)?;
+        if next_mask == cpu_allocation::logical_processor_mask(processors) {
+            *selection = None;
+            return None;
+        }
+
+        let mask = if let Some(previous) = *selection {
+            let same_pool = previous.kind == kind
+                && previous.percent == percent
+                && previous.domain == domain
+                && previous.mask.count_ones() == next_mask.count_ones();
+            let interval_elapsed = now.duration_since(previous.selected_at)
+                >= Duration::from_secs(ADAPTIVE_ENGINE_PROCESS_CORE_REBALANCE_INTERVAL_SECS);
+            let improves_load = || {
+                average_masked_core_load(previous.mask, usages)
+                    .zip(average_masked_core_load(next_mask, usages))
+                    .is_some_and(|(previous_load, next_load)| {
+                        previous_load - next_load
+                            >= ADAPTIVE_ENGINE_PROCESS_CORE_REBALANCE_IMPROVEMENT_PERCENT
+                    })
+            };
+            // A restrained worker can make any excluded CPU appear less busy.
+            let can_rebalance = || match policy {
+                CpuAllocationPolicy::ScopedRestraint => interval_elapsed && improves_load(),
+                CpuAllocationPolicy::BackgroundLimit | CpuAllocationPolicy::ResourceZones => {
+                    interval_elapsed || improves_load()
+                }
+            };
+            if same_pool && !can_rebalance() {
+                previous.mask
+            } else {
+                next_mask
+            }
+        } else {
+            next_mask
+        };
+
+        if selection.is_none_or(|selection| {
+            selection.mask != mask
+                || selection.kind != kind
+                || selection.percent != percent
+                || selection.domain != domain
+        }) {
+            *selection = Some(CpuAllocationSelection {
+                mask,
+                kind,
+                percent,
+                domain,
+                selected_at: now,
+            });
+        }
+        Some(mask)
+    }
+}
+
+fn visible_window_group_ids(
+    processes: &[ProcessInfo],
+    foreground_group: &BTreeSet<u32>,
+    windows: &Arc<BTreeSet<u32>>,
+    executable_paths: &mut BTreeMap<u32, String>,
+) -> BTreeSet<u32> {
+    let visible = ProtectedProcesses::capture(processes, false, None, Arc::clone(windows));
+    processes
+        .iter()
+        .filter(|process| !foreground_group.contains(&process.id))
+        .filter(|process| {
+            windows.contains(&process.id)
+                || (visible.may_contain(process)
+                    && cached_executable_path(process, executable_paths)
+                        .is_some_and(|path| visible.contains(process.id, Path::new(path))))
+        })
+        .map(|process| process.id)
+        .collect()
+}
+
+fn cached_executable_path<'a>(
+    process: &'a ProcessInfo,
+    executable_paths: &'a mut BTreeMap<u32, String>,
+) -> Option<&'a str> {
+    cached_executable_path_with(process.id, executable_paths, || {
+        verified_process_executable_path(process)
+    })
+}
+
+fn cached_executable_path_with<'a>(
+    process_id: u32,
+    executable_paths: &'a mut BTreeMap<u32, String>,
+    read: impl FnOnce() -> Option<Cow<'a, Path>>,
+) -> Option<&'a str> {
+    match executable_paths.entry(process_id) {
+        Entry::Occupied(path) => Some(path.into_mut().as_str()),
+        Entry::Vacant(entry) => match read()? {
+            Cow::Borrowed(path) => path.to_str(),
+            Cow::Owned(path) => {
+                let path = path.into_os_string().into_string().ok()?;
+                Some(entry.insert(path).as_str())
+            }
+        },
+    }
+}
+
+fn verified_restraint_allocation_targets<'a>(
+    restraint_processes: impl Iterator<Item = (&'a ProcessIdentity, AdaptiveRestraintState)>,
+    successful_priority_targets: &BTreeSet<ProcessTargetKey>,
+    explicit_cpu_allocation_paths: &[String],
+    mode: CpuAllocationMode,
+    selection: &CpuSelection,
+) -> Vec<CpuAllocationTarget> {
+    restraint_processes
+        .filter_map(|(process, state)| {
+            if state != AdaptiveRestraintState::Verified
+                || !successful_priority_targets.contains(&process.key())
+            {
+                return None;
+            }
+            let path = process.executable_path.to_str()?;
+            if cpu_allocation::contains_process(explicit_cpu_allocation_paths, path) {
+                return None;
+            }
+            Some(CpuAllocationTarget {
+                process_id: process.id,
+                process_name: process.name.clone(),
+                executable_path: path.to_owned(),
+                mode,
+                selection: selection.clone(),
+                creation_time: process.creation_time,
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests;

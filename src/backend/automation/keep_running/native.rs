@@ -20,15 +20,11 @@ fn spec(rule: &KeepRunningRule) -> Result<control::LaunchSpec, Failure> {
         message,
         kind: FailureKind::UnsupportedContext,
     })?;
-    control::LaunchSpec::new(
-        Path::new(&rule.executable_path),
-        &rule.arguments,
-        Path::new(&rule.working_directory),
-    )
-    .map_err(failure)
+    control::LaunchSpec::new(Path::new(&rule.executable_path), &rule.arguments).map_err(failure)
 }
 
 impl Platform for Windows {
+    type Catalog = control::ProcessCatalog;
     type Context = control::DesktopContext;
     type Identity = control::ExecutableIdentity;
     type Member = control::Member;
@@ -43,24 +39,22 @@ impl Platform for Windows {
     fn identity(rule: &KeepRunningRule) -> Result<Self::Identity, Failure> {
         spec(rule)?.identity().map_err(failure)
     }
+    fn action_identity(
+        target: &ProcessActionTarget,
+        context: &Self::Context,
+    ) -> Result<Self::Identity, Failure> {
+        let target = crate::control::process::ProcessControlTarget::from_action_target(target);
+        control::retain_member(&target, context)
+            .map(|member| member.executable_identity().clone())
+            .map_err(failure)
+    }
     fn scan(
         rule: &KeepRunningRule,
         context: &Self::Context,
         exclude: Option<&ProcessTargetKey>,
+        catalog: Option<&Self::Catalog>,
     ) -> Result<Vec<Self::Member>, Failure> {
-        let spec = spec(rule)?;
-        let identity = spec.identity().map_err(failure)?;
-        let members = control::scan_members(&spec, context, exclude).map_err(failure)?;
-        if members
-            .iter()
-            .any(|member| member.executable_identity() != &identity)
-        {
-            return Err(Failure {
-                kind: FailureKind::UnsupportedContext,
-                message: "Keep Running executable identity changed during observation.".into(),
-            });
-        }
-        Ok(members)
+        control::scan_members(&spec(rule)?, context, exclude, catalog).map_err(failure)
     }
     fn key(member: &Self::Member) -> ProcessTargetKey {
         member.key()

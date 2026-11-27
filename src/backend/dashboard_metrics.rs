@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, time::Instant};
 
-use crate::{foreground::for_each_process_id, win_util::WinHandle};
+use crate::{foreground::list_process_ids, win_util::WinHandle};
 use windows_sys::Win32::{
     NetworkManagement::{
         IpHelper::{FreeMibTable, GetIfTable2, IF_TYPE_SOFTWARE_LOOPBACK, MIB_IF_TABLE2},
@@ -12,7 +12,7 @@ use windows_sys::Win32::{
             PdhOpenQueryW, PDH_CSTATUS_NEW_DATA, PDH_CSTATUS_VALID_DATA, PDH_FMT_COUNTERVALUE,
             PDH_FMT_DOUBLE, PDH_HCOUNTER, PDH_HQUERY,
         },
-        SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX},
+        ProcessStatus::{K32GetPerformanceInfo, PERFORMANCE_INFORMATION},
         Threading::{
             GetProcessIoCounters, OpenProcess, IO_COUNTERS, PROCESS_QUERY_LIMITED_INFORMATION,
         },
@@ -24,6 +24,13 @@ pub struct MemoryUsageSnapshot {
     pub percent: Option<f32>,
     pub used_physical_bytes: Option<u64>,
     pub total_physical_bytes: Option<u64>,
+    pub system_commit: Option<SystemCommit>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SystemCommit {
+    pub committed_bytes: u64,
+    pub limit_bytes: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -63,17 +70,39 @@ struct NetworkCounterSample {
 }
 
 pub fn sample_memory_usage() -> MemoryUsageSnapshot {
-    let Some(status) = system_memory_status() else {
-        return MemoryUsageSnapshot::default();
+    let size = std::mem::size_of::<PERFORMANCE_INFORMATION>() as u32;
+    let mut status = PERFORMANCE_INFORMATION {
+        cb: size,
+        ..Default::default()
     };
-    let total_physical_bytes = status.ullTotalPhys;
-    let available_physical_bytes = status.ullAvailPhys;
-    let used_physical_bytes = total_physical_bytes.saturating_sub(available_physical_bytes);
+    // SAFETY: status is writable for the supplied size and lives throughout the call.
+    if unsafe { K32GetPerformanceInfo(&mut status, size) } == 0 {
+        return MemoryUsageSnapshot::default();
+    }
+    memory_usage_from_performance(status)
+}
+
+fn memory_usage_from_performance(status: PERFORMANCE_INFORMATION) -> MemoryUsageSnapshot {
+    if status.PageSize == 0 {
+        return MemoryUsageSnapshot::default();
+    }
+    let bytes = |pages: usize| (pages as u64).checked_mul(status.PageSize as u64);
+    let physical = bytes(status.PhysicalTotal)
+        .filter(|&total| total != 0)
+        .zip(bytes(status.PhysicalAvailable))
+        .and_then(|(total, available)| total.checked_sub(available).map(|used| (used, total)));
+    let system_commit = bytes(status.CommitTotal)
+        .zip(bytes(status.CommitLimit).filter(|&limit| limit != 0))
+        .map(|(committed_bytes, limit_bytes)| SystemCommit {
+            committed_bytes,
+            limit_bytes,
+        });
 
     MemoryUsageSnapshot {
-        percent: Some(status.dwMemoryLoad.min(100) as f32),
-        used_physical_bytes: Some(used_physical_bytes),
-        total_physical_bytes: Some(total_physical_bytes),
+        percent: physical.map(|(used, total)| (used as f64 * 100.0 / total as f64).floor() as f32),
+        used_physical_bytes: physical.map(|(used, _)| used),
+        total_physical_bytes: physical.map(|(_, total)| total),
+        system_commit,
     }
 }
 
@@ -252,27 +281,16 @@ fn counter_rates<K: Ord>(
     totals.map(|(first, second)| (first as f64 / elapsed, second as f64 / elapsed))
 }
 
-fn system_memory_status() -> Option<MEMORYSTATUSEX> {
-    let mut status = MEMORYSTATUSEX {
-        dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
-        ..Default::default()
-    };
-    // SAFETY: status declares its size and remains writable for the call.
-    let ok = unsafe { GlobalMemoryStatusEx(&mut status) };
-    (ok != 0).then_some(status)
-}
-
 fn read_system_io_counters() -> Option<IoCounterSample> {
     let mut processes = BTreeMap::new();
-    for_each_process_id(|process_id| {
+    for process_id in list_process_ids().ok()? {
         if let Some((creation_time, counters)) = process_io_counters(process_id) {
             processes.insert(
                 (process_id, creation_time),
                 (counters.ReadTransferCount, counters.WriteTransferCount),
             );
         }
-    })
-    .ok()?;
+    }
     (!processes.is_empty()).then_some(IoCounterSample {
         processes,
         sampled_at: Instant::now(),
@@ -346,6 +364,46 @@ fn network_counters_from_table(table: *const MIB_IF_TABLE2) -> Option<NetworkCou
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memory_pages_keep_physical_and_commit_totals_distinct() {
+        let mut status = PERFORMANCE_INFORMATION {
+            PhysicalTotal: 1_000,
+            PhysicalAvailable: 450,
+            CommitTotal: 1_600,
+            CommitLimit: 2_000,
+            PageSize: 4_096,
+            ..Default::default()
+        };
+        let sample = memory_usage_from_performance(status);
+        assert_eq!(sample.percent, Some(55.0));
+        assert_eq!(sample.used_physical_bytes, Some(2_252_800));
+        assert_eq!(sample.total_physical_bytes, Some(4_096_000));
+        assert_eq!(
+            sample.system_commit,
+            Some(SystemCommit {
+                committed_bytes: 6_553_600,
+                limit_bytes: 8_192_000,
+            })
+        );
+
+        status.PhysicalAvailable = 1_001;
+        let sample = memory_usage_from_performance(status);
+        assert_eq!(sample.percent, None);
+        assert!(sample.system_commit.is_some());
+
+        status.PhysicalAvailable = 1_000;
+        status.CommitLimit = 0;
+        let sample = memory_usage_from_performance(status);
+        assert_eq!(sample.percent, Some(0.0));
+        assert_eq!(sample.system_commit, None);
+
+        status.PageSize = 0;
+        assert_eq!(
+            memory_usage_from_performance(status),
+            MemoryUsageSnapshot::default()
+        );
+    }
 
     #[test]
     #[ignore = "requires Windows PhysicalDisk performance counters"]

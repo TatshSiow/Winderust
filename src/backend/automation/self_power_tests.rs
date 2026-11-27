@@ -9,6 +9,25 @@ fn idle_runtime() -> RuntimeHandle {
 }
 
 #[test]
+fn either_saved_adaptive_engine_process_policy_preserves_tray_priority() {
+    let mut settings = Settings::default();
+    settings.general.enabled = true;
+    settings.adaptive_engine.enabled = true;
+    assert!(!preserve_self_priority_in_tray(&settings));
+
+    settings.adaptive_engine.enabled = false;
+    let battery = settings.battery_profile_mut();
+    battery.adaptive_engine.enabled = true;
+    battery
+        .adaptive_engine_process
+        .cpu_pressure_restraint_enabled = true;
+    assert!(preserve_self_priority_in_tray(&settings));
+
+    settings.general.enabled = false;
+    assert!(!preserve_self_priority_in_tray(&settings));
+}
+
+#[test]
 fn self_power_success_clears_only_its_own_failure_evidence() {
     let runtime = idle_runtime();
     let previous = Mutex::new(None);

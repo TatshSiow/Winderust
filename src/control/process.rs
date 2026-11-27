@@ -1,5 +1,6 @@
 use std::{
     cmp::Ordering,
+    collections::BTreeMap,
     path::{Path, PathBuf},
 };
 
@@ -18,8 +19,9 @@ use crate::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ControlOwner {
-    BackgroundEfficiency,
+    EfficiencyMode,
     CpuSetsSoft,
+    CpuLimiter,
     DynamicPriorityBoost,
     GpuPriority,
     IoPriority,
@@ -29,7 +31,6 @@ pub(crate) enum ControlOwner {
     ProcessorAffinityHard,
     ThreadPriority,
     AdaptiveEngine,
-    AdaptiveEngineProcessFocusPriority,
     ProcessList,
 }
 
@@ -79,7 +80,7 @@ impl ProcessControlTarget {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct ProcessTargetKey {
     pub(crate) id: u32,
-    creation_time: u64,
+    pub(super) creation_time: u64,
     executable_path: String,
 }
 
@@ -169,6 +170,27 @@ impl ProcessIdentity {
             executable_path: self.executable_path_key.clone(),
         }
     }
+
+    pub(super) fn matches_target_key(&self, key: &ProcessTargetKey) -> bool {
+        self.id == key.id
+            && self.creation_time == key.creation_time
+            && self.executable_path_key == key.executable_path
+    }
+
+    pub(super) fn target_entry<'a, T>(
+        &self,
+        entries: &'a BTreeMap<ProcessTargetKey, T>,
+    ) -> Option<&'a T> {
+        let start = ProcessTargetKey {
+            id: self.id,
+            creation_time: self.creation_time,
+            executable_path: String::new(),
+        };
+        entries
+            .range(start..)
+            .take_while(|(key, _)| key.id == self.id && key.creation_time == self.creation_time)
+            .find_map(|(key, entry)| self.matches_target_key(key).then_some(entry))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -242,10 +264,11 @@ pub(crate) fn open_process_for_thread_control(
 
 pub(crate) fn open_process_for_observation(
     target: &ProcessControlTarget,
+    allow_cross_session_process_control: bool,
 ) -> Result<(ProcessIdentity, WinHandle), ProcessControlError> {
     open_process_with_access(
         target,
-        false,
+        allow_cross_session_process_control,
         ProcessAccess::Observation,
         ProcessActionAccess::SafetyOnly,
     )
@@ -334,7 +357,7 @@ fn open_process_with_access(
     let current_process_id = windows_process::current_process_id();
     if target.id == 0
         || target.id == current_process_id
-        || crate::crash_recovery::is_watchdog_process(target.id)
+        || crate::backend::is_helper_process(target.id)
     {
         return Err(ProcessControlError::AccessDenied(
             "Winderust cannot modify this process.".to_owned(),
@@ -530,10 +553,14 @@ mod tests {
         let target = ProcessControlTarget::from_action_target(&target);
         let (_, retained) =
             open_process_for_set_information(&target, false).map_err(|error| error.to_string())?;
+        let (_, observed) =
+            open_process_for_observation(&target, false).map_err(|error| error.to_string())?;
         assert_eq!(windows_process::exit_confirmed(&retained), Ok(false));
+        assert_eq!(windows_process::poll_exit(&observed), Ok(false));
         child.0.kill().map_err(|error| error.to_string())?;
         child.0.wait().map_err(|error| error.to_string())?;
         assert_eq!(windows_process::exit_confirmed(&retained), Ok(true));
+        assert_eq!(windows_process::poll_exit(&observed), Ok(true));
         assert!(matches!(
             open_process_for_set_information(&target, false),
             Err(ProcessControlError::ProcessExited)
@@ -630,11 +657,10 @@ mod tests {
         assert!(ControlOwner::GpuPriority.is_automatic());
         assert!(ControlOwner::IoPriority.is_automatic());
         assert!(ControlOwner::ProcessPriority.is_automatic());
-        assert!(ControlOwner::BackgroundEfficiency.is_automatic());
+        assert!(ControlOwner::EfficiencyMode.is_automatic());
         assert!(ControlOwner::CpuSetsSoft.is_automatic());
         assert!(ControlOwner::InstanceBalancing.is_automatic());
         assert!(ControlOwner::ProcessorAffinityHard.is_automatic());
-        assert!(ControlOwner::AdaptiveEngineProcessFocusPriority.is_automatic());
         assert!(ControlOwner::ThreadPriority.is_automatic());
         assert!(ControlOwner::AdaptiveEngine.is_automatic());
         assert!(!ControlOwner::ProcessList.is_automatic());

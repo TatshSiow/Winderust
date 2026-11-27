@@ -95,8 +95,8 @@ target, but every mutation reopens and revalidates the exact process or thread i
 - Process List reversible actions use the same RuntimeCore controllers as automatic policy and
   may be superseded by a later automatic reconciliation.
 - CPU allocation has one coordinator with this precedence: CPU Sets (Soft), Processor Affinity
-  (Hard), guarded Instance Balancing, then Adaptive Engine.
-- App Suspension and CPU Limiter share one Job Object suspension controller. Their independent
+  (Hard), guarded Instance Balancing, CPU Limiter, then Adaptive Engine.
+- App Suspension and CPU Limiter's CPU time method share one Job Object suspension controller. Their independent
   claims combine into one effective frozen state, so releasing either feature cannot thaw the
   other feature's claim.
 - CPU Limiter keeps that Job Object path primary. Only an incompatible existing-job result selects
@@ -124,8 +124,11 @@ remain available in Git history rather than in the active documentation set.
 - `src/ui/app.rs`: `WinderustApp` composition, message dispatch, subscriptions,
   native window/tray lifecycle, settings publication, and teardown. Runtime work remains
   in typed commands and services; UI drafts do not belong in `RuntimeCore`.
-- `src/ui/`: page editors and views; `widgets.rs` supplies shared controls, `status_rail.rs` presents runtime status, and `navigation.rs` maps pages
-  to bundled icons. `process_list.rs` owns table sorting, grouping, and pending actions.
+- `src/ui/`: page editors and views. `widgets.rs` supplies shared controls,
+  `status_rail.rs` presents runtime status, and `navigation.rs` owns workspace
+  navigation, page lists, and history. `dashboard.rs` presents system telemetry
+  and the Dashboard Status tab. `process_list.rs` owns the Dashboard's process
+  table, sorting, grouping, and pending actions.
 - `src/ui/process_rules.rs`: shared process eligibility and rule-construction helpers.
 - `src/ui.rs`: page enum, section grouping, labels, and small UI-independent helpers.
 - `src/config/settings.rs`: persisted settings structs and defaults;
@@ -166,8 +169,8 @@ remain available in Git history rather than in the active documentation set.
   time.
 - `src/control/cpu_allocation.rs`: sole live CPU Sets and process-affinity baseline, claim
   arbitration, compensation, and clean-release boundary for CPU Sets (Soft), Processor Affinity
-  (Hard), guarded Instance Balancing, and Adaptive Engine CPU allocation. Its precedence is
-  CPU Sets (Soft) > Processor Affinity (Hard) > Instance Balancing > Adaptive Engine.
+  (Hard), guarded Instance Balancing, load-triggered affinity, and Adaptive Engine CPU allocation.
+  Its precedence is CPU Sets (Soft) > Processor Affinity (Hard) > Instance Balancing > CPU Limiter > Adaptive Engine.
   Adjacent `instance_balancing.rs` and `eligibility.rs` enforce the guarded backend contract.
   `src/features/cpu_control/instance_balancing/` owns deterministic whole-core planning
   and stable-cohort qualification. `src/backend/automation/instance_balancing.rs`
@@ -199,7 +202,7 @@ remain available in Git history rather than in the active documentation set.
   routes. Pending compensation and journal cleanup reconcile on later feature
   passes; feature records retain exact creation time and are pruned when the
   controller no longer owns a frozen exact instance. The feature manager owns
-  rule/grace/wake/reporting policy only. CPU Limiter policy is immediate rule matching, while
+  rule/grace/wake/reporting policy only. The CPU time method uses immediate rule matching, while
   `src/control/cpu_limiter.rs` owns its single duty-cycle worker. `src/platform/windows/job.rs`
   owns shared Job Object creation, assignment, and membership; `src/platform/windows/suspension.rs`
   owns freeze/thaw and the compatibility-sensitive layout; `src/platform/windows/cpu_limiter.rs`
@@ -215,8 +218,9 @@ remain available in Git history rather than in the active documentation set.
   (Hard) retain separate settings, pages, rules, status, and Action Log labels;
   `src/features/cpu_control/cpu_allocation.rs` owns their discovery, topology,
   tier selection, and reporting policy, while the typed controller owns the shared
-  Windows mechanism and restoration state. CPU Limiter remains separate from CPU allocation and
-  uses shared Job Object freeze/thaw duty cycling. Adaptive Engine retains pressure, selection, and tuning only.
+  Windows mechanism and restoration state. CPU Limiter uses shared Job Object freeze/thaw for CPU
+  time and the CPU allocation coordinator for load-triggered affinity. Adaptive Engine retains
+  pressure, selection, and tuning only.
   Adaptive Engine process sampling and identity helpers live in
   `adaptive_engine_process/process_control.rs`; its Process Priority, Power Throttling,
   and Memory Priority mutations route through typed controllers. Pure workload
@@ -231,21 +235,24 @@ remain available in Git history rather than in the active documentation set.
 
 ## Navigation
 
-Pages are grouped in `src/ui.rs`:
+`PAGE_SECTIONS` in `src/ui.rs` defines the workspaces in the top navigation row.
+Selecting a workspace opens its landing page. Workspaces with child pages show
+their destinations in a contextual list to the left of the editor. Editor tabs
+show views within the selected page.
 
-- Home: dashboard.
-- Process List: process table and per-process policy surface.
-- Winderust Features: Adaptive Engine, Background Efficiency, Memory Trim, Watchdog.
-- Power Plan Control: By Focus, By Running App, By CPU Load, By Activity, By Time, Advanced Power Plan Tuning.
-- Priority Control: Process Priority, Thread Priority, Dynamic Priority Boost,
-  IO Priority, GPU Priority, Memory Priority.
-- CPU Control: CPU Limiter, CPU Sets (Soft), Processor Affinity (Hard), Instance Balancing.
+- Dashboard opens at startup and shows system telemetry, the process table,
+  and per-process policy controls.
+- Watchdog includes Resource Thresholds, Memory Trim, Keep Running, Sleep
+  Prevention, Instance Limits, and App Suspension.
+- Power Plan Control includes By Focus, By Running App, By CPU Load, By Activity, By Time, Adaptive Processor Power, and Advanced Power Plan Tuning.
+- Priority Control includes Process Priority, Efficiency Mode, Thread Priority,
+  Dynamic Priority Boost, I/O Priority, GPU Priority, and Memory Priority.
+- CPU Control: Adaptive Engine, CPU Limiter, CPU Sets (Soft), Processor Affinity (Hard), Instance Balancing.
+- Advanced Controls includes Timer Resolution and Win32 Priority Separation.
 - Action Log.
 - Settings: Winderust Behaviour, Language and Appearance, Experimental
   Features.
 - About.
-- Advanced Controls: App Suspension, Sleep Prevention, Keep Running, Instance
-  Limits, Timer Resolution, Win32 Priority Separation.
 
 Keep navigation changes in `Page`, `PAGE_SECTIONS`, labels, locale files, and
 `WinderustApp::page_view` in `src/ui/app.rs` together.

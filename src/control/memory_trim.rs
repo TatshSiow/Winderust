@@ -18,8 +18,11 @@ pub(crate) struct MemoryTrimProcessSample {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct MemoryTrimOutcome {
-    pub(crate) working_set_reduction_bytes: Option<u64>,
+pub(crate) enum MemoryTrimOutcome {
+    BelowMinimumWorkingSet,
+    Trimmed {
+        working_set_reduction_bytes: Option<u64>,
+    },
 }
 
 pub(crate) trait MemoryTrimPlatform {
@@ -90,7 +93,7 @@ impl Default for MemoryTrimController {
 }
 
 impl<P: MemoryTrimPlatform> MemoryTrimController<P> {
-    fn with_platform(platform: P) -> Self {
+    pub(crate) fn with_platform(platform: P) -> Self {
         Self { platform }
     }
 
@@ -117,18 +120,22 @@ impl<P: MemoryTrimPlatform> MemoryTrimController<P> {
         &mut self,
         target: &ProcessControlTarget,
         allow_cross_session_process_control: bool,
+        minimum_working_set_bytes: u64,
     ) -> Result<MemoryTrimOutcome, ProcessControlError> {
         let process = self
             .platform
             .open(target, allow_cross_session_process_control)?;
         let before = self.platform.working_set_bytes(&process)?;
+        if before < minimum_working_set_bytes {
+            return Ok(MemoryTrimOutcome::BelowMinimumWorkingSet);
+        }
         self.platform.trim(&process)?;
         let working_set_reduction_bytes = self
             .platform
             .working_set_bytes(&process)
             .ok()
             .map(|after| before.saturating_sub(after));
-        Ok(MemoryTrimOutcome {
+        Ok(MemoryTrimOutcome::Trimmed {
             working_set_reduction_bytes,
         })
     }
@@ -216,6 +223,23 @@ mod tests {
     }
 
     #[test]
+    fn trim_rechecks_minimum_on_the_reopened_target() {
+        let platform = FakePlatform {
+            working_sets: VecDeque::from([Ok(129), Ok(127)]),
+            ..Default::default()
+        };
+        let mut controller = MemoryTrimController::with_platform(platform);
+
+        let sample = controller.sample(&target(), false, false).unwrap();
+        assert_eq!(sample.working_set_bytes, 129);
+        let outcome = controller.trim(&target(), false, 128).unwrap();
+
+        assert_eq!(outcome, MemoryTrimOutcome::BelowMinimumWorkingSet);
+        assert_eq!(controller.platform.opens, vec![(target(), false); 2]);
+        assert_eq!(controller.platform.trim_calls, 0);
+    }
+
+    #[test]
     fn successful_trim_keeps_an_unavailable_working_set_reduction_unknown() {
         let platform = FakePlatform {
             working_sets: VecDeque::from([
@@ -227,9 +251,14 @@ mod tests {
         };
         let mut controller = MemoryTrimController::with_platform(platform);
 
-        let outcome = controller.trim(&target(), true).unwrap();
+        let outcome = controller.trim(&target(), true, 128).unwrap();
 
-        assert_eq!(outcome.working_set_reduction_bytes, None);
+        assert_eq!(
+            outcome,
+            MemoryTrimOutcome::Trimmed {
+                working_set_reduction_bytes: None
+            }
+        );
         assert_eq!(controller.platform.trim_calls, 1);
     }
 
@@ -242,9 +271,14 @@ mod tests {
             };
             let mut controller = MemoryTrimController::with_platform(platform);
 
-            let outcome = controller.trim(&target(), false).unwrap();
+            let outcome = controller.trim(&target(), false, 128).unwrap();
 
-            assert_eq!(outcome.working_set_reduction_bytes, Some(reduction));
+            assert_eq!(
+                outcome,
+                MemoryTrimOutcome::Trimmed {
+                    working_set_reduction_bytes: Some(reduction)
+                }
+            );
             assert_eq!(controller.platform.trim_calls, 1);
         }
     }
@@ -260,7 +294,7 @@ mod tests {
         };
         let mut controller = MemoryTrimController::with_platform(platform);
 
-        let error = controller.trim(&target(), true).unwrap_err();
+        let error = controller.trim(&target(), true, 128).unwrap_err();
 
         assert_eq!(error.to_string(), "trim failed");
         assert_eq!(controller.platform.working_sets.len(), 1);

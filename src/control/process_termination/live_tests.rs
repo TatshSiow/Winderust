@@ -4,7 +4,7 @@ use std::path::PathBuf;
 #[test]
 #[ignore = "trims and terminates its own disposable Windows process; run in integration QA"]
 fn live_trim_and_termination_validate_identity() -> Result<(), String> {
-    use crate::control::memory_trim::MemoryTrimController;
+    use crate::control::memory_trim::{MemoryTrimController, MemoryTrimOutcome};
     use std::{
         io::BufRead,
         os::windows::process::CommandExt,
@@ -37,12 +37,19 @@ fn live_trim_and_termination_validate_identity() -> Result<(), String> {
         .sample(&control_target, false, true)
         .map_err(|e| e.to_string())?;
     assert!(before.working_set_bytes >= 64 * 1024 * 1024);
-    let outcome = trim
-        .trim(&control_target, false)
+    let declined = trim
+        .trim(&control_target, false, u64::MAX)
         .map_err(|e| e.to_string())?;
-    assert!(outcome
-        .working_set_reduction_bytes
-        .is_some_and(|bytes| bytes > 0));
+    assert_eq!(declined, MemoryTrimOutcome::BelowMinimumWorkingSet);
+    let outcome = trim
+        .trim(&control_target, false, 64 * 1024 * 1024)
+        .map_err(|e| e.to_string())?;
+    assert!(matches!(
+        outcome,
+        MemoryTrimOutcome::Trimmed {
+            working_set_reduction_bytes: Some(bytes)
+        } if bytes > 0
+    ));
     assert!(child.0.try_wait().map_err(|e| e.to_string())?.is_none());
 
     let mut termination = ProcessTerminationController::default();
@@ -53,7 +60,7 @@ fn live_trim_and_termination_validate_identity() -> Result<(), String> {
     assert!(child.0.try_wait().map_err(|e| e.to_string())?.is_none());
     termination
         .terminate_batch(vec![target], false)
-        .into_process_list_result()?;
+        .into_termination_result()?;
     child.0.wait().map_err(|e| e.to_string())?;
     Ok(())
 }

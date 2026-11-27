@@ -205,9 +205,13 @@ fn release_check_from_response(
     };
     let tag = release.tag_name;
     let current = Version::parse(current).map_err(UpdateCheckError::InvalidCurrentVersion)?;
-    let available_update = (tag.version > current).then(|| AvailableUpdate {
-        url: format!("{RELEASE_URL}{}", tag.name),
-    });
+    let available_update = tag
+        .version
+        .cmp_precedence(&current)
+        .is_gt()
+        .then(|| AvailableUpdate {
+            url: format!("{RELEASE_URL}{}", tag.name),
+        });
     Ok(ReleaseCheck {
         latest_version: tag.version.to_string(),
         available_update,
@@ -321,5 +325,17 @@ mod tests {
             check.available_update.unwrap().url,
             format!("{RELEASE_URL}0.2.0")
         );
+    }
+
+    #[test]
+    fn build_metadata_does_not_make_a_release_newer() {
+        let check = release_check_from_response(
+            br#"[{"tag_name":"v0.11.0-alpha+windows"}]"#,
+            UpdateChannel::PreRelease,
+            "0.11.0-alpha",
+        )
+        .unwrap();
+        assert_eq!(check.latest_version, "0.11.0-alpha+windows");
+        assert!(check.available_update.is_none());
     }
 }

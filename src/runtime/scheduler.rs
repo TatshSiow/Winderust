@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 #[repr(usize)]
 pub(crate) enum RefreshDomain {
     PowerPlanCheck,
-    BackgroundEfficiency,
+    EfficiencyMode,
     AppSuspension,
     AppSuspensionForegroundRelease,
     CpuSetsSoft,
@@ -22,7 +22,7 @@ pub(crate) enum RefreshDomain {
     GpuPriority,
     MemoryPriority,
     MemoryTrim,
-    Watchdog,
+    ResourceThresholds,
     TimerResolution,
     SleepPrevention,
     KeepRunning,
@@ -34,7 +34,7 @@ pub(crate) enum RefreshDomain {
 
 pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 27] = [
     RefreshDomain::PowerPlanCheck,
-    RefreshDomain::BackgroundEfficiency,
+    RefreshDomain::EfficiencyMode,
     RefreshDomain::AppSuspension,
     RefreshDomain::AppSuspensionForegroundRelease,
     RefreshDomain::CpuSetsSoft,
@@ -52,7 +52,7 @@ pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 27] = [
     RefreshDomain::GpuPriority,
     RefreshDomain::MemoryPriority,
     RefreshDomain::MemoryTrim,
-    RefreshDomain::Watchdog,
+    RefreshDomain::ResourceThresholds,
     RefreshDomain::TimerResolution,
     RefreshDomain::SleepPrevention,
     RefreshDomain::KeepRunning,
@@ -64,7 +64,7 @@ pub(crate) const ALL_REFRESH_DOMAINS: [RefreshDomain; 27] = [
 
 const FOREGROUND_DOMAINS: [RefreshDomain; 16] = [
     RefreshDomain::PowerPlanCheck,
-    RefreshDomain::BackgroundEfficiency,
+    RefreshDomain::EfficiencyMode,
     RefreshDomain::AppSuspensionForegroundRelease,
     RefreshDomain::CpuSetsSoft,
     RefreshDomain::ProcessorAffinityHard,
@@ -93,7 +93,7 @@ const APP_SWITCH_DOMAINS: [RefreshDomain; 2] = [
 ];
 
 const PROCESS_APPEARANCE_DOMAINS: [RefreshDomain; 14] = [
-    RefreshDomain::BackgroundEfficiency,
+    RefreshDomain::EfficiencyMode,
     RefreshDomain::CpuSetsSoft,
     RefreshDomain::ProcessorAffinityHard,
     RefreshDomain::CpuLimiter,
@@ -111,7 +111,6 @@ const PROCESS_APPEARANCE_DOMAINS: [RefreshDomain; 14] = [
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SchedulerEvent {
-    AdaptiveWorkloadChanged,
     SettingsChanged,
     ForegroundChanged,
     WindowCreated,
@@ -159,16 +158,6 @@ impl RefreshScheduler {
 
     pub(crate) fn invalidate(&mut self, event: SchedulerEvent, now: Instant) {
         match event {
-            SchedulerEvent::AdaptiveWorkloadChanged => self.schedule_domains_now(
-                &[
-                    RefreshDomain::ThreadPriority,
-                    RefreshDomain::IoPriority,
-                    RefreshDomain::GpuPriority,
-                    RefreshDomain::DynamicPriorityBoost,
-                    RefreshDomain::AdaptivePowerPlan,
-                ],
-                now,
-            ),
             SchedulerEvent::SettingsChanged => {
                 self.schedule_domains_now(&ALL_REFRESH_DOMAINS, now);
             }
@@ -239,20 +228,6 @@ impl RefreshScheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn adaptive_dependency_change_only_wakes_dependent_domains() {
-        let now = Instant::now();
-        let mut scheduler = RefreshScheduler::new(now);
-        for domain in ALL_REFRESH_DOMAINS {
-            scheduler.schedule_after(domain, now, Duration::from_secs(60));
-        }
-        scheduler.invalidate(SchedulerEvent::AdaptiveWorkloadChanged, now);
-        assert!(scheduler.is_due(RefreshDomain::ThreadPriority, now));
-        assert!(scheduler.is_due(RefreshDomain::IoPriority, now));
-        assert!(!scheduler.is_due(RefreshDomain::AdaptiveEngineProcess, now));
-        assert!(!scheduler.is_due(RefreshDomain::ProcessAppearance, now));
-    }
 
     const HOUR: Duration = Duration::from_secs(60 * 60);
 
@@ -377,11 +352,7 @@ mod tests {
     fn minimum_wait_uses_only_required_domains_and_preserves_dormancy() {
         let now = Instant::now();
         let mut scheduler = RefreshScheduler::new(now);
-        scheduler.schedule_after(
-            RefreshDomain::BackgroundEfficiency,
-            now,
-            Duration::from_secs(9),
-        );
+        scheduler.schedule_after(RefreshDomain::EfficiencyMode, now, Duration::from_secs(9));
         scheduler.schedule_after(RefreshDomain::MemoryTrim, now, Duration::from_secs(5));
 
         assert_eq!(scheduler.minimum_wait(None, now, []), None);
@@ -390,11 +361,7 @@ mod tests {
                 None,
                 now,
                 [
-                    (
-                        true,
-                        RefreshDomain::BackgroundEfficiency,
-                        Duration::from_secs(3),
-                    ),
+                    (true, RefreshDomain::EfficiencyMode, Duration::from_secs(3),),
                     (false, RefreshDomain::MemoryTrim, Duration::from_secs(1),),
                 ],
             ),

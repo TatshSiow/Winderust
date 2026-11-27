@@ -50,34 +50,85 @@ If `target\release\winderust.exe` is locked because the app is running:
 ## Recovery subprocess tests
 
 The optional recovery harness launches the actual executable as a fixture parent
-and helper, then verifies native Process Priority restoration after pipe EOF or
-forced parent termination:
+and helper. It verifies native Process Priority restoration after pipe EOF or
+forced parent termination. For the CPU Sets case, the test driver sets a default
+CPU Set on its owned child. The fixture parent clears it under a pending intent.
+After terminating the parent, the driver reads back the exact original CPU Set
+from Windows.
 
 ```powershell
 cargo test --locked --features recovery-smoke --test recovery_smoke
 ```
 
-It owns a disposable `System32\ping.exe` process and permits only Normal,
-Below Normal, and Idle priority journal entries for that exact process identity.
-The helper shares the production protocol and replay loop, with stale Adaptive
-plan cleanup replaced by a no-op. These tests cover committed and pending
-process intents; they do not exercise machine-wide power-plan cleanup, jobs,
-threads, or GUI startup. Fixture modes are absent from default builds. If a
-running app locks the debug executable, add `--target-dir target/recovery-smoke`.
+The helper accepts journal entries for the exact identity of a disposable
+`System32\ping.exe` process. The priority scenarios admit Normal, Below Normal,
+and Idle. The CPU Sets scenario admits a clear from the captured singleton
+baseline. The harness exercises the production protocol and replay loop for
+committed and pending process intents. Stale Adaptive plan cleanup is a no-op
+in the harness. Coverage is limited to process mutations and helper exit.
+Fixture modes are available in `recovery-smoke` builds. If a running app locks
+the debug executable, add `--target-dir target/recovery-smoke`.
+
+## Keep Running checks
+
+Run these ignored checks from the ordinary user's interactive Windows desktop.
+The platform checks verify native executable identity and the separate paths
+for canceling a suspended launch and accepting an exact child. The runtime
+check verifies that an enabled rule waits for an absent app. It then watches
+a disposable executable copy, verifies a relaunch after its last instance
+exits normally, and issues the Process List Stop command. It checks that the
+replacement exits and the rule stays paused past its next retry.
+
+```powershell
+cargo test --locked --bin winderust platform::windows::keep_running::tests::native_ -- --ignored --nocapture --test-threads=1
+cargo test --locked --bin winderust native_keep_running_ -- --ignored --nocapture --test-threads=1
+```
+
+The runtime check uses in-memory settings and touches only its own fixture.
+A terminal isolated from the Windows shell cannot verify desktop launches.
 
 ## Sleep Prevention checks
 
-The ignored native checks briefly create Winderust-owned system/display sleep
-requests. One also starts a hidden, bounded-lifetime `ping.exe` worker to verify
-running-app matching and disable/release through production observations:
+The ignored native checks verify both independent temporary timers and release
+of their Windows system and display requests. The running-app check starts a
+hidden, bounded-lifetime `ping.exe` worker to verify matching and release when
+the rule is disabled.
 
 ```powershell
 cargo test --locked sleep_prevention::tests::native_ -- --ignored --nocapture --test-threads=1
+cargo test --locked native_temporary_sleep_prevention_accepts_and_releases_both_requests -- --ignored --nocapture --test-threads=1
 ```
 
 These checks do not suspend Windows or change saved settings or power plans.
 They establish accepted requests and clean release, not actual idle sleep,
 Modern Standby expiry, lid behavior, or resume after a real sleep transition.
+
+## Process List Memory Trim check
+
+The ignored native check sends the same targeted trim command as Process List.
+It reads Windows working-set sizes for two disposable workers, verifies that the
+action targets the selected PID, and checks that the selected worker can read its
+data again after the working set is reduced.
+
+```powershell
+cargo test --locked --bin winderust native_process_list_trim_releases_resident_pages_and_refills -- --ignored --nocapture --test-threads=1
+```
+
+The check needs ordinary access to its child processes. Host memory pressure,
+automatic trim policy, and workload throughput require separate measurements.
+
+## Energy performance preference check
+
+The ignored native test changes the AC and battery values on a copy of a regular
+active plan with readable energy preferences. It verifies exact readback and
+restoration, then deletes the copy. It requires permission to create and write
+an inactive power plan. The active plan stays in use throughout.
+
+```powershell
+cargo test --locked native_energy_preference_round_trip_on_inactive_plan -- --ignored --nocapture
+```
+
+The test verifies stored settings. Hardware response requires a workload test.
 
 ## Instance Limits checks
 
@@ -91,6 +142,15 @@ cargo test --locked control::instance_limits::tests::native_counts_only_the_sele
 
 It changes no process settings, privileges or power plans. It establishes full-path
 matching on local files, not atomic process counts or universal filesystem support.
+
+The ignored runtime check enables a limit of one for an exact fixture path and
+observes an excess with two workers alive. It then closes one worker and observes
+recovery with the surviving worker still running. It uses the production worker
+and Windows event watcher with notifications off.
+
+```powershell
+cargo test --locked --bin winderust native_instance_limits_reports_excess_and_recovery_without_stopping_workers -- --ignored --nocapture --test-threads=1
+```
 
 ## Instance Balancing checks
 
@@ -108,6 +168,27 @@ skip otherwise. It changes only its owned workers' CPU Set preferences. Its loop
 deadline does not cancel blocking Windows calls. Test recovery transport does not
 establish watchdog acknowledgement or crash recovery; direct ticks do not prove
 outer scheduler timing, actual thread residency or performance benefits.
+
+## CPU Allocation checks
+
+The ignored native check applies CPU Sets (Soft) to a bounded, disposable
+`ping.exe` worker. It selects a CPU Set in every active processor group, requires the
+requested IDs to differ from the worker's initial CPU Sets, and verifies the
+applied IDs and exact restoration of the initial IDs through Windows readback.
+
+```powershell
+cargo test --locked cpu_allocation_live_apply_and_clean_release -- --ignored --nocapture --test-threads=1
+```
+
+The check reports the verified group IDs and whether it exercised Processor
+Affinity (Hard) and Adaptive Engine affinity reduction. Those affinity cases
+require a single active group 0 and a reducible inherited affinity mask. The
+Adaptive Engine case also requires empty initial CPU Sets and a system mask
+covering the whole group. Use a host with multiple active processor groups for
+cross-group CPU Sets coverage.
+Actual thread residency requires a separate workload measurement. The check
+changes only the disposable worker's placement and leaves saved settings and
+power plans untouched.
 
 ## CPU Limiter mechanism comparison
 
@@ -144,6 +225,25 @@ Windows accounting, and per-processor busy time does not identify target residen
 The report also retains initial process priority and Power Throttling masks
 through the existing read-only adapters; it never changes them.
 
+## PStack verification
+
+Apply the [PStack verification workflow](https://github.com/cursor/plugins/blob/main/pstack/docs/guide/06-verify-and-ship.md)
+to each change. Define the observable outcome and its failure case before editing.
+Run the smallest reproducible check at the boundary where a user would encounter
+the change. Run the required repository checks as well.
+
+- For UI changes, drive the affected workflow in the current Windows build and
+  inspect the result. Use the render harness for layout and theme evidence, and
+  native input for keyboard, DPI, IME, tray, and accessibility claims. Check both
+  locales and relevant window sizes. Shared controls need coverage at their
+  affected entry points, including cancellation and disabled or unavailable states.
+- For Windows state changes, use an isolated fixture. Read back the actual effect
+  and verify restoration at the Windows boundary. Check settings persistence from
+  the isolated executable's settings file when the workflow saves changes.
+- Keep evidence under ignored `target/` paths. Report the build or commit checked,
+  observed results, and any unverified paths. Keep repeatable checks in the existing
+  harness when they catch a regression the current checks miss.
+
 ## Rendering and performance
 
 - `src/ui/scrolling.rs` owns scroll construction, virtual-list buffering, table surfaces, and card repaint grouping. Route application scroll areas through it.
@@ -165,6 +265,30 @@ and read-only queries:
 cargo run --locked --features render-smoke -- --render-smoke
 ```
 
+Append `--adaptive-restraint-only` to run the Adaptive Engine child-affinity
+and executable-name pattern scenarios in English and Traditional Chinese.
+Append `--feature-tabs-only` to check the tabbed editors, compact Watchdog pages,
+and power-plan layouts, including mixed temporary timer states.
+Append `--resource-thresholds-only` to check Resource Thresholds settings,
+action selectors, and Preview matches at wide and compact sizes.
+Append `--memory-trim-only` to check Memory Trim settings in both languages and
+at wide and compact sizes.
+Append `--percentage-popups-only` to check the accent color picker and custom
+Advanced Power Plan Tuning preset in both languages and at wide and compact sizes.
+Append `--priority-control-only` to check the Priority Control detection cards,
+preservation switches, and child-protection drafts in both languages.
+Append `--side-panel-only` to check the workspace-row toggle and dock in both languages
+and window sizes, including navigation through a page without panel content.
+Append `--navigation-only` to check workspace navigation, the page list, and
+resizing at the minimum window width.
+Append `--search-only` to check the centered title-bar Search field, results,
+and keyboard selection in both languages.
+Append `--dashboard-only` to check the metric strip, process table and
+Side panel in both languages at the minimum window size. Use
+`--dashboard-preview-only` for the wide README capture with sample data.
+Append `--watchdog-only` to capture the configured Watchdog pages and rule
+editors in both languages.
+
 Captures are written under `target/iced-smoke/`. Review relevant pages and states in
 both locales/themes and at minimum window size. Captures establish rendering coverage;
 they do not establish physical input, IME, DPI-transition, tray, accessibility, or
@@ -183,10 +307,18 @@ cargo build --locked --release --features render-smoke
 .\target\release\winderust.exe --window-lifecycle-smoke --retain-window
 .\target\release\winderust.exe --window-lifecycle-smoke
 .\target\release\winderust.exe --window-lifecycle-smoke --start-minimized
+.\target\release\winderust.exe --window-lifecycle-smoke --show-winderust-shortcut
 ```
 
 The retained-window option models the previous hidden-window behavior inside the probe only.
 These controlled samples do not establish memory use with every production feature enabled.
+The shortcut option requires an unlocked interactive Windows desktop. It checks that
+the original native window is destroyed before sending Ctrl+Alt+Shift+F24 from a
+dedicated foreground window, then verifies that one visible Iced window reopens.
+Leave the keyboard untouched while it runs. See `shortcut-visible.csv` under the
+same output directory for the recorded transition.
+Append `--post-hotkey` to check the tray message and window recreation without
+physical input. That run records `posted-shortcut-visible.csv`.
 
 All scrolling uses `scrolling::scrollable`, including dialogs and dropdowns. It keeps
 native Iced input while clipping repaint sections; virtual lists use
@@ -207,7 +339,7 @@ Follow the Graphify rules in [AGENTS.md](../AGENTS.md).
 - Implement custom code only when existing options do not reasonably fit; briefly record the concrete gap or tradeoff. Finding a crate does not automatically justify adding it.
 - Reuse findings while they remain applicable. Routine edits to an established implementation do not require repeating the same crate search.
 
-The native tray integration retains Watchdog balloon notifications and
+The native tray integration retains Resource Thresholds balloon notifications and
 click-to-restore. The evaluated [`tray-icon` API](https://docs.rs/tray-icon/0.26.1/tray_icon/struct.TrayIcon.html)
 does not expose those operations, so adopting it would still require custom
 Win32 integration. Keep the current tray owner until a replacement covers these
@@ -222,15 +354,14 @@ for interactive software rendering. Keep the time popup outside the scroll body
 and cap its responsive host to the rule dialog's dimensions so both stay centered.
 `src/ui/modal.rs` shields modal backgrounds and makes picker overlays consume
 workspace input even outside their popup bounds. Keep popup surfaces opaque for
-hit testing through Iced overlay groups; guard the workspace below the window
-chrome so caption controls and resize edges remain available. Opening a picker
-also dismisses pending navigation flyouts.
+hit testing through Iced overlay groups. Guard the workspace below the window
+chrome so caption controls and resize edges remain available.
 The shared popover
 wrapper retains context-menu dismissal on focus loss, clipped hit testing, and
 item identity resets. Action Log retains its hover popover. Numeric steppers keep
 raw draft strings so empty and invalid edits remain visible to validation;
 `iced_aw::NumberInput` only publishes valid numbers. By Time and By CPU Load use
-Iced's built-in table; Process List retains its virtualized rows.
+the shared keyed rule-table surface. Process List retains its virtualized rows.
 
 Keep the shared animated button tabs. They preserve release-to-select behavior,
 distinct selected and hovered styles, wrapping, live indicators, and weekday
@@ -270,20 +401,20 @@ CI runs on pushes to `main` and `dev`, and on every pull request. Release automa
 
 ## Rust Engineering Practices
 
-Apply [Parse, don't validate](https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/)
-and the [Pragmatic Rust Guidelines](https://microsoft.github.io/rust-guidelines/guidelines/index.html)
-at the boundaries that benefit from them:
+Use type-driven design and idiomatic Rust where they reduce failure paths or
+make ownership clearer. See [Parse, don't validate](https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/)
+and the [Pragmatic Rust Guidelines](https://microsoft.github.io/rust-guidelines/guidelines/index.html).
 
 - Parse external values into domain types before side effects. Types carrying
   invariants keep their representation private and offer fallible construction,
   including through Serde; downstream code consumes the parsed result.
-- Keep incomplete UI text in editor drafts rather than weakening runtime types
-  or silently replacing malformed input with defaults.
+- Keep incomplete UI text in editor drafts. Handle formatting where the user
+  types the value. Preserve selected executable paths and use exact identity
+  for saved rules and runtime decisions.
 - Preserve typed external failures and test malformed input, unavailable
   observations, ownership changes, and restoration through the existing adapters.
 - Apply library-specific or performance advice only where it fits this desktop
   application; measure allocator, CPU-target, and hot-path changes before adopting them.
-
 - Trace every caller before changing a shared helper, enum, setting, or error
   contract. Fix a defect once at the shared boundary when all affected callers
   route through it.
@@ -311,7 +442,9 @@ Use this order for simplification and over-engineering reviews:
    that own timers, resources, restoration, or shutdown; replace stateless
    structs with functions when that makes callers simpler.
 4. Remove parallel representations, duplicate scans, unused status fields, and
-   one-use wrappers when one source of truth is sufficient.
+   one-use wrappers when one source of truth is sufficient. Use the same rule
+   list for duplicate checks and editing. Keep retry, wake, and restoration
+   logic explicit where the owners, timing, or order differ.
 5. Prefer the smallest coherent deletion-first change. Do not perform renames,
    file moves, or abstraction swaps that merely reshuffle working code.
 6. Review the exact diff for changed behavior and damaged tests, especially
@@ -320,6 +453,10 @@ Use this order for simplification and over-engineering reviews:
 7. Compile all targets, run the required checks and tests, then update Graphify.
    If no change clearly reduces maintenance cost, leave the code alone and say
    why.
+
+Use the existing tests to check refactors. Add a regression test when an
+important outcome lacks coverage. Check the user-visible result, persisted
+value, or restoration effect at the boundary the change affects.
 
 ## Releases
 
@@ -339,6 +476,11 @@ to typed controllers and their narrow Windows adapters.
 - If a setting is edited through the UI, update the relevant page module and
   editor reset and message handling in `src/ui/app.rs`.
 - TOML import/export uses native Windows file dialogs from `src/backend/file_dialog.rs`, invoked by the UI.
+- Exports cannot replace the active `settings.toml`. Save and Import own settings replacement.
+- After a settings load failure, Winderust Behaviour shows `Replace settings…`
+  under Settings Files while the fallback draft is clean. Confirmation saves
+  through the standard Save path. Cancel leaves the file untouched.
+- Save or discard pending settings edits before importing a settings file.
 - CPU selections store explicit `{ group, number }` members and a topology
   snapshot. Active-group masks inside that snapshot use quoted `0x` plus 16
   hexadecimal digits; TOML signed integers cannot represent processor 63. Keep
@@ -348,8 +490,8 @@ to typed controllers and their narrow Windows adapters.
 ## Naming
 
 - Start from the English UI label, then keep page variants, settings types/fields, feature modules, backend snapshots, tests, locale keys, scripts, and docs as close to that label as Rust naming permits.
-- Current canonical examples: `AdaptiveEngine`, `BackgroundEfficiency`, `ByRunningApp`, `CpuLimiter`, `CpuSetsSoft`, `ProcessorAffinityHard`, and `DynamicPriorityBoost`.
-- CPU Behaviour policies belong inside Adaptive Engine; keep their settings and implementation aligned with the visible policy names.
+- Current canonical examples: `AdaptiveEngine`, `EfficiencyMode`, `ByRunningApp`, `CpuLimiter`, `CpuSetsSoft`, `ProcessorAffinityHard`, and `DynamicPriorityBoost`.
+- Keep Adaptive Engine CPU policy settings and implementation aligned with the visible policy names.
 - Do not use retired product or feature identifiers. The naming scan below owns the rejected-name list. `Performance Mode` is valid only for the active state held by By Running App, not as a standalone feature or settings page.
 - Native Windows vocabulary is allowed when it describes the implementation rather than the product surface, for example EcoQoS flags, affinity masks, CPU Sets, and `SetProcessPriorityBoost`.
 

@@ -1,10 +1,90 @@
 use super::*;
 use crate::{
+    config::CpuAllocationRule,
     control::{cpu_allocation::CpuAllocationRecoveryIntent, process::ProcessIdentity},
     cpu_topology::{test_selection, test_topology},
     platform::windows::cpu_allocation::CpuSetRecord,
 };
 use std::{cell::RefCell, rc::Rc};
+
+#[test]
+fn waiting_detail_preserves_capacity_and_only_its_diagnostic() {
+    use InstanceBalancingDetail::{
+        InsufficientCapacity, WaitingForInstances, WaitingForStableCohort,
+    };
+    use InstanceBalancingExclusion::{Diagnostic, ExplicitSelection};
+
+    let cohorts = [
+        (InsufficientCapacity, "capacity cohort"),
+        (WaitingForStableCohort, "stable cohort"),
+        (WaitingForInstances, "empty cohort"),
+    ];
+    for order in [[0, 1, 2], [2, 1, 0]] {
+        let mut snapshot = InstanceBalancingSnapshot {
+            detail: Some(WaitingForInstances),
+            ..Default::default()
+        };
+        let mut waiting_exclusions = Vec::new();
+        for index in order {
+            let (detail, process_name) = &cohorts[index];
+            snapshot.record_rule_detail(
+                detail.clone(),
+                vec![
+                    ExplicitSelection {
+                        process_name: (*process_name).to_owned(),
+                        pid: index as u32 + 1,
+                    },
+                    Diagnostic((*process_name).to_owned()),
+                ],
+                &mut waiting_exclusions,
+            );
+        }
+        assert_eq!(snapshot.detail, Some(InsufficientCapacity));
+        assert_eq!(waiting_exclusions, [Diagnostic("capacity cohort".into())]);
+        assert_eq!(snapshot.exclusions.len(), 3);
+        assert!(snapshot.exclusions.iter().zip(order).all(|(row, index)| {
+            matches!(row, ExplicitSelection { pid, .. } if *pid == index as u32 + 1)
+        }));
+    }
+}
+
+#[test]
+fn explicit_cpu_rules_exclude_matching_instances_without_rejecting_unrelated_paths() {
+    let explicit_rule = |path: &str| CpuAllocationRule {
+        enabled: true,
+        executable_path: path.to_owned(),
+        focus_selection: test_selection(1),
+        visible_window_selection: test_selection(0),
+        background_selection: test_selection(0),
+    };
+    let mut settings = Settings {
+        cpu_sets_soft: CpuAllocationSettings {
+            enabled: true,
+            rules: vec![explicit_rule(r"C:\Apps\.\other.exe")],
+        },
+        processor_affinity_hard: CpuAllocationSettings {
+            enabled: true,
+            rules: vec![],
+        },
+        ..Default::default()
+    };
+    let instance = r"C:\Apps\worker.exe";
+    let excluded = |settings: &Settings| {
+        explicit_selection(&explicit_cpu_allocation_paths(settings, None), instance)
+    };
+    assert!(!excluded(&settings));
+
+    settings
+        .processor_affinity_hard
+        .rules
+        .push(explicit_rule("C:/Apps/worker.exe"));
+    assert!(excluded(&settings));
+
+    settings.processor_affinity_hard.enabled = false;
+    assert!(!excluded(&settings));
+    settings.cpu_sets_soft.rules.push(explicit_rule(instance));
+    assert!(excluded(&settings));
+}
 
 #[derive(Default)]
 struct State {
@@ -184,7 +264,8 @@ fn a_partial_apply_stops_the_group_and_release_restores_original_defaults() {
         },
     )
     .unwrap_err();
-    assert!(error.contains("injected CPU Set failure"));
+    assert_eq!(error.outcome, ActionLogResult::Failed);
+    assert!(error.reason.contains("injected CPU Set failure"));
     assert_eq!(authorized, [1, 2]);
     assert_eq!(state.borrow().cpu_sets[&1], [100]);
     assert!(state.borrow().writes.iter().all(|(id, _)| *id != 3));
@@ -225,7 +306,8 @@ fn revoking_context_mid_group_stops_before_the_next_native_change() {
         },
     )
     .unwrap_err();
-    assert_eq!(error, "context revoked");
+    assert_eq!(error.outcome, ActionLogResult::Skipped);
+    assert_eq!(error.reason, "context revoked");
     assert_eq!(state.borrow().writes, [(1, vec![100])]);
     assert_eq!(
         release(

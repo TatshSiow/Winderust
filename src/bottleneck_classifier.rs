@@ -36,10 +36,7 @@ pub(crate) struct BottleneckClassifier {
 
 impl BottleneckClassifier {
     pub(crate) fn reset(&mut self) -> BottleneckSnapshot {
-        self.gpu = None;
-        self.candidate = BottleneckState::Unknown;
-        self.candidate_samples = 0;
-        self.stable = BottleneckState::Unknown;
+        *self = Self::default();
         BottleneckSnapshot::default()
     }
 
@@ -75,7 +72,7 @@ impl BottleneckClassifier {
             self.candidate = raw;
             self.candidate_samples = 1;
         }
-        if self.candidate_samples >= STABLE_SAMPLE_COUNT {
+        if raw == BottleneckState::Unknown || self.candidate_samples >= STABLE_SAMPLE_COUNT {
             self.stable = raw;
         }
     }
@@ -113,6 +110,8 @@ fn classify(total_cpu: f32, busiest_cpu: Option<f32>, gpu: Option<f32>) -> Bottl
         || busiest_cpu.is_some_and(|usage| usage >= BUSIEST_CPU_BUSY_PERCENT)
     {
         BottleneckState::CpuBound
+    } else if busiest_cpu.is_none() {
+        BottleneckState::Unknown
     } else {
         BottleneckState::Headroom
     }
@@ -141,10 +140,12 @@ mod tests {
             BottleneckState::Mixed
         );
         assert_eq!(classify(90.0, Some(95.0), None), BottleneckState::Unknown);
+        assert_eq!(classify(20.0, None, Some(10.0)), BottleneckState::Unknown);
+        assert_eq!(classify(90.0, None, Some(10.0)), BottleneckState::CpuBound);
     }
 
     #[test]
-    fn state_changes_only_after_three_matching_samples() {
+    fn missing_data_clears_the_state_before_three_sample_recovery() {
         let mut classifier = BottleneckClassifier::default();
         classifier.stabilize(BottleneckState::GpuBound);
         classifier.stabilize(BottleneckState::GpuBound);
@@ -153,5 +154,30 @@ mod tests {
         assert_eq!(classifier.stable, BottleneckState::GpuBound);
         classifier.stabilize(BottleneckState::CpuBound);
         assert_eq!(classifier.stable, BottleneckState::GpuBound);
+
+        classifier.stabilize(BottleneckState::Unknown);
+        assert_eq!(classifier.stable, BottleneckState::Unknown);
+        for _ in 0..2 {
+            classifier.stabilize(BottleneckState::CpuBound);
+            assert_eq!(classifier.stable, BottleneckState::Unknown);
+        }
+        classifier.stabilize(BottleneckState::CpuBound);
+        assert_eq!(classifier.stable, BottleneckState::CpuBound);
+    }
+
+    #[test]
+    fn reset_discards_the_per_processor_baseline() {
+        let mut classifier = BottleneckClassifier::default();
+        classifier.processors.sample_busy_processor_for_test(10);
+        assert_eq!(
+            classifier.processors.sample_busy_processor_for_test(20),
+            Some(vec![100.0])
+        );
+
+        assert_eq!(classifier.reset(), BottleneckSnapshot::default());
+        assert_eq!(
+            classifier.processors.sample_busy_processor_for_test(30),
+            None
+        );
     }
 }

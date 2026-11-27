@@ -1,8 +1,8 @@
 use super::design;
-use super::widgets::{self, checkbox, icon_button, Choice};
-use super::widgets::{action_button, pick_list, slider, text_input};
+use super::widgets::{self, checkbox, icon_button, pick_list, text_input, Choice};
 use crate::ui::scrolling::scrollable;
 use crate::{
+    application::SettingsEditor,
     config::{
         ByCpuLoadRule, ByCpuLoadStability, ByTimeRule, CpuLoadPercent, CpuUsageComparison,
         RuleTime, Settings, WeekdaySetting,
@@ -115,7 +115,7 @@ impl Editor {
     pub(super) fn update(
         &mut self,
         kind: Kind,
-        s: &mut Settings,
+        s: &mut SettingsEditor,
         plans: &[PowerPlan],
         message: Message,
     ) {
@@ -181,7 +181,7 @@ impl Editor {
             Message::Add | Message::Edit(_) => {
                 self.time_picker = None;
                 self.inputs.clear();
-                let mut draft = s.clone();
+                let mut draft = Settings::clone(s);
                 self.creating = matches!(message, Message::Add);
                 self.editing = match message {
                     Message::Edit(index) => index,
@@ -275,7 +275,12 @@ impl Editor {
                 return;
             }
         }
-        let active = || plans.iter().find(|p| p.active).map(|p| p.guid.clone());
+        let active = || {
+            plans
+                .iter()
+                .find(|plan| plan.active && !plan.managed_adaptive)
+                .map(|plan| plan.guid.clone())
+        };
         match message {
             Message::Enabled(v) => match kind {
                 Kind::Time => s.by_time.enabled = v,
@@ -501,18 +506,25 @@ impl Editor {
         &'a self,
         kind: Kind,
         s: &'a Settings,
+        runtime_settings: Option<&Settings>,
         status: &crate::control::power_plan::PowerPlanStatus,
     ) -> Element<'a, Message> {
         let (enabled, label) = match kind {
             Kind::Time => (s.by_time.enabled, "by_time.enable"),
             Kind::CpuLoad => (s.by_cpu_load.enabled, "by_cpu_load.enable"),
         };
-        let mut body = column![super::widgets::toggle_card(
-            label,
-            enabled,
-            Some(Message::Enabled)
-        )]
-        .spacing(super::widgets::CARD_GAP);
+        let selected_index = match kind {
+            Kind::Time => runtime_rule_index_in_draft(
+                runtime_settings.map(|settings| settings.by_time.rules.as_slice()),
+                &s.by_time.rules,
+                status.rule_index,
+            ),
+            Kind::CpuLoad => runtime_rule_index_in_draft(
+                runtime_settings.map(|settings| settings.by_cpu_load.rules.as_slice()),
+                &s.by_cpu_load.rules,
+                status.rule_index,
+            ),
+        };
         let rules = match kind {
             Kind::Time => s
                 .by_time
@@ -542,108 +554,71 @@ impl Editor {
                 .collect::<Vec<_>>(),
         };
 
-        let empty = rules.is_empty();
-        let header = |key| text(t!(key).to_string()).style(text::secondary);
-        let keyed = |id, content: Element<'a, Message>| iced::widget::keyed_column([(id, content)]);
-        let table = iced::widget::table(
-            [
-                iced::widget::table::column(
-                    header("common.enable"),
-                    move |(id, index, rule): (u64, usize, RuleRef<'a>)| {
-                        let enabled = match rule {
-                            RuleRef::Time(rule) => rule.enabled,
-                            RuleRef::Cpu(rule) => rule.enabled,
-                        };
-                        keyed(
-                            id,
-                            checkbox(enabled)
-                                .on_toggle(move |v| Message::RuleEnabled(index, v))
-                                .into(),
-                        )
-                    },
+        let header = row![
+            text(t!("common.enable").to_string()).width(widgets::RULE_ENABLE_WIDTH),
+            text(t!("common.status").to_string()).width(widgets::RULE_STATUS_WIDTH),
+            text(t!("common.rule_name").to_string()).width(Fill),
+            text(t!("common.actions").to_string())
+                .width(widgets::RULE_ACTIONS_WIDTH)
+                .align_x(iced::Center),
+        ]
+        .spacing(design::space::MEDIUM);
+        let rows = rules
+            .into_iter()
+            .map(|(id, index, rule)| {
+                let (name, rule_enabled) = match rule {
+                    RuleRef::Time(rule) => (&rule.name, rule.enabled),
+                    RuleRef::Cpu(rule) => (&rule.name, rule.enabled),
+                };
+                let key = rule_status(
+                    rule,
+                    s.general.enabled && enabled,
+                    selected_index == Some(index),
+                    status,
+                );
+                let status = container(text(t!(key).to_string()))
+                    .padding([4, 8])
+                    .style(move |theme| widgets::rule_status_chip(theme, key));
+                let row = row![
+                    container(
+                        checkbox(rule_enabled).on_toggle(move |v| Message::RuleEnabled(index, v))
+                    )
+                    .width(widgets::RULE_ENABLE_WIDTH),
+                    container(status).width(widgets::RULE_STATUS_WIDTH),
+                    text(name).width(Fill),
+                    widgets::rule_actions(Some(Message::Edit(index)), Some(Message::Remove(index))),
+                ]
+                .spacing(design::space::MEDIUM)
+                .align_y(iced::Center);
+                (
+                    id,
+                    column![
+                        container(row)
+                            .width(Fill)
+                            .padding(widgets::CARD_PADDING as u16),
+                        widgets::settings_divider(),
+                    ]
+                    .into(),
                 )
-                .width(48)
-                .align_y(iced::Center),
-                iced::widget::table::column(
-                    header("common.status"),
-                    move |(id, index, rule): (u64, usize, RuleRef<'a>)| {
-                        let key = rule_status(
-                            rule,
-                            s.general.enabled && enabled,
-                            status.rule_index == Some(index),
-                            status,
-                        );
-                        keyed(
-                            id,
-                            container(text(t!(key).to_string()))
-                                .padding([4, 8])
-                                .width(Fill)
-                                .style(move |theme| widgets::rule_status_chip(theme, key))
-                                .into(),
-                        )
-                    },
-                )
-                .width(140)
-                .align_y(iced::Center),
-                iced::widget::table::column(
-                    header("common.rule_name"),
-                    move |(id, _, rule): (u64, usize, RuleRef<'a>)| {
-                        let name = match rule {
-                            RuleRef::Time(rule) => &rule.name,
-                            RuleRef::Cpu(rule) => &rule.name,
-                        };
-                        keyed(id, text(name.clone()).into())
-                    },
-                )
-                .width(Fill)
-                .align_y(iced::Center),
-                iced::widget::table::column(
-                    header("common.actions").align_x(iced::Center),
-                    move |(id, index, _): (u64, usize, RuleRef<'a>)| {
-                        keyed(
-                            id,
-                            row![
-                                super::widgets::tooltip(
-                                    icon_button("icons/pencil.svg").on_press(Message::Edit(index)),
-                                    text(t!("common.edit").to_string()),
-                                    iced::widget::tooltip::Position::Top
-                                ),
-                                widgets::rule_delete_button(Some(Message::Remove(index)))
-                            ]
-                            .into(),
-                        )
-                    },
-                )
-                .width(80)
-                .align_x(iced::Center)
-                .align_y(iced::Center),
-            ],
-            rules,
+            })
+            .collect();
+        let add_rule = widgets::rule_add_button(Some(Message::Add));
+        scrollable(
+            column![
+                widgets::toggle_card(label, enabled, Some(Message::Enabled)),
+                widgets::settings_section(
+                    "common.rules",
+                    column![
+                        widgets::settings_card(add_rule),
+                        widgets::rules_table(header, rows, 600.0),
+                    ]
+                    .spacing(widgets::CARD_GAP),
+                ),
+            ]
+            .spacing(widgets::CARD_GAP),
         )
-        .width(Fill)
-        .padding_x(design::space::CONTROL as f32)
-        .padding_y(widgets::CARD_PADDING as f32)
-        .separator_x(0)
-        .separator_y(1);
-        let mut contents = column![table];
-        if empty {
-            contents = contents.push(widgets::settings_divider()).push(
-                container(text(t!("common.no_custom_rules").to_string()).style(text::secondary))
-                    .padding(widgets::CARD_PADDING as u16),
-            );
-        }
-        body = body.push(widgets::setting_title("common.rules")).push(
-            container(super::scrolling::horizontal_table(
-                container(contents)
-                    .padding([0, (widgets::CARD_PADDING - design::space::CONTROL) as u16])
-                    .width(Fill),
-                600.0,
-            ))
-            .width(Fill)
-            .clip(true)
-            .style(widgets::surface),
-        );
-        scrollable(body).height(Fill).into()
+        .height(Fill)
+        .into()
     }
     pub(super) fn modal<'a>(
         &'a self,
@@ -713,36 +688,120 @@ impl Editor {
                     ));
                 }
                 let days = container(days).style(widgets::tab_bar);
+                let times = row![
+                    container(
+                        column![
+                            text(t!("by_time.start").to_string()),
+                            self.time_field(index, id, true, r.start_time)
+                        ]
+                        .spacing(design::space::SMALL)
+                    )
+                    .width(Fill),
+                    container(
+                        column![
+                            text(t!("by_time.end").to_string()),
+                            self.time_field(index, id, false, r.end_time)
+                        ]
+                        .spacing(design::space::SMALL)
+                    )
+                    .width(Fill)
+                ]
+                .spacing(design::space::MEDIUM);
+                let invalid_clock = [Field::Start, Field::End].into_iter().any(|field| {
+                    self.inputs
+                        .get(&(id, field))
+                        .is_some_and(|value| !valid_input(field, value))
+                });
+                let feedback_key = if invalid_clock {
+                    Some("by_time.invalid_time")
+                } else if r.days.is_empty() {
+                    Some("by_time.no_days")
+                } else if r.start_time == r.end_time {
+                    Some("by_time.equal_times")
+                } else {
+                    None
+                };
+                let feedback = feedback_key.map(|key| {
+                    text(t!(key).to_string())
+                        .wrapping(text::Wrapping::WordOrGlyph)
+                        .style(text::danger)
+                        .into()
+                });
+                let schedule =
+                    widgets::settings_rows([days.into(), times.into()].into_iter().chain(feedback));
                 controls = controls
                     .push(widgets::heading(
                         t!("by_time.schedule").to_string(),
                         design::typography::BODY,
                     ))
-                    .push(widgets::settings_card(widgets::settings_rows([
-                        days.into(),
-                        row![
-                            container(
-                                column![
-                                    text(t!("by_time.start").to_string()),
-                                    self.time_field(index, id, true, r.start_time)
-                                ]
-                                .spacing(design::space::SMALL)
-                            )
-                            .width(Fill),
-                            container(
-                                column![
-                                    text(t!("by_time.end").to_string()),
-                                    self.time_field(index, id, false, r.end_time)
-                                ]
-                                .spacing(design::space::SMALL)
-                            )
-                            .width(Fill)
-                        ]
-                        .spacing(design::space::MEDIUM)
-                        .into(),
-                    ])));
+                    .push(widgets::settings_card(schedule));
             }
             RuleRef::Cpu(r) => {
+                let invalid_input = |field| {
+                    self.inputs
+                        .get(&(id, field))
+                        .is_some_and(|value| !valid_input(field, value))
+                };
+                let between = r.comparison == CpuUsageComparison::Between;
+                let upper_threshold = r.upper_threshold_percent.unwrap_or(CpuLoadPercent::MAX);
+                let lower = (!invalid_input(Field::Threshold)).then_some(r.threshold_percent);
+                let upper = (!between || !invalid_input(Field::Upper)).then_some(upper_threshold);
+                let invalid_range = between && lower.zip(upper).is_some_and(|(lo, hi)| lo > hi);
+                let feedback = |message| {
+                    text(message)
+                        .wrapping(text::Wrapping::WordOrGlyph)
+                        .style(text::danger)
+                };
+                let invalid_duration = || {
+                    feedback(
+                        t!(
+                            "by_cpu_load.invalid_duration",
+                            maximum = ByCpuLoadRule::MAX_DURATION_SECONDS
+                        )
+                        .to_string(),
+                    )
+                    .into()
+                };
+                let mut entry = column![self.number(
+                    (id, index),
+                    Field::Threshold,
+                    if between {
+                        "by_cpu_load.lower_threshold"
+                    } else {
+                        "by_cpu_load.threshold"
+                    },
+                    u64::from(r.threshold_percent.get()),
+                    Message::Threshold,
+                )]
+                .spacing(design::space::SMALL);
+                if between {
+                    entry = entry.push(self.number(
+                        (id, index),
+                        Field::Upper,
+                        "by_cpu_load.upper_threshold",
+                        u64::from(upper_threshold.get()),
+                        Message::Upper,
+                    ));
+                }
+                let entry = entry
+                    .extend(
+                        (lower.is_none() || upper.is_none()).then(|| {
+                            feedback(t!("by_cpu_load.invalid_threshold").to_string()).into()
+                        }),
+                    )
+                    .extend(
+                        invalid_range
+                            .then(|| feedback(t!("by_cpu_load.invalid_range").to_string()).into()),
+                    );
+                let duration = column![self.number(
+                    (id, index),
+                    Field::Duration,
+                    "by_cpu_load.duration",
+                    r.duration_seconds,
+                    Message::Duration,
+                )]
+                .spacing(design::space::SMALL)
+                .extend(invalid_input(Field::Duration).then(invalid_duration));
                 let choices = vec![
                     Choice(
                         CpuUsageComparison::AtOrBelow,
@@ -758,48 +817,16 @@ impl Editor {
                     ),
                 ];
                 let selected = choices.iter().find(|c| c.0 == r.comparison).cloned();
-                let condition = widgets::settings_rows([
+                let mut condition = widgets::settings_rows([
                     widgets::setting_row(
                         "by_cpu_load.if",
                         pick_list(choices, selected, move |v| Message::Comparison(index, v.0))
                             .width(design::SELECT_WIDTH),
                     )
                     .into(),
-                    self.number(
-                        (id, index),
-                        Field::Threshold,
-                        "by_cpu_load.threshold",
-                        u64::from(r.threshold_percent.get()),
-                        100,
-                        Message::Threshold,
-                    ),
+                    entry.into(),
+                    duration.into(),
                 ]);
-                let upper = self.number(
-                    (id, index),
-                    Field::Upper,
-                    "by_cpu_load.upper_threshold",
-                    u64::from(
-                        r.upper_threshold_percent
-                            .unwrap_or(CpuLoadPercent::MAX)
-                            .get(),
-                    ),
-                    100,
-                    Message::Upper,
-                );
-                let mut condition = condition
-                    .push(widgets::optional_content(
-                        column![widgets::settings_divider(), upper].spacing(design::space::MEDIUM),
-                        r.comparison == CpuUsageComparison::Between,
-                    ))
-                    .push(widgets::settings_divider())
-                    .push(self.number(
-                        (id, index),
-                        Field::Duration,
-                        "by_cpu_load.duration",
-                        r.duration_seconds,
-                        86400,
-                        Message::Duration,
-                    ));
                 if r.comparison != CpuUsageComparison::Else {
                     condition =
                         condition
@@ -813,22 +840,20 @@ impl Editor {
                             ));
                 }
                 if let Some(stability) = &r.stability {
-                    condition = condition
-                        .push(widgets::settings_divider())
-                        .push(self.number(
-                            (id, index),
-                            Field::ExitThreshold,
-                            if r.comparison == CpuUsageComparison::AtOrBelow {
-                                "by_cpu_load.release_above"
-                            } else {
-                                "by_cpu_load.release_below"
-                            },
-                            u64::from(stability.exit_threshold_percent.get()),
-                            100,
-                            Message::ExitThreshold,
-                        ));
-                    if r.comparison == CpuUsageComparison::Between {
-                        condition = condition.push(widgets::settings_divider()).push(
+                    let mut release = column![self.number(
+                        (id, index),
+                        Field::ExitThreshold,
+                        if r.comparison == CpuUsageComparison::AtOrBelow {
+                            "by_cpu_load.release_above"
+                        } else {
+                            "by_cpu_load.release_below"
+                        },
+                        u64::from(stability.exit_threshold_percent.get()),
+                        Message::ExitThreshold,
+                    )]
+                    .spacing(design::space::SMALL);
+                    if between {
+                        release = release.push(
                             self.number(
                                 (id, index),
                                 Field::ExitUpper,
@@ -839,21 +864,31 @@ impl Editor {
                                         .unwrap_or(CpuLoadPercent::MAX)
                                         .get(),
                                 ),
-                                100,
                                 Message::ExitUpper,
                             ),
                         );
                     }
+                    let invalid_release = invalid_input(Field::ExitThreshold)
+                        || invalid_input(Field::ExitUpper)
+                        || r.validate_stability_for_entry(lower, upper).is_err();
+                    let release =
+                        release.extend(invalid_release.then(|| {
+                            feedback(t!("by_cpu_load.invalid_stability").to_string()).into()
+                        }));
+                    let minimum_hold = column![self.number(
+                        (id, index),
+                        Field::MinimumHold,
+                        "by_cpu_load.minimum_hold",
+                        stability.minimum_hold_seconds,
+                        Message::MinimumHold,
+                    )]
+                    .spacing(design::space::SMALL)
+                    .extend(invalid_input(Field::MinimumHold).then(invalid_duration));
                     condition = condition
                         .push(widgets::settings_divider())
-                        .push(self.number(
-                            (id, index),
-                            Field::MinimumHold,
-                            "by_cpu_load.minimum_hold",
-                            stability.minimum_hold_seconds,
-                            86400,
-                            Message::MinimumHold,
-                        ));
+                        .push(release)
+                        .push(widgets::settings_divider())
+                        .push(minimum_hold);
                 }
                 let mut plan_controls = widgets::settings_rows([
                     widgets::setting_row(
@@ -886,26 +921,6 @@ impl Editor {
                         design::typography::BODY,
                     ))
                     .push(widgets::settings_card(condition))
-                    .push(widgets::optional_content(
-                        text(t!("by_cpu_load.invalid_range").to_string()).style(text::danger),
-                        r.comparison == CpuUsageComparison::Between
-                            && r.threshold_percent
-                                > r.upper_threshold_percent.unwrap_or(CpuLoadPercent::MAX),
-                    ))
-                    .push(widgets::optional_content(
-                        text(t!("by_cpu_load.invalid_stability").to_string()).style(text::danger),
-                        r.validate_stability().is_err()
-                            || self.inputs.iter().any(|((key, field), value)| {
-                                *key == id
-                                    && matches!(
-                                        field,
-                                        Field::ExitThreshold
-                                            | Field::ExitUpper
-                                            | Field::MinimumHold
-                                    )
-                                    && !valid_input(*field, value)
-                            }),
-                    ))
                     .push(widgets::heading(
                         t!("common.power_plan_selection").to_string(),
                         design::typography::BODY,
@@ -942,41 +957,24 @@ impl Editor {
             controls
         ]
         .spacing(design::space::MEDIUM);
-        let header = row![
-            text(
-                t!(if self.creating {
-                    "common.create"
-                } else {
-                    "common.edit"
-                })
-                .to_string()
-            )
-            .width(Fill),
-            icon_button("icons/x.svg").on_press(Message::Cancel)
-        ]
-        .align_y(iced::Center);
-        let footer = row![
-            iced::widget::Space::new().width(Fill),
-            action_button(t!("common.cancel").to_string())
-                .style(widgets::tertiary_button)
-                .on_press(Message::Cancel),
-            action_button(t!("common.save").to_string())
-                .style(widgets::primary_button)
-                .on_press_maybe((self.valid() && !name.trim().is_empty()).then_some(Message::Save))
-        ]
-        .spacing(design::space::SMALL);
-        let modal = widgets::modal_frame(
-            header,
+        let modal = widgets::rule_dialog(
+            t!(if self.creating {
+                "common.add_rule"
+            } else {
+                "common.edit_rule"
+            })
+            .to_string(),
             scrollable(content)
                 .id(match kind {
                     Kind::Time => "by-time-rule-details",
                     Kind::CpuLoad => "by-cpu-load-rule-details",
                 })
                 .height(Fill),
-            footer,
+            Message::Cancel,
+            (self.valid() && !name.trim().is_empty()).then_some(Message::Save),
             (800, 760),
         );
-        Some(modal)
+        Some(super::modal::dismiss_on_escape(modal, Message::Cancel))
     }
 
     fn time_field<'a>(
@@ -992,15 +990,18 @@ impl Editor {
             "by_time.end"
         };
         let field = if start { Field::Start } else { Field::End };
-        let input = text_input("HH:MM", &self.input(id, field, current.to_string()))
-            .on_input(move |value| {
-                if start {
-                    Message::Start(index, value)
-                } else {
-                    Message::End(index, value)
-                }
-            })
-            .width(Fill);
+        let input = text_input(
+            "HH:MM",
+            self.input(id, field).unwrap_or(&current.to_string()),
+        )
+        .on_input(move |value| {
+            if start {
+                Message::Start(index, value)
+            } else {
+                Message::End(index, value)
+            }
+        })
+        .width(Fill);
         let clock = widgets::tooltip(
             icon_button("icons/clock.svg").on_press(Message::OpenTimePicker(start)),
             text(t!(label).to_string()),
@@ -1009,41 +1010,41 @@ impl Editor {
         row![input, clock].spacing(design::space::SMALL).into()
     }
 
-    fn input(&self, id: u64, field: Field, current: String) -> String {
-        self.inputs.get(&(id, field)).cloned().unwrap_or(current)
+    fn input(&self, id: u64, field: Field) -> Option<&str> {
+        self.inputs.get(&(id, field)).map(String::as_str)
     }
     fn number(
         &self,
         target: (u64, usize),
         field: Field,
-        label: &str,
+        label: &'static str,
         value: u64,
-        max: u32,
         action: fn(usize, String) -> Message,
-    ) -> Element<'static, Message> {
+    ) -> Element<'_, Message> {
         let (id, index) = target;
-        row![
-            text(widgets::label_with_unit(
-                &t!(label),
-                if matches!(field, Field::Duration | Field::MinimumHold) {
-                    "s"
-                } else {
-                    "%"
-                }
-            ))
-            .width(180),
-            slider(0..=max, value.min(u64::from(max)) as u32, move |v| action(
-                index,
-                v.to_string()
-            )),
-            text_input("", &self.input(id, field, value.to_string()))
-                .on_input(move |v| action(index, v))
-                .width(design::NUMERIC_WIDTH)
-        ]
-        .spacing(design::space::COMPACT)
-        .height(widgets::SETTING_ROW_HEIGHT)
-        .align_y(iced::Center)
-        .into()
+        let draft = self.input(id, field);
+        let action = move |value| action(index, value);
+        if matches!(field, Field::Duration | Field::MinimumHold) {
+            let input = draft.map_or_else(|| value.to_string(), str::to_owned);
+            widgets::numeric_setting(label, "s", move || {
+                widgets::stepper(
+                    &input,
+                    0..=ByCpuLoadRule::MAX_DURATION_SECONDS,
+                    1,
+                    Some(action),
+                )
+            })
+        } else {
+            widgets::slider_setting(label, "%", move || {
+                widgets::slider_stepper(
+                    value,
+                    draft,
+                    0..=u32::from(CpuLoadPercent::MAX.get()),
+                    1,
+                    action,
+                )
+            })
+        }
     }
 }
 fn initial_stability(rule: &ByCpuLoadRule) -> ByCpuLoadStability {
@@ -1071,16 +1072,14 @@ fn rule_status(
     selected: bool,
     status: &crate::control::power_plan::PowerPlanStatus,
 ) -> &'static str {
-    let (rule_enabled, configured, state, plans) = match rule {
+    let (rule_enabled, state, plans) = match rule {
         RuleRef::Time(rule) => (
             rule.enabled,
-            !rule.days.is_empty(),
             crate::rules::DecisionState::ByTime,
-            [rule.power_plan_guid.as_deref(), None],
+            [rule.configured_plan(), None],
         ),
         RuleRef::Cpu(rule) => (
             rule.enabled,
-            true,
             crate::rules::DecisionState::ByCpuLoad,
             [
                 rule.power_plan_guid.as_deref(),
@@ -1092,12 +1091,40 @@ fn rule_status(
     };
     power_rule_status(
         enabled && rule_enabled,
-        configured,
+        true,
         selected,
         state,
         plans,
         status,
     )
+}
+
+pub(super) fn runtime_rule_index_in_draft<T: Eq>(
+    runtime_rules: Option<&[T]>,
+    draft_rules: &[T],
+    runtime_index: Option<usize>,
+) -> Option<usize> {
+    let runtime_rules = runtime_rules?;
+    let index = runtime_index?;
+    let selected_rule = runtime_rules.get(index)?;
+    if runtime_rules == draft_rules {
+        return Some(index);
+    }
+    // An edited list cannot identify which identical saved rule moved.
+    if runtime_rules
+        .iter()
+        .filter(|rule| *rule == selected_rule)
+        .nth(1)
+        .is_some()
+    {
+        return None;
+    }
+    let mut matching = draft_rules
+        .iter()
+        .enumerate()
+        .filter(|(_, rule)| *rule == selected_rule);
+    let (index, _) = matching.next()?;
+    matching.next().is_none().then_some(index)
 }
 
 pub(super) fn power_rule_status(
@@ -1115,7 +1142,7 @@ pub(super) fn power_rule_status(
     } else if selected
         && status.owner == Some(crate::control::power_plan::PowerPlanOwner::OrdinaryAutomation)
         && status.decision_state == Some(state)
-        && status.apply_failed
+        && (status.apply_failed || status.active_plan_read_error.is_some())
         && plans.iter().flatten().any(|guid| {
             status
                 .target_guid

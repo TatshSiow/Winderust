@@ -1,26 +1,31 @@
 use super::{
-    action_log, adaptive_engine, advanced_power_plan_tuning, app_suspension, background_efficiency,
-    by_activity, cpu_allocation, cpu_limiter, design, home, instance_balancing, instance_limits,
-    keep_running, memory_trim, navigation, power_rules, priority_control, process_list,
-    process_power_plans, settings_pages, sleep_prevention, status_rail, tasks, timer_resolution,
-    watchdog, widgets, win32_priority_separation, window_frame,
+    action_log, adaptive_engine, adaptive_processor_power, advanced_power_plan_tuning,
+    app_suspension, by_activity, cpu_allocation, cpu_limiter, dashboard, design, efficiency_mode,
+    feature_tabs, instance_balancing, instance_limits, interrupt_timing, keep_running, memory_trim,
+    navigation, power_plan_control, power_rules, priority_control, process_list,
+    process_power_plans, resource_thresholds, settings_pages, sleep_prevention, status_rail, tasks,
+    timer_resolution, widgets, win32_priority_separation, window_frame,
 };
-use crate::ui::scrolling::scrollable;
+use crate::ui::scrolling::{repaint_popup, scrollable, SCROLLBAR_GUTTER};
+use feature_tabs::FeatureTab;
 use std::{
     cell::RefCell,
+    collections::HashMap,
     path::PathBuf,
     sync::{Arc, Mutex},
     time::Duration,
 };
-use widgets::{action_button, button, text_input};
+use widgets::{action_button, button};
 
 use iced::widget::{column, container, row, text};
 use iced::{Element, Fill, Subscription, Task, Theme};
 use rust_i18n::t;
 
 use crate::application::SettingsEditor;
-use crate::automation::{RuntimeHandle, RuntimeStatusSnapshot};
-use crate::config::PowerSourceProfile;
+use crate::automation::{RuntimeCommandError, RuntimeHandle, RuntimeStatusSnapshot};
+use crate::config::{PowerSourceProfile, UpdateChannel};
+use crate::control::power_plan::ManualPowerPlanError;
+use crate::features::cpu_control::cpu_limiter::CpuLimiterSnapshot;
 use crate::ui::Page;
 use crate::SingleInstanceRestoreEvent;
 use crate::{
@@ -29,11 +34,20 @@ use crate::{
 };
 
 // Iced supplies logical pixels; do not apply the monitor DPI a second time.
-fn shell_widths(width: f32) -> (f32, f32, u16) {
+fn shell_widths(width: f32, has_page_list: bool) -> (f32, f32, u16) {
+    let compact = width < 1280.0;
     (
-        design::NAVIGATION_RAIL_WIDTH + 1.0,
-        design::SIDE_PANEL_WIDTH,
-        if width < 1280.0 {
+        match (has_page_list, compact) {
+            (false, _) => 0.0,
+            (true, true) => design::COMPACT_PAGE_NAVIGATION_WIDTH,
+            (true, false) => design::PAGE_NAVIGATION_WIDTH,
+        },
+        if compact && has_page_list {
+            design::COMPACT_SIDE_PANEL_WIDTH
+        } else {
+            design::SIDE_PANEL_WIDTH
+        },
+        if compact {
             design::space::MEDIUM
         } else {
             design::space::WIDE
@@ -43,68 +57,289 @@ fn shell_widths(width: f32) -> (f32, f32, u16) {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SidePanelTab {
-    Info,
+    Settings,
     Status,
     Presets,
 }
 impl SidePanelTab {
     fn for_page(feature_page: Page) -> &'static [Self] {
         match feature_page {
-            Page::AdaptiveEngine | Page::CpuSetsSoft | Page::ProcessorAffinityHard => {
-                &[Self::Info, Self::Status, Self::Presets]
-            }
-            Page::AdvancedPowerPlanTuning => &[Self::Info, Self::Presets],
-            _ => &[Self::Info, Self::Status],
+            Page::Dashboard => &[Self::Settings, Self::Status],
+            Page::AdaptiveEngine
+            | Page::AdaptiveProcessorPower
+            | Page::CpuSetsSoft
+            | Page::ProcessorAffinityHard => &[Self::Status, Self::Presets],
+            Page::AdvancedPowerPlanTuning => &[Self::Presets],
+            Page::PowerPlanControl
+            | Page::ByActivity
+            | Page::ByFocus
+            | Page::ByRunningApp
+            | Page::ByCpuLoad
+            | Page::ByTime
+            | Page::EfficiencyMode
+            | Page::InstanceBalancing
+            | Page::ProcessPriority
+            | Page::ThreadPriority
+            | Page::DynamicPriorityBoost
+            | Page::IoPriority
+            | Page::GpuPriority
+            | Page::MemoryPriority
+            | Page::CpuLimiter
+            | Page::TimerResolution => &[Self::Status],
+            _ => &[],
         }
     }
+
+    fn initial_for_page(page: Page) -> Self {
+        Self::for_page(page)
+            .first()
+            .copied()
+            .unwrap_or(Self::Status)
+    }
+
     fn label(self) -> String {
         t!(match self {
+            Self::Settings => "nav.settings",
             Self::Status => "common.status",
             Self::Presets => "common.presets",
-            Self::Info => "common.info",
         })
         .to_string()
     }
 }
 
+fn reset_scroll(id: &'static str) -> Task<Message> {
+    iced::widget::operation::snap_to(id, iced::widget::scrollable::RelativeOffset::START)
+}
+
+const EDITOR_TABS_MIN_WIDTH: f32 = 720.0;
+
 fn page_header<'a>(
-    breadcrumb: Element<'a, Message>,
+    title: String,
+    tabs: Option<Element<'a, Message>>,
     profiles: Option<Element<'a, Message>>,
-    panel_button: Option<Element<'a, Message>>,
+    compact: bool,
 ) -> Element<'a, Message> {
-    let mut toolbar = row![profiles.unwrap_or_else(|| iced::widget::Space::new().into())]
-        .push(iced::widget::Space::new().width(Fill))
-        .height(design::BUTTON_HEIGHT)
-        .align_y(iced::Center);
-    if let Some(button) = panel_button {
-        toolbar = toolbar.push(button);
-    }
-    column![
-        container(breadcrumb).center_y(design::PAGE_BREADCRUMB_HEIGHT),
-        toolbar,
-    ]
-    .spacing(design::space::SMALL)
-    .width(Fill)
+    let compact_title = compact && tabs.is_some() && profiles.is_some();
+    row![container(
+        widgets::heading(
+            title,
+            if compact_title {
+                design::typography::SECTION
+            } else {
+                design::typography::SUBTITLE
+            },
+        )
+        .wrapping(text::Wrapping::WordOrGlyph)
+    )
+    .center_y(Fill)
+    .width(Fill),]
+    .extend(tabs)
+    .extend(profiles)
+    .height(design::PAGE_TITLE_HEIGHT)
+    .spacing(if compact {
+        design::space::CONTROL
+    } else {
+        design::space::MEDIUM
+    })
+    .align_y(iced::Center)
     .into()
 }
+
+fn power_source_tabs(
+    selected: PowerSourceProfile,
+    plugged_in: Option<bool>,
+    compact: bool,
+) -> Element<'static, Message> {
+    let profiles = [
+        (
+            PowerSourceProfile::PluggedIn,
+            "power_source.plugged_in",
+            true,
+        ),
+        (
+            PowerSourceProfile::OnBattery,
+            "power_source.on_battery",
+            false,
+        ),
+    ];
+    if compact {
+        return widgets::compact_header_select(
+            profiles.map(|(profile, key, source)| {
+                let indicator = if plugged_in == Some(source) {
+                    " •"
+                } else {
+                    ""
+                };
+                (profile, format!("{}{indicator}", t!(key)))
+            }),
+            selected,
+            124,
+            Message::PowerSource,
+        );
+    }
+    let tabs = row(profiles.map(|(profile, key, source)| {
+        let live = plugged_in == Some(source);
+        let label = row![
+            widgets::heading(t!(key).to_string(), design::typography::BODY),
+            container(iced::widget::Space::new())
+                .width(6)
+                .height(6)
+                .style(move |theme: &Theme| container::Style {
+                    background: live.then(|| theme.palette().primary.into()),
+                    border: iced::border::rounded(3),
+                    ..Default::default()
+                }),
+        ]
+        .spacing(design::space::TIGHT)
+        .align_y(iced::Center);
+        button(container(label).center_y(Fill))
+            .height(design::BUTTON_HEIGHT)
+            .padding([0, design::space::MEDIUM as u16])
+            .on_press(Message::PowerSource(profile))
+            .style(move |theme, status| widgets::tab_style(theme, status, selected == profile))
+            .into()
+    }));
+    container(tabs).style(widgets::tab_bar).into()
+}
+
+const FLOATING_CARD_BOTTOM_INSET: u32 = design::space::CONTROL;
+const PAGE_BOTTOM_INSET: f32 = 38.0;
+const SAVE_CARD_SCROLL_CLEARANCE: f32 = (FLOATING_CARD_BOTTOM_INSET
+    + 2 * widgets::CARD_PADDING
+    + design::space::SECTION
+    + 2 * design::space::SMALL
+    + design::BUTTON_HEIGHT) as f32
+    - PAGE_BOTTOM_INSET;
+// Share the same vertical margin between the two edges so the editor keeps its height.
+const PAGE_TOP_INSET: f32 = 2.0 * design::space::SECTION as f32 - PAGE_BOTTOM_INSET;
 
 fn page_canvas<'a>(
     heading: Element<'a, Message>,
     content: Element<'a, Message>,
+    floating_card: Option<Element<'a, Message>>,
+    toast: Option<Element<'a, Message>>,
 ) -> Element<'a, Message> {
+    let mut layers = iced::widget::Stack::new().push(
+        column![heading, content]
+            .spacing(design::space::WIDE)
+            .padding(iced::Padding {
+                top: PAGE_TOP_INSET,
+                bottom: PAGE_BOTTOM_INSET,
+                ..iced::Padding::ZERO
+            })
+            .height(Fill),
+    );
+    if toast.is_some() || floating_card.is_some() {
+        let overlays = column![]
+            .extend(toast.map(|toast| {
+                container(iced::widget::opaque(repaint_popup(toast)))
+                    .center_x(Fill)
+                    .into()
+            }))
+            .extend(floating_card.map(|card| {
+                container(iced::widget::opaque(repaint_popup(card)))
+                    .padding(iced::Padding {
+                        right: SCROLLBAR_GUTTER,
+                        ..iced::Padding::ZERO
+                    })
+                    .width(Fill)
+                    .align_x(iced::Right)
+                    .into()
+            }))
+            .spacing(design::space::CONTROL);
+        layers = layers.push(
+            container(overlays)
+                .padding(iced::Padding {
+                    bottom: FLOATING_CARD_BOTTOM_INSET as f32,
+                    ..iced::Padding::ZERO
+                })
+                .width(Fill)
+                .height(Fill)
+                .align_y(iced::Bottom),
+        );
+    }
     container(
-        container(
-            column![heading, content]
-                .spacing(design::space::WIDE)
-                .height(Fill),
-        )
-        .max_width(design::CONTENT_WIDTH)
-        .width(Fill)
-        .height(Fill),
+        container(layers)
+            .max_width(design::CONTENT_WIDTH)
+            .width(Fill)
+            .height(Fill),
     )
     .center_x(Fill)
     .height(Fill)
     .into()
+}
+
+const SIDE_PANEL_CLOSE: &str = "side-panel-close";
+
+fn floating_card<'a>(
+    title: String,
+    detail: Option<Element<'a, Message>>,
+    [secondary, primary]: [super::animated_controls::Button<'a, Message>; 2],
+) -> Element<'a, Message> {
+    container(
+        column![container(widgets::heading(title, design::typography::BODY))
+            .center_y(design::space::SECTION)]
+        .extend(detail)
+        .push(
+            row![
+                iced::widget::Space::new().width(Fill),
+                secondary.style(widgets::tertiary_button),
+                primary.style(widgets::primary_button),
+            ]
+            .spacing(design::space::SMALL),
+        )
+        .spacing(design::space::SMALL),
+    )
+    .padding(widgets::CARD_PADDING as u16)
+    .style(widgets::surface)
+    .width(Fill)
+    .max_width(320)
+    .into()
+}
+
+fn floating_save_card(switching_plan: bool) -> Element<'static, Message> {
+    floating_card(
+        t!("unsaved.title").into_owned(),
+        None,
+        [
+            action_button(t!("common.discard").into_owned()).on_press(Message::Cancel),
+            action_button(t!("common.save").into_owned())
+                .on_press_maybe((!switching_plan).then_some(Message::Save)),
+        ],
+    )
+}
+
+fn floating_update_card(preferences: &settings_pages::Editor) -> Element<'_, Message> {
+    let version = row![
+        text(t!("about.latest_version").into_owned())
+            .size(design::typography::SECONDARY)
+            .style(text::secondary),
+        text(preferences.latest.as_deref().unwrap_or_default())
+            .size(design::typography::SECONDARY)
+            .wrapping(text::Wrapping::WordOrGlyph),
+    ]
+    .spacing(design::space::SMALL)
+    .wrap()
+    .vertical_spacing(design::space::TIGHT);
+    floating_card(
+        t!("about.update_available").into_owned(),
+        Some(version.into()),
+        [
+            action_button(t!("about.ignore_update").into_owned())
+                .on_press(Message::Preferences(settings_pages::Message::DismissUpdate)),
+            action_button(t!("about.update").into_owned()).on_press_maybe(
+                preferences
+                    .download
+                    .clone()
+                    .map(|url| Message::Preferences(settings_pages::Message::OpenUpdate(url))),
+            ),
+        ],
+    )
+}
+
+fn close_side_panel(open: &mut bool) -> impl iced::advanced::widget::Operation {
+    *open = false;
+    iced::advanced::widget::operation::focusable::focus(navigation::SIDE_PANEL_TOGGLE.into())
 }
 
 fn side_panel_dock<'a>(
@@ -114,7 +349,9 @@ fn side_panel_dock<'a>(
 ) -> Element<'a, Message> {
     let dock: Element<'a, Message> = if let Some(panel) = panel {
         let close = super::widgets::tooltip(
-            widgets::icon_button("icons/x.svg").on_press(Message::CloseSidePanel),
+            widgets::icon_button("icons/x.svg")
+                .focus_id(SIDE_PANEL_CLOSE)
+                .on_press(Message::CloseSidePanel),
             text(t!("common.close").to_string()),
             iced::widget::tooltip::Position::Left,
         );
@@ -149,55 +386,25 @@ fn side_panel_dock<'a>(
         .into()
 }
 
-fn feature_info_sidebar<'a>(
-    panel: Option<Element<'a, Message>>,
+fn page_side_panel<'a>(
     feature_page: Page,
     selected: SidePanelTab,
-) -> Option<Element<'a, Message>> {
-    let description = navigation::page_feature_info(feature_page);
-    if description.is_empty() {
-        return panel;
+    body: Element<'a, Message>,
+) -> Element<'a, Message> {
+    let tabs = SidePanelTab::for_page(feature_page);
+    if tabs.len() < 2 {
+        return body;
     }
-    let info: Element<'a, Message> = scrollable(
-        container(
-            text(description)
-                .size(design::typography::SECONDARY)
-                .width(Fill),
-        )
-        .width(Fill)
-        .padding([0, design::space::MEDIUM as u16]),
-    )
-    .width(Fill)
+    let tabs = row(tabs.iter().map(|&tab| {
+        widgets::panel_tab(tab.label(), tab == selected, Message::SidePanelTab(tab)).into()
+    }));
+    column![
+        container(tabs).style(widgets::tab_bar),
+        super::motion::wrap(body, true, super::motion::Effect::Content(selected as u64)),
+    ]
+    .spacing(design::space::MEDIUM)
     .height(Fill)
-    .into();
-    Some(if let Some(panel) = panel {
-        let tabs = row(SidePanelTab::for_page(feature_page).iter().map(|&tab| {
-            widgets::panel_tab(tab.label(), tab == selected, Message::SidePanelTab(tab)).into()
-        }));
-        column![
-            container(tabs).style(widgets::tab_bar),
-            super::motion::wrap(
-                if selected == SidePanelTab::Info {
-                    info
-                } else {
-                    panel
-                },
-                true,
-                super::motion::Effect::Content(selected as u64),
-            ),
-        ]
-        .spacing(design::space::MEDIUM)
-        .height(Fill)
-        .into()
-    } else {
-        column![
-            widgets::panel_heading(t!("common.feature_info").to_string()),
-            info,
-        ]
-        .spacing(design::space::MEDIUM)
-        .height(Fill)
-        .into()
-    })
+    .into()
 }
 
 #[cfg(feature = "render-smoke")]
@@ -210,21 +417,21 @@ pub(crate) mod window_lifecycle_smoke;
 
 pub(crate) fn run(
     settings: SettingsEditor,
-    error: Option<String>,
+    startup_warnings: Vec<String>,
     runtime: RuntimeHandle,
     restore_event: Option<SingleInstanceRestoreEvent>,
     recovery_client: Arc<Mutex<crate::crash_recovery::RecoveryClient>>,
 ) -> iced::Result {
     let startup = RefCell::new(Some((
         settings,
-        error,
+        startup_warnings,
         runtime,
         restore_event,
         recovery_client,
     )));
     iced::daemon(
         move || {
-            let Some((settings, error, runtime, restore_event, recovery_client)) =
+            let Some((settings, mut startup_warnings, runtime, restore_event, recovery_client)) =
                 startup.borrow_mut().take()
             else {
                 unreachable!("Iced must initialize the application exactly once");
@@ -246,20 +453,21 @@ pub(crate) fn run(
                 navigation_search_open: false,
                 navigation_search_scope: SearchScope(None),
                 navigation_search_selected: 0,
-                navigation: navigation::Flyout::default(),
+                feature_tabs: HashMap::new(),
                 side_panel_open: false,
-                side_panel_tab: SidePanelTab::Info,
+                side_panel_tab: SidePanelTab::initial_for_page(Page::Dashboard),
                 preferences: settings_pages::Editor::default(),
-                home: home::Model::default(),
+                dashboard: dashboard::Model::default(),
                 action_log: action_log::Editor::default(),
-                sampler: std::sync::Arc::new(std::sync::Mutex::new(home::Sampler::default())),
+                sampler: std::sync::Arc::new(std::sync::Mutex::new(dashboard::Sampler::default())),
                 sampled_at: std::time::Instant::now(),
                 sampling: false,
                 catalog_sampled_at: std::time::Instant::now(),
                 suspension: app_suspension::Editor::default(),
                 sleep_prevention: sleep_prevention::Editor::default(),
                 trim: memory_trim::Editor::default(),
-                watchdog: watchdog::Editor::default(),
+                manual_trim_pending: false,
+                resource_thresholds: resource_thresholds::Editor::default(),
                 keep_running: keep_running::Editor::default(),
                 instance_limits: instance_limits::Editor::default(),
                 instance_balancing: instance_balancing::Editor::default(),
@@ -270,22 +478,21 @@ pub(crate) fn run(
                 time_rules: power_rules::Editor::default(),
                 cpu_rules: power_rules::Editor::default(),
                 priority: priority_control::Editor::default(),
-                efficiency: background_efficiency::Editor::default(),
+                efficiency_mode: efficiency_mode::Editor::default(),
                 soft_allocation: cpu_allocation::Editor::default(),
                 hard_allocation: cpu_allocation::Editor::default(),
                 adaptive: adaptive_engine::Editor::default(),
-                candidates: Vec::new(),
+                adaptive_processor_power: adaptive_processor_power::Editor::default(),
+                interrupt_timing: interrupt_timing::State::default(),
+                candidates: Arc::default(),
                 unavailable_candidates: Vec::new(),
                 catalog_loading: false,
                 settings,
                 runtime: std::sync::Arc::new(runtime),
                 status: RuntimeStatusSnapshot::default(),
-                error_message: error
-                    .or_else(crate::crash_recovery::startup_error)
-                    .unwrap_or_default(),
-                page: Page::Home,
+                error_message: String::new(),
+                page: Page::Dashboard,
                 navigation_history: navigation::History::default(),
-                breadcrumb: vec![Page::Home],
                 window: None,
                 window_settings: iced::window::Settings {
                     size: iced::Size::new(1120.0, 760.0),
@@ -298,6 +505,7 @@ pub(crate) fn run(
                 auto_exclusion_generation: 0,
                 auto_exclusion_retry: false,
                 closing: false,
+                exit_export_failed: false,
                 hwnd: None,
                 tray: None,
                 tray_attempt: None,
@@ -311,11 +519,13 @@ pub(crate) fn run(
                 power_plans_loading: false,
                 power_plans_loaded: false,
                 power_plans_reload_pending: false,
+                power_plan_control: power_plan_control::Editor::default(),
                 focus_plans: process_power_plans::Editor::default(),
                 running_app_plans: process_power_plans::Editor::default(),
                 activity_inputs: by_activity::Inputs::default(),
             };
-            app.sync_tray();
+            startup_warnings.extend(app.sync_tray_warning());
+            app.error_message = startup_warnings.join("\n");
             let window = if app.settings.persisted().general.start_minimized
                 && app.tray.as_ref().is_some_and(|icon| icon.is_registered())
             {
@@ -340,10 +550,7 @@ pub(crate) fn run(
     )
     .title("Winderust")
     .settings(iced::Settings {
-        default_font: iced::Font {
-            weight: iced::font::Weight::Normal,
-            ..design::typography::FONT
-        },
+        default_font: design::typography::DEFAULT_FONT,
         default_text_size: design::typography::BODY.into(),
         ..Default::default()
     })
@@ -365,17 +572,19 @@ pub(crate) fn run(
             )
             .map(|interval| iced::time::every(interval).map(|_| Message::Tick))
             .unwrap_or_else(Subscription::none),
-            app.navigation
-                .timer()
-                .filter(|_| !app.hidden)
-                .map(|(due, delay)| {
-                    iced::time::every(delay)
-                        .with(due)
-                        .map(|(_, now)| Message::Navigation(navigation::Event::Tick(now)))
+            app.interrupt_timing
+                .subscription()
+                .map(|()| Message::PollInterruptTiming),
+            app.live_preview_page()
+                .map(|page| {
+                    iced::time::every(Duration::from_secs(3))
+                        .with(page)
+                        .map(|(page, _)| Message::PollPreviewMatches(page))
                 })
                 .unwrap_or_else(Subscription::none),
             iced::window::close_requests().map(Message::WindowCloseRequested),
             iced::event::listen_raw(|event, _, _| match event {
+                iced::Event::Window(iced::window::Event::Focused) => Some(Message::WindowFocused),
                 iced::Event::Window(iced::window::Event::Unfocused)
                 | iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                     key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
@@ -403,13 +612,10 @@ pub(crate) fn run(
                     iced::Event::Mouse(iced::mouse::Event::ButtonPressed(
                         iced::mouse::Button::Forward,
                     )) => Some(Message::NavigateHistory(true)),
-                    iced::Event::Window(iced::window::Event::Unfocused) => {
-                        Some(Message::Navigation(navigation::Event::Dismiss))
-                    }
                     _ => None,
                 }
             }),
-            if app.page == Page::ProcessList && app.processes.resizing_columns() {
+            if app.page == Page::Dashboard && app.processes.resizing_columns() {
                 iced::event::listen_raw(|event, _, _| match event {
                     iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => Some(
                         Message::Processes(process_list::Message::ResizeMoved(position.x)),
@@ -439,20 +645,6 @@ pub(crate) fn run(
                 }),
                 _ => None,
             }),
-            if app.page == Page::ProcessList && !app.navigation_search_open {
-                iced::event::listen_with(|event, status, _| match event {
-                    iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-                        key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Delete),
-                        modifiers,
-                        ..
-                    }) if status == iced::event::Status::Ignored && modifiers.is_empty() => {
-                        Some(Message::Processes(process_list::Message::DeleteFocused))
-                    }
-                    _ => None,
-                })
-            } else {
-                Subscription::none()
-            },
         ])
     })
     .run()
@@ -460,6 +652,9 @@ pub(crate) fn run(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SearchScope(Option<Page>);
+
+const SEARCH_INPUT_ID: &str = "navigation-search";
+
 impl std::fmt::Display for SearchScope {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(
@@ -473,15 +668,14 @@ impl std::fmt::Display for SearchScope {
 
 fn navigation_search_choices(query: &str, advanced: bool, scope: SearchScope) -> Vec<Page> {
     let mut pages = if query.trim().is_empty() {
-        navigation::dashboard_sections_in_nav_order(advanced)
-            .into_iter()
+        navigation::workspace_sections(advanced)
             .filter(|section| scope.0 == Some(section.landing_page))
             .flat_map(|section| {
                 std::iter::once(section.landing_page).chain(section.pages.iter().copied())
             })
             .collect::<Vec<_>>()
     } else {
-        navigation::dashboard_search_pages(query, advanced)
+        navigation::search_pages(query, advanced)
     };
     if let Some(section) = scope.0 {
         pages.retain(|page| page.section_landing_page() == section);
@@ -500,15 +694,62 @@ fn search_selection(selected: usize, count: usize, down: bool) -> usize {
     }
 }
 
+fn navigation_search_input(query: &str, available: bool, open: bool) -> Element<'_, Message> {
+    let input = widgets::text_input(&t!("dashboard.search_placeholder"), query)
+        .id(SEARCH_INPUT_ID)
+        .line_height(iced::Pixels(16.0))
+        .padding(iced::Padding {
+            left: 30.0,
+            ..iced::Padding::new(5.0)
+        })
+        .on_input_maybe(available.then_some(Message::NavigationSearch))
+        .on_submit_maybe(available.then_some(if open {
+            Message::ConfirmSearch
+        } else {
+            Message::OpenNavigationSearch
+        }));
+    let field = iced::widget::stack![
+        input,
+        container(navigation::glyph("icons/search.svg"))
+            .padding([0, 8])
+            .align_left(Fill)
+            .center_y(Fill),
+    ];
+    let mut field = iced::widget::mouse_area(field);
+    if available && !open {
+        field = field.on_release(Message::SearchFieldReleased);
+    }
+    if available {
+        field.into()
+    } else {
+        super::modal::background(field)
+    }
+}
+
 fn navigation_search_panel<'a>(
     content: impl Into<Element<'a, Message>>,
 ) -> iced::widget::Container<'a, Message> {
     // Software-rendered quad shadows bypass partial repaint clipping.
     container(content)
         .width(Fill)
-        .max_width(640)
+        .max_width(window_frame::SEARCH_WIDTH)
         .clip(true)
         .style(widgets::surface)
+}
+
+fn centered_modal<'a>(
+    background: Element<'a, Message>,
+    modal: Element<'a, Message>,
+) -> Element<'a, Message> {
+    iced::widget::stack![
+        super::modal::background(background),
+        iced::widget::opaque(super::scrolling::modal_backdrop()),
+        container(iced::widget::opaque(modal))
+            .padding(16)
+            .center_x(Fill)
+            .center_y(Fill)
+    ]
+    .into()
 }
 
 fn navigation_search_overlay<'a>(
@@ -518,20 +759,12 @@ fn navigation_search_overlay<'a>(
     iced::widget::stack![
         super::modal::background(background),
         iced::widget::opaque(
-            iced::widget::mouse_area(
-                container(iced::widget::Space::new())
-                    .width(Fill)
-                    .height(Fill)
-                    .style(|_| container::Style {
-                        background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.3).into()),
-                        ..Default::default()
-                    }),
-            )
-            .on_press(Message::CloseNavigationSearch)
+            iced::widget::mouse_area(super::scrolling::modal_backdrop())
+                .on_press(Message::CloseNavigationSearch)
         ),
-        container(iced::widget::opaque(search))
+        container(iced::widget::opaque(repaint_popup(search)))
             .padding(iced::Padding {
-                top: 120.0,
+                top: 8.0,
                 right: 24.0,
                 bottom: 24.0,
                 left: 24.0
@@ -551,20 +784,21 @@ struct WinderustApp {
     navigation_search_open: bool,
     navigation_search_scope: SearchScope,
     navigation_search_selected: usize,
-    navigation: navigation::Flyout,
+    feature_tabs: HashMap<Page, FeatureTab>,
     side_panel_open: bool,
     side_panel_tab: SidePanelTab,
     preferences: settings_pages::Editor,
-    home: home::Model,
+    dashboard: dashboard::Model,
     action_log: action_log::Editor,
-    sampler: std::sync::Arc<std::sync::Mutex<home::Sampler>>,
+    sampler: std::sync::Arc<std::sync::Mutex<dashboard::Sampler>>,
     sampled_at: std::time::Instant,
     sampling: bool,
     catalog_sampled_at: std::time::Instant,
     suspension: app_suspension::Editor,
     sleep_prevention: sleep_prevention::Editor,
     trim: memory_trim::Editor,
-    watchdog: watchdog::Editor,
+    manual_trim_pending: bool,
+    resource_thresholds: resource_thresholds::Editor,
     keep_running: keep_running::Editor,
     instance_limits: instance_limits::Editor,
     instance_balancing: instance_balancing::Editor,
@@ -575,11 +809,13 @@ struct WinderustApp {
     time_rules: power_rules::Editor,
     cpu_rules: power_rules::Editor,
     priority: priority_control::Editor,
-    efficiency: background_efficiency::Editor,
+    efficiency_mode: efficiency_mode::Editor,
     soft_allocation: cpu_allocation::Editor,
     hard_allocation: cpu_allocation::Editor,
     adaptive: adaptive_engine::Editor,
-    candidates: Vec<super::app_picker::Candidate>,
+    adaptive_processor_power: adaptive_processor_power::Editor,
+    interrupt_timing: interrupt_timing::State,
+    candidates: Arc<Vec<super::app_picker::Candidate>>,
     unavailable_candidates: Vec<String>,
     catalog_loading: bool,
     settings: SettingsEditor,
@@ -588,13 +824,13 @@ struct WinderustApp {
     error_message: String,
     page: Page,
     navigation_history: navigation::History,
-    breadcrumb: Vec<Page>,
     window: Option<iced::window::Id>,
     window_settings: iced::window::Settings,
     maximized: bool,
     auto_exclusion_generation: u64,
     auto_exclusion_retry: bool,
     closing: bool,
+    exit_export_failed: bool,
     hwnd: Option<usize>,
     tray: Option<tray::TrayIcon>,
     tray_attempt: Option<((bool, bool), std::time::Instant)>,
@@ -608,6 +844,7 @@ struct WinderustApp {
     power_plans_loading: bool,
     power_plans_loaded: bool,
     power_plans_reload_pending: bool,
+    power_plan_control: power_plan_control::Editor,
     focus_plans: process_power_plans::Editor,
     running_app_plans: process_power_plans::Editor,
     activity_inputs: by_activity::Inputs,
@@ -619,6 +856,7 @@ enum Message {
     #[cfg(feature = "render-smoke")]
     SmokeScreenshot(iced::window::Screenshot),
     NavigationSearch(String),
+    SearchFieldReleased,
     OpenNavigationSearch,
     CloseNavigationSearch,
     NavigationSearchScope(SearchScope),
@@ -632,23 +870,27 @@ enum Message {
     DismissError,
     NavigateHistory(bool),
     Navigation(navigation::Event),
+    FeatureTab(FeatureTab),
     SidePanelTab(SidePanelTab),
-    ToggleSidePanel,
     CloseSidePanel,
     Preferences(settings_pages::Message),
     DismissPickers,
     Status(status_rail::Message),
-    Home(home::Message),
-    Sample(Result<home::Sample, String>),
+    Dashboard(dashboard::Message),
+    Sample(Result<dashboard::Sample, String>),
     ActionLog(action_log::Message),
     ExportLog(Option<PathBuf>),
     Suspension(app_suspension::Message),
     SleepPrevention(sleep_prevention::Message),
+    TemporarySleepPreventionFinished(Result<(), String>),
     Trim(memory_trim::Message),
-    Watchdog(watchdog::Message),
+    TrimFinished(Result<crate::memory_trim::MemoryTrimSnapshot, String>),
+    ResourceThresholds(resource_thresholds::Message),
+    PollPreviewMatches(Page),
     KeepRunning(keep_running::Message),
     InstanceLimits(instance_limits::Message),
     InstanceBalancing(instance_balancing::Message),
+    InstanceBalancingExecutableChosen(Arc<()>, Option<PathBuf>),
     Timer(timer_resolution::Message),
     PrioritySeparation(win32_priority_separation::Message),
     PowerTuning(advanced_power_plan_tuning::Message),
@@ -656,15 +898,18 @@ enum Message {
 
     PowerRules(power_rules::Kind, power_rules::Message),
     Priority(priority_control::Kind, priority_control::Message),
-    Efficiency(background_efficiency::Message),
+    EfficiencyMode(efficiency_mode::Message),
     Allocation(cpu_allocation::Kind, cpu_allocation::Message),
     Adaptive(adaptive_engine::Message),
-    Catalog(Result<Vec<super::app_picker::Candidate>, String>),
+    AdaptiveProcessorPower(adaptive_processor_power::Message),
+    PollInterruptTiming,
+    Catalog(Result<Arc<Vec<super::app_picker::Candidate>>, String>),
     ExecutableChosen(Page, PowerSourceProfile, Option<PathBuf>),
     Page(Page),
     Tick,
     Window(iced::window::Id),
     WindowAction(window_frame::Event),
+    WindowFocused,
     WindowResized(iced::window::Id, iced::Size),
     WindowMoved(iced::window::Id, iced::Point),
     NativeWindow(iced::window::Id, Option<usize>),
@@ -685,6 +930,8 @@ enum Message {
     PowerSource(PowerSourceProfile),
     ByActivity(by_activity::Message),
     ProcessPowerPlans(process_power_plans::Kind, process_power_plans::Message),
+    PowerPlanControl(power_plan_control::Message),
+    PowerPlanSwitchFinished(Result<(), RuntimeCommandError>),
     PowerPlans(Result<Vec<crate::power::PowerPlan>, String>),
 }
 
@@ -712,12 +959,37 @@ impl Message {
 }
 
 impl WinderustApp {
+    fn feature_tab(&self) -> FeatureTab {
+        self.feature_tabs
+            .get(&self.page)
+            .copied()
+            .unwrap_or_default()
+    }
+
     fn search_choices(&self) -> Vec<Page> {
         navigation_search_choices(
             &self.navigation_search,
             self.settings.global().advanced.show_advanced_controls,
             self.navigation_search_scope,
         )
+    }
+
+    fn search_available(&self) -> bool {
+        !self.closing
+            && self.error_message.is_empty()
+            && !self.picker_open()
+            && !self.blocking_editor_open()
+            && self.power_tuning.review_origin().is_none()
+            && self.process_power_plan_preview().is_none()
+            && !(self.page == Page::Dashboard
+                && (self.processes.context_open() || self.processes.modal_open()))
+    }
+
+    fn reset_search(&mut self) -> bool {
+        self.navigation_search.clear();
+        self.navigation_search_scope = SearchScope(None);
+        self.navigation_search_selected = 0;
+        std::mem::take(&mut self.navigation_search_open)
     }
 
     fn scroll_search_selection(&self) -> Task<Message> {
@@ -738,33 +1010,60 @@ impl WinderustApp {
         status: iced::event::Status,
     ) -> Task<Message> {
         use iced::keyboard::{key::Named, Key};
-        if self.closing
-            || self.hidden
-            || self.preferences.show_update
-            || !self.error_message.is_empty()
-        {
+        let review_open = self.power_tuning.review_origin().is_some();
+        if self.hidden {
             return Task::none();
         }
-        if self.page == Page::WinderustBehaviour {
+        let tab = status == iced::event::Status::Ignored
+            && key == Key::Named(Named::Tab)
+            && (modifiers.is_empty() || modifiers == iced::keyboard::Modifiers::SHIFT);
+        let wrap_focus = self.picker_open();
+        let move_focus = || super::keyboard_focus::move_focus(!modifiers.shift(), wrap_focus);
+        if !review_open
+            && (self.closing
+                || !self.error_message.is_empty()
+                || self.preferences.replace_settings_open)
+        {
+            if tab {
+                return move_focus();
+            }
+            if self.exiting
+                || repeat
+                || !modifiers.is_empty()
+                || status != iced::event::Status::Ignored
+                || key != Key::Named(Named::Escape)
+            {
+                return Task::none();
+            }
+            return self.update(if self.closing {
+                Message::Stay
+            } else if !self.error_message.is_empty() {
+                Message::DismissError
+            } else {
+                Message::Preferences(settings_pages::Message::ReplaceSettingsPrompt(false))
+            });
+        }
+        if !review_open && self.page == Page::WinderustBehaviour {
             if let Some(slot) = self.preferences.hotkey_capture {
                 if !repeat {
                     if key == Key::Named(Named::Escape) {
                         return self.update(Message::Preferences(
-                            settings_pages::Message::CancelSearchHotkey,
+                            settings_pages::Message::CancelShortcut,
                         ));
                     }
-                    if let Some(shortcut) = super::hotkeys::capture(&key, modifiers) {
-                        return self.update(Message::Preferences(
-                            settings_pages::Message::SetSearchHotkey(slot, Some(shortcut)),
-                        ));
+                    if status != iced::event::Status::Ignored {
+                        return Task::none();
                     }
+                    return self.capture_shortcut(slot, &key, modifiers);
                 }
                 return Task::none();
             }
         }
-        if self.navigation_search_open {
+        if !review_open && self.navigation_search_open {
             match key.as_ref() {
-                Key::Named(Named::Escape) => return self.update(Message::CloseNavigationSearch),
+                Key::Named(Named::Tab) if tab => {
+                    return super::keyboard_focus::move_focus(!modifiers.shift(), true);
+                }
                 Key::Named(Named::ArrowUp | Named::ArrowDown)
                     if status == iced::event::Status::Ignored && modifiers.is_empty() =>
                 {
@@ -774,7 +1073,14 @@ impl WinderustApp {
                         count,
                         key == Key::Named(Named::ArrowDown),
                     );
-                    return self.scroll_search_selection();
+                    return if count == 0 {
+                        Task::none()
+                    } else {
+                        Task::batch([
+                            iced::widget::operation::focus(SEARCH_INPUT_ID),
+                            self.scroll_search_selection(),
+                        ])
+                    };
                 }
                 Key::Named(Named::Enter) if status == iced::event::Status::Ignored && !repeat => {
                     return self.update(Message::ConfirmSearch);
@@ -782,10 +1088,47 @@ impl WinderustApp {
                 _ => return Task::none(),
             }
         }
-        let cancel_rule = match self.page {
-            Page::Watchdog if self.watchdog.has_pending_editor() => {
-                Some(Message::Watchdog(watchdog::Message::CancelRule))
+        if !review_open && self.process_context_open() {
+            if status != iced::event::Status::Ignored {
+                return Task::none();
             }
+            return match key {
+                Key::Named(Named::Tab) if tab => {
+                    super::keyboard_focus::move_focus(!modifiers.shift(), true)
+                }
+                Key::Named(Named::Escape) if modifiers.is_empty() && !repeat => {
+                    self.update(Message::Processes(process_list::Message::CloseSelection))
+                }
+                Key::Named(Named::ArrowUp | Named::ArrowDown) if modifiers.is_empty() => {
+                    super::keyboard_focus::move_focus(key == Key::Named(Named::ArrowDown), true)
+                }
+                _ => Task::none(),
+            };
+        }
+        let cancel_dialog = match self.page {
+            _ if review_open => Some(Message::PowerTuning(
+                advanced_power_plan_tuning::Message::CancelApply,
+            )),
+            Page::Dashboard
+                if key == Key::Named(Named::Escape)
+                    && modifiers.is_empty()
+                    && self.processes.modal_open() =>
+            {
+                Some(Message::Processes(process_list::Message::CloseSelection))
+            }
+            Page::ByFocus | Page::ByRunningApp => {
+                self.process_power_plan_preview().map(|(kind, _)| {
+                    Message::ProcessPowerPlans(
+                        kind,
+                        process_power_plans::Message::Preview(
+                            process_power_plans::PreviewMessage::Close,
+                        ),
+                    )
+                })
+            }
+            Page::ResourceThresholds if self.resource_thresholds.has_pending_editor() => Some(
+                Message::ResourceThresholds(resource_thresholds::Message::CancelRule),
+            ),
             Page::InstanceLimits if self.instance_limits.has_pending_editor() => Some(
                 Message::InstanceLimits(instance_limits::Message::CancelRule),
             ),
@@ -803,26 +1146,29 @@ impl WinderustApp {
                 power_rules::Kind::CpuLoad,
                 power_rules::Message::Cancel,
             )),
-            _ => None,
+            Page::CpuLimiter if self.cpu_limiter.has_pending_editor() && modifiers.is_empty() => {
+                Some(Message::CpuLimiter(self.cpu_limiter.dismiss_message()))
+            }
+            _ => self.preset_close_message(),
         };
-        if let Some(cancel_rule) = cancel_rule {
+        if let Some(cancel_dialog) = cancel_dialog {
+            let close_focus_preview = matches!(
+                cancel_dialog,
+                Message::ProcessPowerPlans(process_power_plans::Kind::Focus, _)
+            );
             return match key {
-                Key::Named(Named::Escape) if !repeat && status == iced::event::Status::Ignored => {
-                    self.update(cancel_rule)
+                Key::Named(Named::Escape)
+                    if !repeat
+                        && (close_focus_preview || status == iced::event::Status::Ignored) =>
+                {
+                    self.update(cancel_dialog)
                 }
-                Key::Named(Named::Tab) if status == iced::event::Status::Ignored => {
-                    if modifiers.shift() {
-                        iced::widget::operation::focus_previous()
-                    } else {
-                        iced::widget::operation::focus_next()
-                    }
-                }
+                Key::Named(Named::Tab) if tab => move_focus(),
                 _ => Task::none(),
             };
         }
-        if !(repeat
-            || self.pending_editor()
-            || self.page == Page::ProcessList && self.processes.modal_open())
+        if !repeat
+            && self.search_available()
             && super::hotkeys::opens_search(
                 &self.settings.global().general.search_hotkeys,
                 &key,
@@ -833,211 +1179,62 @@ impl WinderustApp {
             return self.update(Message::OpenNavigationSearch);
         }
         if status == iced::event::Status::Ignored {
-            if key == Key::Named(Named::Escape)
-                && (self.navigation.section.is_some() || self.navigation.timer().is_some())
+            if self.preferences.show_update
+                && key == Key::Named(Named::Escape)
+                && modifiers.is_empty()
+                && !repeat
+                && !wrap_focus
+                && !self.pending_settings_changes()
             {
-                return self.update_navigation(navigation::Event::Dismiss);
+                return self.update(Message::Preferences(settings_pages::Message::DismissUpdate));
             }
-            if self.navigation.selected.is_some() && self.navigation.section.is_some() {
-                return self.update_navigation(navigation::Event::Key(key, modifiers.shift()));
-            }
-            if key == Key::Named(Named::Tab) {
-                return if modifiers.shift() {
-                    iced::widget::operation::focus_previous()
-                } else {
-                    iced::widget::operation::focus_next()
-                };
+            if tab {
+                return move_focus();
             }
         }
         Task::none()
     }
 
-    fn focus_navigation(&self, page: Option<Page>) -> Task<Message> {
-        let focus = iced::widget::operation::focus(navigation::rail_id(page));
-        if let Some(page) = page.filter(|page| !navigation::is_utility(*page)) {
-            let primary: Vec<_> =
-                navigation::rail_pages(self.settings.global().advanced.show_advanced_controls)
-                    .into_iter()
-                    .filter(|page| !navigation::is_utility(*page))
-                    .collect();
-            if let Some(index) = primary.iter().position(|p| *p == page) {
-                return Task::batch([
-                    focus,
-                    iced::widget::operation::snap_to(
-                        "primary-navigation",
-                        iced::widget::scrollable::RelativeOffset {
-                            x: 0.0,
-                            y: index as f32 / primary.len().saturating_sub(1).max(1) as f32,
-                        },
-                    ),
-                ]);
-            }
-        }
-        focus
-    }
-
-    fn update_navigation(&mut self, event: navigation::Event) -> Task<Message> {
+    fn capture_shortcut(
+        &mut self,
+        slot: settings_pages::ShortcutSlot,
+        key: &iced::keyboard::Key,
+        modifiers: iced::keyboard::Modifiers,
+    ) -> Task<Message> {
         use iced::keyboard::{key::Named, Key};
-        use navigation::Event as Nav;
-        let tabbing = matches!(event, Nav::Tab(..));
-        match event {
-            Nav::Select(page) => return self.update(Message::Page(page)),
-            Nav::Search => return self.update(Message::OpenNavigationSearch),
-            Nav::Blur => self.navigation.selected = None,
-            Nav::OpenKeyboard(page) => {
-                self.navigation
-                    .update(&Nav::OpenKeyboard(page), std::time::Instant::now());
-                return self.focus_navigation(Some(page));
-            }
-            Nav::FocusMove(page, forward) | Nav::Tab(page, forward) => {
-                let rail_pages =
-                    navigation::rail_pages(self.settings.global().advanced.show_advanced_controls);
-                let pages: Vec<_> = std::iter::once(None)
-                    .chain(rail_pages.iter().copied().map(Some))
-                    .collect();
-                if let Some(index) = pages.iter().position(|p| *p == page) {
-                    if tabbing
-                        && ((forward && index + 1 == pages.len()) || (!forward && index == 0))
-                    {
-                        return if forward {
-                            iced::widget::operation::focus_next()
-                        } else {
-                            iced::widget::operation::focus_previous()
-                        };
-                    }
-                    let index = if forward {
-                        (index + 1) % pages.len()
-                    } else {
-                        (index + pages.len() - 1) % pages.len()
-                    };
-                    self.navigation.selected = None;
-                    return self.focus_navigation(pages[index]);
-                }
-            }
-            Nav::Key(key, shift) => {
-                if let Some(section) = self.navigation.section {
-                    let pages = navigation::children(section);
-                    let count = pages.len();
-                    if count == 0 {
-                        return Task::none();
-                    }
-                    let selected = self.navigation.selected.unwrap_or(0);
-                    self.navigation.selected = Some(match key {
-                        Key::Named(Named::Escape | Named::ArrowLeft) => {
-                            self.navigation.dismiss();
-                            return self.focus_navigation(Some(section));
-                        }
-                        Key::Named(Named::ArrowDown) => self
-                            .navigation
-                            .selected
-                            .map_or(0, |index| (index + 1) % count),
-                        Key::Named(Named::Tab) if !shift => self
-                            .navigation
-                            .selected
-                            .map_or(0, |index| (index + 1) % count),
-                        Key::Named(Named::ArrowUp | Named::Tab) => self
-                            .navigation
-                            .selected
-                            .map_or(count - 1, |index| (index + count - 1) % count),
-                        Key::Named(Named::Home) => 0,
-                        Key::Named(Named::End) => count - 1,
-                        Key::Named(Named::Enter | Named::Space) => {
-                            return self.update_navigation(Nav::Select(pages[selected]));
-                        }
-                        _ => selected,
-                    });
-                    if let Some(index) = self.navigation.selected {
-                        return iced::widget::operation::snap_to(
-                            "secondary-navigation",
-                            iced::widget::scrollable::RelativeOffset {
-                                x: 0.0,
-                                y: index as f32 / pages.len().saturating_sub(1).max(1) as f32,
-                            },
-                        );
-                    }
-                }
-            }
-            event => {
-                let now = match event {
-                    Nav::Tick(now) => now,
-                    _ => std::time::Instant::now(),
-                };
-                self.navigation.update(&event, now);
-            }
-        }
-        Task::none()
-    }
+        use settings_pages::{Message as Preference, ShortcutSlot};
 
-    fn navigation_panel(&self, section: Page) -> Element<'_, navigation::Event> {
-        use navigation::Event as Nav;
-        let selected = self.navigation.selected;
-        let focused = move |index| selected == Some(index);
-        let mut header =
-            row![widgets::heading(section.label(), design::typography::SECTION).width(Fill)]
-                .spacing(design::space::TIGHT)
-                .align_y(iced::Center);
-        if self
-            .settings
-            .global()
-            .general
-            .show_enabled_feature_counts_in_sidebar
-        {
-            if let Some(count) = navigation::section_enabled_feature_count(&self.settings, section)
-            {
-                header = header.push(
-                    container(text(count.to_string()).size(design::typography::BADGE))
-                        .padding([2, 6])
-                        .style(move |theme| widgets::indicator_chip(theme, count > 0)),
-                );
+        let message = match slot {
+            ShortcutSlot::Search(slot) => {
+                let Some(shortcut) = super::hotkeys::capture(key, modifiers) else {
+                    return Task::none();
+                };
+                Preference::SetSearchHotkey(slot, Some(shortcut))
             }
-        }
-        let mut pages = column![].spacing(design::space::TIGHT);
-        for (index, page) in navigation::children(section).into_iter().enumerate() {
-            let mut entry = row![text(page.label())
-                .size(design::typography::BODY)
-                .width(Fill)]
-            .spacing(design::space::SMALL)
-            .align_y(iced::Center);
-            if navigation::feature_page_enabled(&self.settings, page) == Some(true) {
-                entry = entry.push(
-                    container(iced::widget::Space::new())
-                        .width(6)
-                        .height(6)
-                        .style(|theme: &Theme| container::Style {
-                            background: Some(theme.palette().success.into()),
-                            border: iced::border::rounded(3),
-                            ..Default::default()
-                        }),
-                );
+            ShortcutSlot::ShowWinderust => {
+                if matches!(
+                    key.as_ref(),
+                    Key::Named(Named::Alt | Named::AltGraph | Named::Control | Named::Shift)
+                ) {
+                    return Task::none();
+                }
+                let shortcut = super::hotkeys::capture(key, modifiers).and_then(|shortcut| {
+                    crate::config::ShowWinderustShortcut::try_from(shortcut).ok()
+                });
+                let Some(shortcut) = shortcut else {
+                    self.preferences.show_shortcut_capture_error =
+                        Some("settings.show_winderust_shortcut_invalid");
+                    return Task::none();
+                };
+                if shortcut.conflicts_with_search(&self.settings.global().general.search_hotkeys) {
+                    self.preferences.show_shortcut_capture_error =
+                        Some("settings.show_winderust_shortcut_search_conflict");
+                    return Task::none();
+                }
+                Preference::SetShowWinderustShortcut(Some(shortcut))
             }
-            pages = pages.push(
-                button(entry)
-                    .width(Fill)
-                    .padding([design::space::MEDIUM as u16, design::space::SMALL as u16])
-                    .style(move |theme, status| {
-                        navigation::item_style(theme, status, self.page == page, focused(index))
-                    })
-                    .on_press(Nav::Select(page)),
-            );
-        }
-        let height = iced::Shrink;
-        super::scrolling::repaint_popup(
-            container(
-                column![
-                    header,
-                    iced::widget::rule::horizontal(1),
-                    super::scrolling::popup_scrollable(pages)
-                        .id("secondary-navigation")
-                        .height(height)
-                ]
-                .spacing(design::space::MEDIUM)
-                .height(height),
-            )
-            .padding(design::space::MEDIUM as u16)
-            .width(Fill)
-            .height(height)
-            .style(widgets::surface),
-        )
+        };
+        self.update(Message::Preferences(message))
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -1051,14 +1248,26 @@ impl WinderustApp {
             }
             #[cfg(feature = "render-smoke")]
             Message::SmokeScreenshot(screenshot) => return smoke::captured(self, screenshot),
-            Message::DismissError => self.error_message.clear(),
+            Message::DismissError => {
+                self.error_message.clear();
+            }
             Message::SearchKeyboard {
                 key,
                 modifiers,
                 repeat,
                 status,
             } => return self.search_keyboard(key, modifiers, repeat, status),
-            Message::NavigationSearch(value) => {
+            Message::SearchFieldReleased => {
+                return iced::widget::operation::is_focused(SEARCH_INPUT_ID).then(|focused| {
+                    if focused {
+                        Task::done(Message::OpenNavigationSearch)
+                    } else {
+                        Task::none()
+                    }
+                });
+            }
+            Message::NavigationSearch(value) if self.search_available() => {
+                self.navigation_search_open = true;
                 self.navigation_search = value;
                 self.navigation_search_selected = 0;
                 return self.scroll_search_selection();
@@ -1079,25 +1288,50 @@ impl WinderustApp {
                     }
                 }
             }
-            Message::OpenNavigationSearch => {
-                self.navigation.dismiss();
+            Message::OpenNavigationSearch if self.search_available() => {
                 self.navigation_search_open = true;
-                self.navigation_search_scope = SearchScope(None);
-                self.navigation_search_selected = 0;
-                self.preferences.hotkey_capture = None;
-                return iced::widget::operation::focus("navigation-search");
+                self.preferences.cancel_shortcut_capture();
+                return iced::widget::operation::focus(SEARCH_INPUT_ID);
             }
+            Message::NavigationSearch(_) | Message::OpenNavigationSearch => {}
             Message::CloseNavigationSearch => {
-                self.navigation_search_open = false;
-                self.navigation_search.clear();
+                if self.reset_search() {
+                    return iced::advanced::widget::operate(
+                        iced::advanced::widget::operation::focusable::unfocus(),
+                    );
+                }
             }
-            Message::Navigation(event) => return self.update_navigation(event),
-            Message::SidePanelTab(tab) => self.side_panel_tab = tab,
-            Message::ToggleSidePanel => {
-                self.side_panel_open = !self.side_panel_open;
-                self.navigation.dismiss();
+            Message::Navigation(navigation::Event::Select(page)) => {
+                return self.update(Message::Page(page));
             }
-            Message::CloseSidePanel => self.side_panel_open = false,
+            Message::Navigation(navigation::Event::ToggleSidePanel) => {
+                if let Some(open) = self.side_panel_toggle_state() {
+                    self.side_panel_open = !open;
+                    if self.dashboard_status_open() {
+                        return self.load_power_plans();
+                    }
+                }
+            }
+            Message::FeatureTab(tab) => {
+                if self.feature_tab() != tab && FeatureTab::for_page(self.page).contains(&tab) {
+                    self.feature_tabs.insert(self.page, tab);
+                    return reset_scroll(feature_tabs::CONTENT_ID);
+                }
+            }
+            Message::SidePanelTab(tab) => {
+                if self.side_panel_tab != tab && SidePanelTab::for_page(self.page).contains(&tab) {
+                    self.side_panel_tab = tab;
+                    if self.dashboard_status_open() {
+                        return self.load_power_plans();
+                    }
+                }
+            }
+            Message::CloseSidePanel => {
+                return iced::advanced::widget::operate(close_side_panel(
+                    &mut self.side_panel_open,
+                ))
+                .discard();
+            }
             Message::Status(status_rail::Message::RelaunchAdmin) => {
                 if crate::privilege::relaunch_as_admin() {
                     return self.update(Message::Close);
@@ -1108,17 +1342,33 @@ impl WinderustApp {
                     self.error_message = error;
                 }
             }
-            Message::Home(home::Message::Navigate(page)) => {
+            Message::Preferences(settings_pages::Message::OpenUpdate(url)) => {
+                if self.preferences.show_update
+                    && self.preferences.download.as_deref() == Some(url.as_str())
+                {
+                    match crate::win_util::open_url(&url) {
+                        Ok(()) => self.preferences.show_update = false,
+                        Err(error) => self.error_message = error,
+                    }
+                }
+            }
+            Message::Dashboard(dashboard::Message::Navigate(page)) => {
                 return self.update(Message::Page(page));
             }
-            Message::Home(home::Message::HoverChart(kind, slot)) => {
-                self.home.hover_chart(kind, slot)
+            Message::Dashboard(dashboard::Message::HoverChart(kind, slot)) => {
+                self.dashboard.hover_chart(kind, slot)
+            }
+            Message::Dashboard(dashboard::Message::InspectChart(kind, action)) => {
+                self.dashboard.inspect_chart(kind, action)
             }
             Message::Sample(result) => {
                 self.sampling = false;
                 match result {
-                    Ok(sample) => self.home.record(sample),
-                    Err(error) => self.error_message = error,
+                    Ok(sample) => self.dashboard.record(sample),
+                    Err(error) => {
+                        self.dashboard.record_unavailable();
+                        self.error_message = error;
+                    }
                 }
             }
             Message::Preferences(settings_pages::Message::Export) => {
@@ -1127,28 +1377,38 @@ impl WinderustApp {
             Message::Preferences(settings_pages::Message::Import) => {
                 return self.update(Message::SettingsFile(FileDialogMode::Open));
             }
+            Message::Preferences(settings_pages::Message::ReplaceSettingsPrompt(open)) => {
+                self.preferences.replace_settings_open = open && self.can_replace_settings();
+            }
+            Message::Preferences(settings_pages::Message::ConfirmReplaceSettings) => {
+                if std::mem::take(&mut self.preferences.replace_settings_open)
+                    && self.can_replace_settings()
+                {
+                    return self.update(Message::Save);
+                }
+            }
             Message::Preferences(
                 message @ (settings_pages::Message::Check | settings_pages::Message::CheckStartup),
             ) => {
                 let automatic = matches!(message, settings_pages::Message::CheckStartup);
                 let channel = self.settings.global().general.update_channel;
-                if !self.preferences.begin_check(automatic) {
+                let Some(check) = self.preferences.begin_check(channel, automatic) else {
                     return Task::none();
-                }
+                };
                 return tasks::run(move || {
                     crate::update_checker::check(channel)
                         .map(|r| (r.latest_version, r.available_update.map(|u| u.url)))
-                        .map_err(|error| {
-                            crate::backend::diagnostics::error(&format!(
-                                "Update check failed: {error}"
-                            ));
-                            t!("about.update_check_failed").to_string()
-                        })
+                        .map_err(|error| error.to_string())
                 })
-                .map(move |r| {
+                .map(move |result| {
+                    let result = result.and_then(|result| result).map_err(|error| {
+                        crate::backend::diagnostics::error(&format!(
+                            "Update check failed: {error}"
+                        ));
+                    });
                     Message::Preferences(settings_pages::Message::Checked(
-                        channel,
-                        r.and_then(|r| r),
+                        Arc::clone(&check),
+                        result,
                     ))
                 });
             }
@@ -1158,20 +1418,14 @@ impl WinderustApp {
                 | settings_pages::Message::CancelColorPicker
                 | settings_pages::Message::PickerHue(_)
                 | settings_pages::Message::PickerSv(..)
+                | settings_pages::Message::PickerPercent(..)
                 | settings_pages::Message::PickerHex(_)
-                | settings_pages::Message::RecordSearchHotkey(_)
-                | settings_pages::Message::CancelSearchHotkey
+                | settings_pages::Message::RecordShortcut(_)
+                | settings_pages::Message::CancelShortcut
                 | settings_pages::Message::ToggleAccent
                 | settings_pages::Message::DismissUpdate
                 | settings_pages::Message::Checked(..)),
             ) => {
-                if matches!(
-                    message,
-                    settings_pages::Message::OpenColorPicker(_)
-                        | settings_pages::Message::EditColor(_)
-                ) {
-                    self.navigation.dismiss();
-                }
                 self.preferences
                     .update_ui(self.settings.global().general.update_channel, message);
             }
@@ -1179,6 +1433,7 @@ impl WinderustApp {
                 let appearance_changed = matches!(
                     message,
                     settings_pages::Message::Theme(_)
+                        | settings_pages::Message::Animation(_)
                         | settings_pages::Message::AccentSource(_)
                         | settings_pages::Message::AccentHex(_)
                         | settings_pages::Message::Accent(_)
@@ -1213,20 +1468,27 @@ impl WinderustApp {
                 self.status.action_log_entries = Default::default();
                 self.status.action_log_summaries = Default::default();
                 self.action_log.update(action_log::Message::Clear);
-                return iced::widget::operation::scroll_to(
-                    "action-log",
-                    iced::widget::scrollable::AbsoluteOffset {
-                        x: None,
-                        y: Some(0.0),
-                    },
-                );
+                return action_log::scroll_to(0.0);
             }
             Message::ActionLog(action_log::Message::Export) => {
+                if !self
+                    .action_log
+                    .begin_export(&self.status.action_log_entries)
+                {
+                    return Task::none();
+                }
                 return Task::perform(
                     crate::file_dialog::choose_action_log_export_file(
                         self.hwnd.map(|h| h as windows_sys::Win32::Foundation::HWND),
                     ),
                     Message::ExportLog,
+                );
+            }
+            Message::ActionLog(action_log::Message::KeyboardScroll(direction, height)) => {
+                return self.action_log.keyboard_scroll(
+                    &self.status.action_log_entries,
+                    direction,
+                    height,
                 );
             }
             Message::ActionLog(message) => {
@@ -1236,24 +1498,18 @@ impl WinderustApp {
                         | action_log::Message::Feature(..)
                         | action_log::Message::AllLevels(_)
                         | action_log::Message::AllFeatures(_)
+                        | action_log::Message::Search(_)
                 );
                 self.action_log.update(message);
                 if reset {
-                    return iced::widget::operation::scroll_to(
-                        "action-log",
-                        iced::widget::scrollable::AbsoluteOffset {
-                            x: None,
-                            y: Some(0.0),
-                        },
-                    );
+                    return action_log::scroll_to(0.0);
                 }
             }
             Message::ExportLog(path) => {
-                if let Some(path) = path {
-                    if let Err(error) = crate::config::storage::write_bytes_atomically(
+                if let (Some(path), Some(entries)) = (path, self.action_log.finish_export()) {
+                    if let Err(error) = crate::config::storage::export_bytes(
                         &path,
-                        action_log::action_log_entries_to_csv(&self.status.action_log_entries)
-                            .as_bytes(),
+                        action_log::action_log_entries_to_csv(&entries).as_bytes(),
                     ) {
                         self.error_message = t!(
                             "status.action_log_export_failed",
@@ -1275,7 +1531,7 @@ impl WinderustApp {
             }
             Message::Suspension(message) => {
                 if let Some((path, freeze)) = self.suspension.update(
-                    &mut self.settings.app_suspension,
+                    &mut self.settings,
                     &self.status.feature_status.app_suspension,
                     &self.unavailable_candidates,
                     message,
@@ -1299,23 +1555,62 @@ impl WinderustApp {
             }
             Message::Trim(memory_trim::Message::Browse) => return self.browse(Page::MemoryTrim),
             Message::Trim(memory_trim::Message::TrimNow) => {
-                match self.runtime.request_memory_trim_now() {
-                    Ok(receiver) => {
-                        return tasks::run(move || {
-                            receiver
-                                .recv()
-                                .map_err(|e| e.to_string())
-                                .and_then(|r| r.map(|_| ()).map_err(|e| e.to_string()))
-                        })
-                        .map(|r| Message::CommandFinished(r.and_then(|r| r)));
+                if self.manual_trim_pending {
+                    return Task::none();
+                }
+                let (reply, receiver): (_, crate::automation::MemoryTrimActionReceiver) =
+                    std::sync::mpsc::sync_channel(1);
+                // Start the waiter before the worker can accept the command.
+                let task = match tasks::try_run(move || {
+                    receiver
+                        .recv()
+                        .map_err(|error| error.to_string())?
+                        .map_err(|error| error.to_string())
+                }) {
+                    Ok(task) => task,
+                    Err(error) => {
+                        self.error_message = error.to_string();
+                        return Task::none();
                     }
-                    Err(error) => self.error_message = error.to_string(),
+                };
+                if let Err(error) = self.runtime.request_memory_trim_now(reply) {
+                    self.error_message = error.to_string();
+                } else {
+                    self.manual_trim_pending = true;
+                    return task
+                        .map(|result| Message::TrimFinished(result.and_then(|result| result)));
                 }
             }
-            Message::Trim(message) => self.trim.update(&mut self.settings.memory_trim, message),
-            Message::Watchdog(watchdog::Message::Browse) => return self.browse(Page::Watchdog),
+            Message::TrimFinished(result) => {
+                self.manual_trim_pending = false;
+                if let Err(error) = result.and_then(|result| self.trim.manual_result(result)) {
+                    self.error_message = error;
+                }
+            }
+            Message::Trim(message) => self.trim.update(&mut self.settings, message),
+            Message::ResourceThresholds(resource_thresholds::Message::Browse) => {
+                return self.browse(Page::ResourceThresholds)
+            }
             Message::InstanceBalancing(instance_balancing::Message::Browse) => {
-                return self.browse(Page::InstanceBalancing);
+                let request = self.instance_balancing.begin_browse();
+                return Task::perform(self.choose_executable_file(), move |path| {
+                    Message::InstanceBalancingExecutableChosen(request, path)
+                });
+            }
+            Message::InstanceBalancingExecutableChosen(request, path) => {
+                if !self.instance_balancing.take_browse(&request) {
+                    return Task::none();
+                }
+                let Some(path) = path else {
+                    return Task::none();
+                };
+                let Some(path) = path.to_str() else {
+                    self.error_message = t!("common.unsupported_unicode_path").to_string();
+                    return Task::none();
+                };
+                return self.update(Message::InstanceBalancing(
+                    instance_balancing::Message::Path(path.to_owned()),
+                ));
             }
             Message::InstanceBalancing(message) => {
                 self.settings.edit_global(|settings| {
@@ -1336,7 +1631,7 @@ impl WinderustApp {
                 return self.browse(Page::KeepRunning);
             }
             Message::KeepRunning(keep_running::Message::Resume(path)) => {
-                if self.pending_changes() {
+                if self.pending_settings_changes() {
                     self.error_message = t!("keep_running.save_before_resume").to_string();
                 } else if let Err(error) = self.runtime.request_keep_running_resume(path) {
                     self.error_message = error.to_string();
@@ -1348,40 +1643,116 @@ impl WinderustApp {
                         .update(&mut settings.keep_running, message)
                 });
             }
-            Message::Watchdog(watchdog::Message::Tab(resource)) => {
-                self.watchdog.select_tab(resource);
+            Message::ResourceThresholds(resource_thresholds::Message::Tab(resource)) => {
+                self.resource_thresholds.select_tab(resource);
             }
-            Message::Watchdog(message) => {
-                self.settings
-                    .edit_global(|settings| self.watchdog.update(&mut settings.watchdog, message));
+            Message::ResourceThresholds(resource_thresholds::Message::ToggleMonitorSettings(
+                resource,
+            )) => {
+                self.resource_thresholds.toggle_monitor_settings(resource);
+            }
+            Message::ResourceThresholds(resource_thresholds::Message::OpenPreviewMatches) => {
+                return self
+                    .resource_thresholds
+                    .open_preview_matches()
+                    .map(Message::ResourceThresholds);
+            }
+            Message::ResourceThresholds(resource_thresholds::Message::PreviewMatchesLoaded(
+                request,
+                result,
+            )) => {
+                self.resource_thresholds
+                    .complete_preview_matches(request, result);
+            }
+            Message::PollPreviewMatches(page) if self.live_preview_page() == Some(page) => {
+                return match page {
+                    Page::ResourceThresholds => self
+                        .resource_thresholds
+                        .poll_preview_matches()
+                        .map(Message::ResourceThresholds),
+                    Page::ByRunningApp => self.update(Message::ProcessPowerPlans(
+                        process_power_plans::Kind::RunningApp,
+                        process_power_plans::Message::Preview(
+                            process_power_plans::PreviewMessage::Poll,
+                        ),
+                    )),
+                    _ => unreachable!(
+                        "live match previews belong to Resource Thresholds or By Running App"
+                    ),
+                };
+            }
+            Message::PollPreviewMatches(_) => {}
+            Message::ResourceThresholds(message) => {
+                self.settings.edit_global(|settings| {
+                    self.resource_thresholds
+                        .update(&mut settings.resource_thresholds, message)
+                });
             }
             Message::SleepPrevention(sleep_prevention::Message::Browse) => {
                 return self.browse(Page::SleepPrevention);
             }
-            Message::SleepPrevention(message) => self
-                .sleep_prevention
-                .update(&mut self.settings.sleep_prevention, message),
+            Message::SleepPrevention(sleep_prevention::Message::Temporary(kind, duration)) => {
+                if self.sleep_prevention.temporary_pending {
+                    return Task::none();
+                }
+                let (reply, receiver) = std::sync::mpsc::sync_channel(1);
+                let task = match tasks::try_run(move || {
+                    receiver
+                        .recv()
+                        .unwrap_or(Err(RuntimeCommandError::WorkerExited))
+                }) {
+                    Ok(task) => task,
+                    Err(error) => {
+                        self.error_message = error.to_string();
+                        return Task::none();
+                    }
+                };
+                if let Err(error) = self
+                    .runtime
+                    .request_temporary_sleep_prevention(kind, duration, reply)
+                {
+                    self.error_message = error.to_string();
+                } else {
+                    self.sleep_prevention.temporary_pending = true;
+                    return task.map(|result| {
+                        Message::TemporarySleepPreventionFinished(
+                            result.and_then(|reply| reply.map_err(|error| error.to_string())),
+                        )
+                    });
+                }
+            }
+            Message::TemporarySleepPreventionFinished(result) => {
+                self.sleep_prevention.temporary_pending = false;
+                if let Err(error) = result {
+                    self.error_message = error;
+                } else {
+                    return self.update(Message::Tick);
+                }
+            }
+            Message::SleepPrevention(message) => {
+                self.sleep_prevention.update(&mut self.settings, message)
+            }
             Message::Timer(timer_resolution::Message::Browse) => {
                 return self.browse(Page::TimerResolution);
             }
             Message::Timer(message) => self.timer.update(
-                &mut self.settings.timer_resolution,
+                &mut self.settings,
                 &self.status.feature_status.timer_resolution,
                 message,
             ),
             Message::PrioritySeparation(message) => self.priority_separation.update(message),
-            Message::PowerTuning(message) => self.settings.edit_with_presets(|settings| {
-                self.power_tuning.update(
-                    &mut settings.advanced_power_plan_tuning_presets,
-                    &self.power_plans,
-                    message,
-                )
-            }),
+            Message::PowerTuning(advanced_power_plan_tuning::Message::ConfirmApply)
+                if self.power_tuning.review_origin()
+                    == Some(advanced_power_plan_tuning::ApplyOrigin::Save) =>
+            {
+                return self.save_settings();
+            }
+            Message::PowerTuning(message) => {
+                self.power_tuning
+                    .update(&mut self.settings, &self.power_plans, message)
+            }
 
             Message::PowerRules(kind, message) => {
-                if matches!(message, power_rules::Message::OpenTimePicker(_)) {
-                    self.navigation.dismiss();
-                }
                 let editor = match kind {
                     power_rules::Kind::Time => &mut self.time_rules,
                     power_rules::Kind::CpuLoad => &mut self.cpu_rules,
@@ -1394,10 +1765,12 @@ impl WinderustApp {
             Message::Priority(kind, message) => {
                 self.priority.update(&mut self.settings, kind, message)
             }
-            Message::Efficiency(background_efficiency::Message::Browse) => {
-                return self.browse(Page::BackgroundEfficiency);
+            Message::EfficiencyMode(efficiency_mode::Message::Browse) => {
+                return self.browse(Page::EfficiencyMode);
             }
-            Message::Efficiency(message) => self.efficiency.update(&mut self.settings, message),
+            Message::EfficiencyMode(message) => {
+                self.efficiency_mode.update(&mut self.settings, message)
+            }
             Message::Allocation(kind, cpu_allocation::Message::Browse) => {
                 return self.browse(match kind {
                     cpu_allocation::Kind::Soft => Page::CpuSetsSoft,
@@ -1411,17 +1784,31 @@ impl WinderustApp {
                 ) {
                     self.side_panel_tab = SidePanelTab::Presets;
                 }
-                self.settings.edit_with_presets(|settings| match kind {
-                    cpu_allocation::Kind::Soft => {
-                        self.soft_allocation.update(settings, kind, message)
-                    }
-                    cpu_allocation::Kind::Hard => {
-                        self.hard_allocation.update(settings, kind, message)
-                    }
-                })
+                let editor = match kind {
+                    cpu_allocation::Kind::Soft => &mut self.soft_allocation,
+                    cpu_allocation::Kind::Hard => &mut self.hard_allocation,
+                };
+                editor.update(&mut self.settings, kind, message);
             }
             Message::Adaptive(adaptive_engine::Message::Browse) => {
                 return self.browse(Page::AdaptiveEngine);
+            }
+            Message::Adaptive(adaptive_engine::Message::InterruptTiming(message)) => {
+                self.exit_export_failed |= self.closing
+                    && self.interrupt_timing.export_writing()
+                    && matches!(&message, interrupt_timing::Message::ExportFinished(Err(_)));
+                let hwnd = self
+                    .hwnd
+                    .map(|hwnd| hwnd as windows_sys::Win32::Foundation::HWND);
+                return self.interrupt_timing.update(message, hwnd).map(|message| {
+                    Message::Adaptive(adaptive_engine::Message::InterruptTiming(message))
+                });
+            }
+            Message::PollInterruptTiming => self.interrupt_timing.poll(),
+            Message::Adaptive(adaptive_engine::Message::TuningTab(tab)) => {
+                if self.adaptive.select_tab(tab) {
+                    return reset_scroll(adaptive_engine::CONTENT_ID);
+                }
             }
             Message::Adaptive(message) => {
                 if matches!(
@@ -1432,8 +1819,26 @@ impl WinderustApp {
                 ) {
                     self.side_panel_tab = SidePanelTab::Presets;
                 }
-                self.settings
-                    .edit_with_presets(|settings| self.adaptive.update(settings, message));
+                self.adaptive.update(&mut self.settings, message);
+            }
+            Message::AdaptiveProcessorPower(adaptive_processor_power::Message::Tab(tab)) => {
+                if self.adaptive_processor_power.select_tab(tab) {
+                    return reset_scroll(adaptive_processor_power::CONTENT_ID);
+                }
+            }
+            Message::AdaptiveProcessorPower(message) => {
+                let focus_name = matches!(
+                    &message,
+                    adaptive_processor_power::Message::NewPreset
+                        | adaptive_processor_power::Message::EditPreset(_)
+                ) && !self.adaptive_processor_power.preset_open();
+                self.adaptive_processor_power
+                    .update(&mut self.settings, message);
+                if focus_name && self.adaptive_processor_power.preset_open() {
+                    return iced::widget::operation::focus(
+                        adaptive_processor_power::PRESET_NAME_INPUT_ID,
+                    );
+                }
             }
             Message::Catalog(result) => {
                 self.catalog_loading = false;
@@ -1442,8 +1847,8 @@ impl WinderustApp {
                         self.unavailable_candidates = candidates
                             .iter()
                             .filter(|candidate| !candidate.info.has_suspendable_instance)
-                            .map(|candidate| {
-                                candidate.info.image_path.to_string_lossy().into_owned()
+                            .filter_map(|candidate| {
+                                candidate.info.image_path.to_str().map(str::to_owned)
                             })
                             .collect();
                         self.candidates = candidates;
@@ -1452,112 +1857,36 @@ impl WinderustApp {
                 }
             }
             Message::ExecutableChosen(page, profile, path) => {
-                if profile == self.power_source || page == Page::InstanceBalancing {
-                    if let Some(path) = path {
-                        if matches!(page, Page::InstanceLimits | Page::InstanceBalancing)
-                            && path.to_str().is_none()
-                        {
-                            self.error_message = t!(match page {
-                                Page::InstanceBalancing =>
-                                    "instance_balancing.unsupported_unicode_path",
-                                _ => "instance_limits.unsupported_unicode_path",
-                            })
-                            .to_string();
-                            return Task::none();
-                        }
-                        let path = path.to_string_lossy().into_owned();
-                        if let Some(kind) = priority_kind(page) {
-                            return self.update(Message::Priority(
-                                kind,
-                                priority_control::Message::Path(path),
-                            ));
-                        }
-                        match page {
-                            Page::SleepPrevention => {
-                                return self.update(Message::SleepPrevention(
-                                    sleep_prevention::Message::Path(path),
-                                ));
-                            }
-                            Page::AppSuspension => {
-                                return self.update(Message::Suspension(
-                                    app_suspension::Message::Path(path),
-                                ));
-                            }
-                            Page::Watchdog => {
-                                return self
-                                    .update(Message::Watchdog(watchdog::Message::Path(path)));
-                            }
-                            Page::InstanceLimits => {
-                                return self.update(Message::InstanceLimits(
-                                    instance_limits::Message::Path(path),
-                                ));
-                            }
-                            Page::InstanceBalancing => {
-                                return self.update(Message::InstanceBalancing(
-                                    instance_balancing::Message::Path(path),
-                                ));
-                            }
-                            Page::KeepRunning => {
-                                return self.update(Message::KeepRunning(
-                                    keep_running::Message::Path(path),
-                                ));
-                            }
-                            Page::MemoryTrim => {
-                                return self
-                                    .update(Message::Trim(memory_trim::Message::Path(path)));
-                            }
-                            Page::TimerResolution => {
-                                return self
-                                    .update(Message::Timer(timer_resolution::Message::Path(path)));
-                            }
-                            Page::CpuSetsSoft => {
-                                return self.update(Message::Allocation(
-                                    cpu_allocation::Kind::Soft,
-                                    cpu_allocation::Message::Path(path),
-                                ));
-                            }
-                            Page::ProcessorAffinityHard => {
-                                return self.update(Message::Allocation(
-                                    cpu_allocation::Kind::Hard,
-                                    cpu_allocation::Message::Path(path),
-                                ));
-                            }
-                            Page::BackgroundEfficiency => {
-                                return self.update(Message::Efficiency(
-                                    background_efficiency::Message::Path(path),
-                                ));
-                            }
-                            Page::AdaptiveEngine => {
-                                return self.update(Message::Adaptive(
-                                    adaptive_engine::Message::Path(path),
-                                ));
-                            }
-                            Page::CpuLimiter => {
-                                return self
-                                    .update(Message::CpuLimiter(cpu_limiter::Message::Path(path)));
-                            }
-                            Page::ByFocus => {
-                                return self.update(Message::ProcessPowerPlans(
-                                    process_power_plans::Kind::Focus,
-                                    process_power_plans::Message::Path(path),
-                                ));
-                            }
-                            Page::ByRunningApp => {
-                                return self.update(Message::ProcessPowerPlans(
-                                    process_power_plans::Kind::RunningApp,
-                                    process_power_plans::Message::Path(path),
-                                ));
-                            }
-                            _ => {}
-                        }
-                    }
-                }
+                let Some(path) = path.filter(|_| profile == self.power_source) else {
+                    return Task::none();
+                };
+                let Ok(path) = path.into_os_string().into_string() else {
+                    self.error_message = t!("common.unsupported_unicode_path").to_string();
+                    return Task::none();
+                };
+                return self.update(picked_executable_message(page, path));
             }
             Message::ProcessPowerPlans(kind, process_power_plans::Message::Browse) => {
                 return self.browse(match kind {
                     process_power_plans::Kind::Focus => Page::ByFocus,
                     process_power_plans::Kind::RunningApp => Page::ByRunningApp,
                 });
+            }
+            Message::ProcessPowerPlans(kind, process_power_plans::Message::Preview(message)) => {
+                let editor = match (kind, self.page) {
+                    (process_power_plans::Kind::Focus, Page::ByFocus) => {
+                        Some(&mut self.focus_plans)
+                    }
+                    (process_power_plans::Kind::RunningApp, Page::ByRunningApp) => {
+                        Some(&mut self.running_app_plans)
+                    }
+                    _ => None,
+                };
+                if let Some(editor) = editor {
+                    return editor
+                        .update_preview(&self.settings, message)
+                        .map(move |message| Message::ProcessPowerPlans(kind, message));
+                }
             }
             Message::ProcessPowerPlans(kind, message) => {
                 let editor = match kind {
@@ -1570,6 +1899,47 @@ impl WinderustApp {
                 self.activity_inputs.edit(&message);
                 by_activity::update(&mut self.settings, message);
             }
+            Message::PowerPlanControl(power_plan_control::Message::FallbackPollingInterval(
+                value,
+            )) => {
+                self.power_plan_control
+                    .edit_fallback_polling_interval(&mut self.settings, value);
+            }
+            Message::PowerPlanControl(power_plan_control::Message::Select(guid)) => {
+                let status = &self.status.power_plan_status;
+                if self.power_plans_loaded
+                    && !self.power_plans_loading
+                    && !self.power_plan_control.pending
+                    && !power_plan_control::managed_by_adaptive_processor_power(
+                        status,
+                        &self.power_plans,
+                    )
+                    && power_plan_control::is_selectable(&self.power_plans, &guid)
+                    && !power_plan_control::current_plan_guid(status, &self.power_plans)
+                        .is_some_and(|current| current.eq_ignore_ascii_case(&guid))
+                {
+                    return self.switch_power_plan(guid);
+                }
+            }
+            Message::PowerPlanControl(power_plan_control::Message::AdaptiveProcessorPower) => {
+                let profile = if crate::backend::power_source::is_plugged_in() == Some(false) {
+                    PowerSourceProfile::OnBattery
+                } else {
+                    PowerSourceProfile::PluggedIn
+                };
+                if !self.select_power_source(profile) {
+                    return Task::none();
+                }
+                return self.update(Message::Page(Page::AdaptiveProcessorPower));
+            }
+            Message::PowerPlanSwitchFinished(result) => {
+                self.power_plan_control.pending = false;
+                if let Err(error) = result {
+                    self.error_message = power_plan_switch_error(error);
+                }
+                self.power_plans_reload_pending |= self.power_plans_loading;
+                return self.load_power_plans();
+            }
             Message::PowerPlans(result) => {
                 self.power_plans_loading = false;
                 match accept_power_plan_catalog(
@@ -1580,29 +1950,57 @@ impl WinderustApp {
                     Ok(false) => return self.load_power_plans(),
                     Ok(true) => {
                         self.power_plans_loaded = true;
-                        if self.page == Page::AdvancedPowerPlanTuning {
+                        if self.page == Page::AdvancedPowerPlanTuning
+                            && self.power_tuning.review_origin().is_none()
+                        {
                             self.power_tuning.ensure_plan(&self.power_plans);
                         }
                     }
-                    Err(error) => self.error_message = error,
+                    Err(error) => {
+                        crate::backend::diagnostics::error(&format!(
+                            "Loading power plans failed: {error}"
+                        ));
+                        if self.error_message.is_empty()
+                            && page_needs_power_plans(self.page, self.processes.rulesets_open())
+                        {
+                            self.error_message =
+                                t!("power_plan_control.catalog_unavailable").to_string();
+                        }
+                    }
                 }
             }
             Message::CpuLimiter(cpu_limiter::Message::Browse) => {
                 return self.browse(Page::CpuLimiter);
             }
-            Message::CpuLimiter(message) => self
-                .cpu_limiter
-                .update(&mut self.settings.cpu_limiter, message),
-            Message::PowerSource(_) if self.pending_editor() || self.invalid_inputs() => {
-                self.error_message = t!("unsaved.message").to_string();
+            Message::CpuLimiter(message) => {
+                let was_choosing = matches!(
+                    self.cpu_limiter.dismiss_message(),
+                    cpu_limiter::Message::CancelProcessorSelection
+                );
+                self.cpu_limiter.update_profile(&mut self.settings, message);
+                if was_choosing
+                    && self.cpu_limiter.has_pending_editor()
+                    && matches!(
+                        self.cpu_limiter.dismiss_message(),
+                        cpu_limiter::Message::CancelRule
+                    )
+                {
+                    let id = cpu_limiter::CHOOSE_PROCESSORS_ID;
+                    return iced::widget::operation::focus(id)
+                        .chain(super::keyboard_focus::reveal(Some(id.into())));
+                }
             }
             Message::PowerSource(source) => {
-                self.power_source = source;
-                self.settings.select_power_source(source);
-                self.reset_editors();
+                self.select_power_source(source);
             }
             Message::WindowAction(window_frame::Event::Close) => {
                 return self.update(Message::WindowClose);
+            }
+            Message::WindowFocused => {
+                if !self.hidden && self.visible_page_needs_power_plans() {
+                    self.power_plans_reload_pending |= self.power_plans_loading;
+                    return self.load_power_plans();
+                }
             }
             Message::WindowAction(action) => {
                 if let Some(window) = self.window {
@@ -1616,13 +2014,14 @@ impl WinderustApp {
                             iced::window::drag_resize(window, direction)
                         }
                         window_frame::Event::Close => {
-                            unreachable!("Close is routed through WindowClose")
+                            unreachable!("App actions are handled before window operations")
                         }
                     };
                 }
             }
             Message::WindowResized(window, size) => {
                 if self.window == Some(window) {
+                    let shrank = self.maximized || size.height < self.window_settings.size.height;
                     if let Some(hwnd) = self.hwnd {
                         self.maximized = crate::platform::windows::window_dpi::is_maximized(
                             hwnd as windows_sys::Win32::Foundation::HWND,
@@ -1630,6 +2029,12 @@ impl WinderustApp {
                     }
                     if self.window_is_restored() && size.width > 0.0 && size.height > 0.0 {
                         self.window_settings.size = size;
+                        if shrank && navigation::has_children(self.page.section_landing_page()) {
+                            return super::keyboard_focus::reveal_within(
+                                navigation::PAGE_LIST_ID.into(),
+                                Some(navigation::page_id(self.page)),
+                            );
+                        }
                     }
                 }
             }
@@ -1683,35 +2088,61 @@ impl WinderustApp {
                 }
             }
             Message::NavigateHistory(forward) => {
-                if !self.closing && self.error_message.is_empty() && !self.pending_editor() {
+                if !self.closing
+                    && self.error_message.is_empty()
+                    && !self.blocking_editor_open()
+                    && self.process_power_plan_preview().is_none()
+                {
                     if let Some(page) = self.navigation_history.travel(forward) {
                         return self.update(Message::Page(page));
                     }
                 }
             }
+            Message::Page(_) if self.adaptive_processor_power.preset_open() => {}
             Message::Page(page) => {
+                let entering_page = self.page != page;
+                if entering_page && self.page == Page::Dashboard {
+                    self.processes.stop_gpu_usage_sampling();
+                    self.processes.reset_limiter_inputs();
+                }
                 self.preferences.dismiss_picker();
                 self.time_rules.dismiss_picker();
-                self.preferences.hotkey_capture = None;
+                self.focus_plans.close_preview();
+                self.running_app_plans.close_preview();
+                self.preferences.cancel_shortcut_capture();
+                self.preferences.replace_settings_open = false;
                 self.navigation_history.visit(page);
-                self.side_panel_tab = SidePanelTab::for_page(page)[0];
-                let path = navigation::breadcrumb_path(page);
-                self.breadcrumb = path;
+                if entering_page || page != Page::Dashboard {
+                    self.side_panel_tab = SidePanelTab::initial_for_page(page);
+                }
+                if entering_page && page == Page::Dashboard {
+                    self.dashboard
+                        .set_power_source(dashboard::PowerSourceReading::Collecting);
+                }
                 self.page = page;
-                self.navigation_search_open = false;
-                self.navigation_search.clear();
-                self.navigation.dismiss();
-                if page == Page::Win32PrioritySeparation {
+                self.sync_visible_process_list_suspensions();
+                let search_was_open = self.reset_search();
+                if entering_page && page == Page::Win32PrioritySeparation {
                     self.priority_separation.refresh();
                 }
                 if page == Page::AdvancedPowerPlanTuning {
                     self.power_tuning.ensure_plan(&self.power_plans);
                 }
                 let mut tasks = Vec::new();
+                if search_was_open {
+                    tasks.push(iced::advanced::widget::operate(
+                        iced::advanced::widget::operation::focusable::unfocus(),
+                    ));
+                }
+                if navigation::has_children(page.section_landing_page()) {
+                    tasks.push(super::keyboard_focus::reveal(Some(navigation::page_id(
+                        page,
+                    ))));
+                }
                 if page_needs_power_plans(page, self.processes.rulesets_open()) {
                     tasks.push(self.load_power_plans());
                 }
-                if page == Page::ProcessList {
+                if page == Page::Dashboard && !self.hidden {
                     tasks.push(
                         self.processes
                             .update(
@@ -1722,25 +2153,8 @@ impl WinderustApp {
                             .map(Message::Processes),
                     );
                 }
-                if (page.supports_power_source_profiles()
-                    || matches!(
-                        page,
-                        Page::ActionLog
-                            | Page::Watchdog
-                            | Page::KeepRunning
-                            | Page::InstanceLimits
-                            | Page::InstanceBalancing
-                    ))
-                    && !self.catalog_loading
-                {
-                    self.catalog_loading = true;
-                    tasks.push(
-                        tasks::run({
-                            let cached = self.candidates.clone();
-                            move || super::app_picker::load(cached)
-                        })
-                        .map(|result| Message::Catalog(result.and_then(|result| result))),
-                    );
+                if page_needs_app_catalog(page) && !self.catalog_loading {
+                    tasks.push(self.load_catalog());
                 }
                 return Task::batch(tasks);
             }
@@ -1753,14 +2167,12 @@ impl WinderustApp {
                 let load_plans = matches!(
                     message,
                     process_list::Message::ProcessTab(process_list::ProcessTab::Rulesets)
+                        | process_list::Message::OpenDetails
                 );
                 let task = self
                     .processes
                     .update(message, &mut self.settings, &self.runtime)
                     .map(Message::Processes);
-                if self.processes.modal_open() {
-                    self.navigation.dismiss();
-                }
                 return if load_plans && self.processes.rulesets_open() {
                     Task::batch([task, self.load_power_plans()])
                 } else {
@@ -1786,42 +2198,32 @@ impl WinderustApp {
                         tray::MenuAction::MasterSwitch(enabled) => {
                             self.settings.set_master_enabled(enabled)
                         }
-                        tray::MenuAction::Feature { id, enabled, .. }
-                            if id == Page::Watchdog as usize =>
-                        {
-                            self.settings.set_watchdog_enabled(enabled)
-                        }
-                        tray::MenuAction::Feature { id, enabled, .. }
-                            if id == Page::InstanceLimits as usize =>
-                        {
-                            self.settings.set_instance_limits_enabled(enabled)
-                        }
-                        tray::MenuAction::Feature { id, enabled, .. }
-                            if id == Page::InstanceBalancing as usize =>
-                        {
-                            self.settings.set_instance_balancing_enabled(enabled)
-                        }
-                        tray::MenuAction::Feature { id, enabled, .. }
-                            if id == Page::KeepRunning as usize =>
-                        {
-                            self.settings.set_keep_running_enabled(enabled)
-                        }
                         tray::MenuAction::Feature {
                             id,
                             profile,
                             enabled,
                         } => {
-                            let field = Page::sections()
+                            let feature = Page::sections()
                                 .iter()
                                 .flat_map(|section| section.pages)
                                 .find(|page| **page as usize == id)
-                                .and_then(|page| navigation::feature_toggle(*page));
-                            let Some(field) = field else {
+                                .and_then(|&page| {
+                                    navigation::feature_toggle(page).map(|field| (page, field))
+                                });
+                            let Some((page, field)) = feature else {
                                 self.error_message = "Unknown tray feature toggle.".into();
                                 tray_error = true;
                                 continue;
                             };
-                            self.settings.set_feature_enabled(profile, field, enabled)
+                            if page == Page::AdaptiveEngine {
+                                self.settings.patch_feature_profile(profile, |settings| {
+                                    adaptive_engine::set_enabled(settings, enabled)
+                                })
+                            } else if page.supports_power_source_profiles() {
+                                self.settings.set_feature_enabled(profile, field, enabled)
+                            } else {
+                                self.settings.set_shared_feature_enabled(field, enabled)
+                            }
                         }
                     };
                     match result {
@@ -1852,17 +2254,22 @@ impl WinderustApp {
                         self.status.power_plan_status.current_guid.as_deref(),
                         status.power_plan_status.current_guid.as_deref(),
                     ) {
-                        self.power_plans_reload_pending |= self.power_plans_loading;
+                        if self.power_plans_loading {
+                            self.power_plans_reload_pending = true;
+                        } else if !self.hidden
+                            && self.visible_page_needs_power_plans()
+                            && !self.power_plans.iter().any(|plan| plan.active)
+                        {
+                            work.push(self.load_power_plans());
+                        }
                     }
                     if status.appearance_change_generation
                         != self.status.appearance_change_generation
                     {
                         self.appearance = settings_pages::theme(&self.settings.global().general);
                     }
-                    self.processes.sync_suspended_processes(
-                        &status.feature_status.app_suspension.suspended_process_ids,
-                    );
                     self.status = status;
+                    self.sync_visible_process_list_suspensions();
                 }
                 if let Some(patch) = self
                     .runtime
@@ -1878,7 +2285,7 @@ impl WinderustApp {
                     }
                 }
                 if !self.hidden {
-                    if self.page == Page::ProcessList {
+                    if self.page == Page::Dashboard {
                         work.push(
                             self.processes
                                 .update(
@@ -1889,30 +2296,15 @@ impl WinderustApp {
                                 .map(Message::Processes),
                         );
                     }
-                    if (self.page.supports_power_source_profiles()
-                        || matches!(
-                            self.page,
-                            Page::ActionLog
-                                | Page::Watchdog
-                                | Page::KeepRunning
-                                | Page::InstanceLimits
-                                | Page::InstanceBalancing
-                        ))
+                    if page_needs_app_catalog(self.page)
                         && !self.catalog_loading
                         && self.catalog_sampled_at.elapsed() >= Duration::from_secs(3)
                     {
-                        self.catalog_loading = true;
                         self.catalog_sampled_at = std::time::Instant::now();
-                        work.push(
-                            tasks::run({
-                                let cached = self.candidates.clone();
-                                move || super::app_picker::load(cached)
-                            })
-                            .map(|r| Message::Catalog(r.and_then(|r| r))),
-                        );
+                        work.push(self.load_catalog());
                     }
                 }
-                if self.page == Page::Home
+                if self.page == Page::Dashboard
                     && !self.hidden
                     && !self.sampling
                     && self.sampled_at.elapsed() >= Duration::from_secs(1)
@@ -1950,17 +2342,22 @@ impl WinderustApp {
                 }
             }
             Message::Close => {
+                self.power_tuning.cancel_apply_review();
                 if !self.closing {
                     self.error_message.clear();
+                    self.exit_export_failed = false;
                 }
                 self.closing = true;
                 return self.show_window();
             }
+            Message::Save
+                if self.power_plan_control.pending
+                    || self.closing && self.exit_blocking_status().is_some() => {}
             Message::Save if self.pending_editor() => {
                 self.error_message = t!("unsaved.message").to_string();
             }
-            Message::Save if self.settings.validate_watchdog().is_err() => {
-                self.error_message = t!("watchdog.invalid").to_string();
+            Message::Save if self.settings.validate_resource_thresholds().is_err() => {
+                self.error_message = t!("resource_thresholds.invalid").to_string();
             }
             Message::Save if self.settings.validate_instance_limits().is_err() => {
                 self.error_message = t!("instance_limits.invalid").to_string();
@@ -1971,51 +2368,81 @@ impl WinderustApp {
             Message::Save if self.settings.validate_keep_running().is_err() => {
                 self.error_message = t!("keep_running.invalid").to_string();
             }
-            Message::Save if self.watchdog.has_invalid_inputs() => {
-                self.error_message = t!("watchdog.invalid_duration").to_string();
+            Message::Save if self.resource_thresholds.has_invalid_inputs() => {
+                self.error_message = t!("resource_thresholds.invalid_duration").to_string();
             }
-            Message::Save if self.adaptive.validation_error().is_some() => {
-                self.error_message = self.adaptive.validation_error().unwrap_or_default();
+            Message::Save if self.adaptive_validation_error().is_some() => {
+                self.error_message = self.adaptive_validation_error().unwrap_or_default();
             }
-            Message::Save if self.cpu_limiter.has_invalid_inputs() => {
+            Message::Save
+                if self.cpu_limiter.has_invalid_inputs()
+                    || self.processes.has_invalid_limiter_inputs() =>
+            {
                 self.error_message = t!("cpu_limiter.invalid_limit").to_string();
+            }
+            Message::Save if self.power_tuning.has_invalid_inputs() => {
+                self.error_message = t!("processor_power.invalid_percentage").to_string();
             }
             Message::Save if !self.time_rules.valid() || !self.cpu_rules.valid() => {
                 self.error_message = t!("unsaved.message").to_string();
             }
             Message::Save if !self.activity_inputs.valid() => {
-                self.error_message = t!("by_activity.invalid_timing").to_string();
+                self.error_message = t!("by_activity.invalid_idle_timeout").to_string();
             }
-            Message::Save
-                if self.timer.has_invalid_inputs() || self.preferences.has_invalid_inputs() =>
-            {
-                self.error_message = t!("unsaved.message").to_string();
+            Message::Save if !self.power_plan_control.fallback_polling_interval_valid() => {
+                self.error_message =
+                    t!("power_plan_control.invalid_fallback_polling_interval").to_string();
             }
-            Message::Save => match self.settings.save() {
-                Ok(outcome) => {
-                    if let Some(error) = outcome.startup_registration_error() {
-                        self.error_message = error.to_string();
+            Message::Save if self.preferences.has_invalid_failure_threshold() => {
+                self.error_message =
+                    t!("settings.invalid_failure_suppression_threshold").to_string();
+            }
+            Message::Save if self.timer.has_invalid_inputs() => {
+                self.error_message = t!("timer_resolution.invalid_request").to_string();
+            }
+            Message::Save if self.preferences.has_invalid_accent() => {
+                self.error_message = t!("accent.invalid_hex").to_string();
+            }
+            Message::Save => {
+                if let Some(delay) = self.suspension.invalid_delay() {
+                    self.error_message = delay.error_message();
+                } else if self.suspension.has_invalid_thresholds() {
+                    self.error_message = t!("app_suspension.invalid_network_threshold").to_string();
+                } else if let Some(threshold) = self.trim.invalid_threshold() {
+                    self.error_message = threshold.error_message();
+                } else if self.power_tuning.dirty {
+                    match self.power_tuning.review_apply(
+                        &self.power_plans,
+                        advanced_power_plan_tuning::ApplyOrigin::Save,
+                    ) {
+                        Ok(()) => {
+                            self.error_message.clear();
+                            if !self.power_tuning.dirty {
+                                return if self.pending_settings_changes() {
+                                    self.save_settings()
+                                } else if self.closing {
+                                    self.shutdown()
+                                } else {
+                                    Task::none()
+                                };
+                            }
+                        }
+                        Err(error) => self.error_message = error,
                     }
-                    self.publish_settings();
-                    if self.power_tuning.dirty && !self.power_tuning.apply() {
-                        self.error_message = self.power_tuning.status.clone();
-                        return Task::none();
-                    }
-                    self.reset_editors();
-                    if self.closing {
-                        return self.shutdown();
-                    }
+                } else {
+                    return self.save_settings();
                 }
-                Err(error) => self.error_message = error.to_string(),
-            },
+            }
             Message::Cancel => {
+                let previous_channel = self.settings.global().general.update_channel;
                 self.settings.cancel();
+                self.adaptive_processor_power.discard_preset_selection();
                 if self.power_tuning.dirty {
-                    self.power_tuning.refresh();
+                    self.power_tuning.discard_values(&self.power_plans);
                 }
-                self.reset_editors();
-                rust_i18n::set_locale(self.settings.global().general.language.locale());
-                self.publish_settings();
+                if let Some(error) = self.settings_replaced(previous_channel) {
+                    self.error_message = error;
+                }
                 self.closing = false;
             }
             Message::PausePowerPlans(value) => self.settings.edit_global(|settings| {
@@ -2032,17 +2459,30 @@ impl WinderustApp {
             }
             Message::Stay => {
                 self.closing = false;
+                self.exit_export_failed = false;
                 self.error_message.clear();
             }
+            Message::DiscardAndClose if self.exit_blocking_status().is_some() => {}
             Message::DiscardAndClose => {
                 self.settings.cancel();
                 if self.power_tuning.dirty {
-                    self.power_tuning.refresh();
+                    self.power_tuning.discard_values(&self.power_plans);
                 }
                 return self.shutdown();
             }
-            Message::SettingsFile(_) if self.pending_editor() || self.invalid_inputs() => {
+            Message::SettingsFile(_) if self.blocking_editor_open() || self.invalid_inputs() => {
                 self.error_message = t!("unsaved.message").to_string();
+            }
+            Message::SettingsFileChosen(FileDialogMode::Open, Some(_))
+                if self.adaptive_processor_power.preset_open() =>
+            {
+                self.error_message = t!("unsaved.message").to_string();
+            }
+            Message::SettingsFile(FileDialogMode::Open)
+            | Message::SettingsFileChosen(FileDialogMode::Open, Some(_))
+                if self.settings.has_unsaved_changes() =>
+            {
+                self.error_message = t!("settings.import_unsaved").to_string();
             }
             Message::SettingsFile(mode) => {
                 let hwnd = self
@@ -2055,19 +2495,40 @@ impl WinderustApp {
             Message::SettingsFileChosen(mode, path) => {
                 if let Some(path) = path {
                     match mode {
-                        FileDialogMode::Open => match self.settings.import_toml_from(&path) {
-                            Ok(outcome) => {
-                                self.reset_editors();
-                                if let Some(error) = outcome.startup_registration_error() {
-                                    self.error_message = error.to_string();
+                        FileDialogMode::Open => {
+                            let previous_channel = self.settings.global().general.update_channel;
+                            let saved = self.settings.persisted().general.show_winderust_shortcut;
+                            let tray = &mut self.tray;
+                            match self.settings.import_toml_from(&path, |imported| {
+                                Self::prepare_show_shortcut(
+                                    tray,
+                                    saved,
+                                    imported.general.show_winderust_shortcut,
+                                )
+                                .map_err(tray::ShortcutError::localized)
+                            }) {
+                                Ok((outcome, prepared)) => {
+                                    self.commit_show_shortcut(prepared);
+                                    self.adaptive_processor_power.commit_preset_selection();
+                                    let tray_warning = self.settings_replaced(previous_channel);
+                                    let startup_warning =
+                                        outcome.startup_registration_error().map(|error| {
+                                            t!("settings.imported_startup_failed", error = error)
+                                                .into_owned()
+                                        });
+                                    if let Some(warning) =
+                                        combine_warnings(startup_warning, tray_warning)
+                                    {
+                                        self.error_message = warning;
+                                    }
                                 }
-                                rust_i18n::set_locale(
-                                    self.settings.global().general.language.locale(),
-                                );
-                                self.publish_settings();
+                                Err(error) => {
+                                    self.sync_tray();
+                                    self.error_message =
+                                        t!("settings.import_failed", error = error).into_owned();
+                                }
                             }
-                            Err(error) => self.error_message = error.to_string(),
-                        },
+                        }
                         FileDialogMode::Save => {
                             if let Err(error) = self.settings.export_toml_to(&path) {
                                 self.error_message = error.to_string();
@@ -2080,28 +2541,160 @@ impl WinderustApp {
         Task::none()
     }
 
-    fn pending_changes(&self) -> bool {
+    fn pending_settings_changes(&self) -> bool {
         self.settings.has_unsaved_changes()
             || self.power_tuning.dirty
             || self.pending_editor()
             || self.invalid_inputs()
     }
+
+    fn can_replace_settings(&self) -> bool {
+        self.page == Page::WinderustBehaviour
+            && !self.closing
+            && self.settings.load_error().is_some()
+            && !self.pending_settings_changes()
+    }
+
+    fn save_settings(&mut self) -> Task<Message> {
+        if (self.power_tuning.dirty || self.power_tuning.has_invalid_inputs())
+            && !self.power_tuning.preflight_save(&self.power_plans)
+        {
+            self.error_message = self.power_tuning.status().into_owned();
+            return Task::none();
+        }
+        let settings_changed = self.power_tuning.dirty && self.settings.has_unsaved_changes();
+        let prepared_shortcut = match Self::prepare_show_shortcut(
+            &mut self.tray,
+            self.settings.persisted().general.show_winderust_shortcut,
+            self.settings.global().general.show_winderust_shortcut,
+        ) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.power_tuning.cancel_apply_review();
+                self.sync_tray();
+                self.error_message = error.localized();
+                return Task::none();
+            }
+        };
+        let outcome = match self.settings.save() {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.power_tuning.cancel_apply_review();
+                if prepared_shortcut.is_some() {
+                    drop(prepared_shortcut);
+                    self.sync_tray();
+                }
+                self.error_message = error.to_string();
+                return Task::none();
+            }
+        };
+        self.commit_show_shortcut(prepared_shortcut);
+        self.adaptive_processor_power.commit_preset_selection();
+        let startup_warning = outcome
+            .startup_registration_error()
+            .map(|error| t!("settings.saved_startup_failed", error = error).into_owned());
+        let exit_after_save = self.closing && startup_warning.is_none();
+        let reported_saved = startup_warning.is_some();
+        let tray_warning = self.publish_settings_with_tray_warning();
+        let warning = combine_warnings(startup_warning, tray_warning);
+        if self.power_tuning.dirty && !self.power_tuning.confirm_apply(&self.power_plans) {
+            let status = self.power_tuning.status();
+            let tuning_error = if reported_saved {
+                t!("processor_power.apply_failed", error = status.as_ref()).into_owned()
+            } else if settings_changed {
+                t!(
+                    "processor_power.settings_saved_tuning_failed",
+                    error = status.as_ref()
+                )
+                .into_owned()
+            } else {
+                status.into_owned()
+            };
+            self.error_message = match warning {
+                Some(warning) => format!("{warning}\n{tuning_error}"),
+                None => tuning_error,
+            };
+            return Task::none();
+        }
+        if let Some(warning) = warning {
+            self.error_message = warning;
+        }
+        self.reset_editors();
+        if exit_after_save {
+            self.shutdown()
+        } else {
+            Task::none()
+        }
+    }
+
+    fn switch_power_plan(&mut self, guid: String) -> Task<Message> {
+        let receiver = match self.runtime.request_power_plan_switch(guid) {
+            Ok(receiver) => receiver,
+            Err(error) => {
+                self.error_message = power_plan_switch_error(error);
+                return Task::none();
+            }
+        };
+        self.power_plan_control.pending = true;
+        tasks::run(move || {
+            receiver
+                .recv()
+                .unwrap_or(Err(RuntimeCommandError::WorkerExited))
+        })
+        .map(|result| {
+            Message::PowerPlanSwitchFinished(
+                result
+                    .map_err(RuntimeCommandError::CommandFailed)
+                    .and_then(|result| result),
+            )
+        })
+    }
+    fn adaptive_validation_error(&self) -> Option<String> {
+        self.adaptive
+            .validation_error()
+            .or_else(|| self.adaptive_processor_power.validation_error())
+    }
+
     fn invalid_inputs(&self) -> bool {
-        self.settings.validate_watchdog().is_err()
+        self.settings.validate_resource_thresholds().is_err()
             || self.settings.validate_keep_running().is_err()
             || self.settings.validate_instance_limits().is_err()
             || self.settings.validate_instance_balancing().is_err()
-            || self.watchdog.has_invalid_inputs()
+            || self.resource_thresholds.has_invalid_inputs()
             || self.cpu_limiter.has_invalid_inputs()
+            || self.processes.has_invalid_limiter_inputs()
+            || self.power_tuning.has_invalid_inputs()
+            || self.suspension.invalid_delay().is_some()
+            || self.suspension.has_invalid_thresholds()
+            || self.trim.invalid_threshold().is_some()
             || self.timer.has_invalid_inputs()
             || self.preferences.has_invalid_inputs()
-            || self.adaptive.validation_error().is_some()
+            || self.adaptive_validation_error().is_some()
             || !self.activity_inputs.valid()
+            || !self.power_plan_control.fallback_polling_interval_valid()
             || !self.time_rules.valid()
             || !self.cpu_rules.valid()
     }
+
+    fn sync_visible_process_list_suspensions(&mut self) {
+        if self.page == Page::Dashboard && !self.hidden {
+            self.processes.sync_suspended_processes(
+                &self
+                    .status
+                    .feature_status
+                    .app_suspension
+                    .suspended_process_instances,
+            );
+        }
+    }
+
     fn show_window(&mut self) -> Task<Message> {
+        if self.hidden && self.page == Page::Dashboard {
+            self.dashboard
+                .set_power_source(dashboard::PowerSourceReading::Collecting);
+        }
         self.hidden = false;
+        self.sync_visible_process_list_suspensions();
         tray::set_hidden_to_tray(false);
         if let Some(hwnd) = self.hwnd {
             tray::show_window(hwnd as windows_sys::Win32::Foundation::HWND);
@@ -2129,12 +2722,12 @@ impl WinderustApp {
                 hwnd as windows_sys::Win32::Foundation::HWND,
             );
         }
+        self.processes.stop_gpu_usage_sampling();
         self.hidden = true;
         self.hwnd = None;
-        self.navigation.dismiss();
-        self.navigation_search_open = false;
+        self.reset_search();
         self.preferences.dismiss_picker();
-        self.preferences.hotkey_capture = None;
+        self.preferences.cancel_shortcut_capture();
         self.time_rules.dismiss_picker();
         tray::set_hidden_to_tray(true);
         // Closing the last Iced window releases its renderer/compositor, while the daemon
@@ -2147,34 +2740,127 @@ impl WinderustApp {
     fn pending_editor(&self) -> bool {
         self.power_tuning.has_pending_editor()
             || self.adaptive.has_pending_editor()
+            || self.adaptive_processor_power.preset_open()
             || self.soft_allocation.has_pending_editor()
             || self.hard_allocation.has_pending_editor()
             || self.cpu_limiter.has_pending_editor()
-            || self.watchdog.has_pending_editor()
+            || self.resource_thresholds.has_pending_editor()
             || self.keep_running.has_pending_editor()
             || self.instance_limits.has_pending_editor()
             || self.instance_balancing.has_pending_editor()
             || self.time_rules.has_pending_editor()
             || self.cpu_rules.has_pending_editor()
     }
+
+    fn blocking_editor_open(&self) -> bool {
+        self.preferences.replace_settings_open
+            || self.adaptive.preset_open()
+            || self.preset_close_message().is_some()
+            || self.pending_editor()
+    }
+
+    fn preset_close_message(&self) -> Option<Message> {
+        match self.page {
+            Page::AdaptiveEngine if self.adaptive.preset_open() => {
+                Some(Message::Adaptive(adaptive_engine::Message::Cancel))
+            }
+            Page::AdaptiveProcessorPower if self.adaptive_processor_power.preset_open() => Some(
+                Message::AdaptiveProcessorPower(adaptive_processor_power::Message::CancelPreset),
+            ),
+            Page::CpuSetsSoft if self.soft_allocation.preset_open() => Some(Message::Allocation(
+                cpu_allocation::Kind::Soft,
+                cpu_allocation::Message::ClosePreset,
+            )),
+            Page::ProcessorAffinityHard if self.hard_allocation.preset_open() => {
+                Some(Message::Allocation(
+                    cpu_allocation::Kind::Hard,
+                    cpu_allocation::Message::ClosePreset,
+                ))
+            }
+            Page::AdvancedPowerPlanTuning if self.power_tuning.preset_open() => Some(
+                Message::PowerTuning(advanced_power_plan_tuning::Message::ClosePreset),
+            ),
+            _ => None,
+        }
+    }
+
+    fn process_power_plan_preview(
+        &self,
+    ) -> Option<(process_power_plans::Kind, &process_power_plans::Editor)> {
+        let (kind, editor) = match self.page {
+            Page::ByFocus => (process_power_plans::Kind::Focus, &self.focus_plans),
+            Page::ByRunningApp => (
+                process_power_plans::Kind::RunningApp,
+                &self.running_app_plans,
+            ),
+            _ => return None,
+        };
+        editor.preview_open().then_some((kind, editor))
+    }
+
+    fn live_preview_page(&self) -> Option<Page> {
+        if self.exiting || self.hidden || self.window.is_none() {
+            return None;
+        }
+        #[cfg(feature = "render-smoke")]
+        if self.smoke.is_some() || self.lifecycle_smoke.is_some() {
+            return None;
+        }
+        match self.page {
+            Page::ResourceThresholds if self.resource_thresholds.preview_matches_open() => {
+                Some(self.page)
+            }
+            Page::ByRunningApp if self.running_app_plans.preview_open() => Some(self.page),
+            _ => None,
+        }
+    }
+
+    fn select_power_source(&mut self, source: PowerSourceProfile) -> bool {
+        if source == self.power_source {
+            return true;
+        }
+        if self.blocking_editor_open() || self.invalid_inputs() {
+            self.error_message = t!("unsaved.message").to_string();
+            return false;
+        }
+        self.power_source = source;
+        self.settings.select_power_source(source);
+        self.reset_editors();
+        true
+    }
+
+    fn settings_replaced(&mut self, previous_channel: UpdateChannel) -> Option<String> {
+        self.reset_editors();
+        let general = &self.settings.global().general;
+        if general.update_channel != previous_channel {
+            self.preferences.reset_update_check();
+        }
+        rust_i18n::set_locale(general.language.locale());
+        self.publish_settings_with_tray_warning()
+    }
+
     fn reset_editors(&mut self) {
         self.preferences.reset_drafts();
         self.power_tuning.discard_editor();
         self.cpu_limiter = Default::default();
+        self.processes.reset_limiter_inputs();
         self.activity_inputs = Default::default();
+        self.power_plan_control
+            .reset_fallback_polling_interval_draft();
         self.focus_plans = Default::default();
         self.running_app_plans = Default::default();
         self.priority = Default::default();
-        self.efficiency = Default::default();
+        self.efficiency_mode = Default::default();
         self.soft_allocation.reset_drafts();
         self.hard_allocation.reset_drafts();
         self.adaptive.reset_drafts();
+        self.adaptive_processor_power.reset_drafts();
         self.time_rules = Default::default();
         self.cpu_rules = Default::default();
         self.suspension = Default::default();
-        self.sleep_prevention = Default::default();
-        self.trim = Default::default();
-        self.watchdog = Default::default();
+        self.sleep_prevention.reset_drafts();
+        self.trim.reset_drafts();
+        self.resource_thresholds = Default::default();
         self.keep_running = Default::default();
         self.instance_limits = Default::default();
         self.instance_balancing = Default::default();
@@ -2183,18 +2869,41 @@ impl WinderustApp {
     }
     fn browse(&self, page: Page) -> Task<Message> {
         let profile = self.power_source;
-        Task::perform(
-            crate::file_dialog::choose_executable_file(
-                self.hwnd.map(|h| h as windows_sys::Win32::Foundation::HWND),
-            ),
-            move |path| Message::ExecutableChosen(page, profile, path),
+        Task::perform(self.choose_executable_file(), move |path| {
+            Message::ExecutableChosen(page, profile, path)
+        })
+    }
+
+    fn choose_executable_file(&self) -> impl std::future::Future<Output = Option<PathBuf>> + Send {
+        crate::file_dialog::choose_executable_file(
+            self.hwnd.map(|h| h as windows_sys::Win32::Foundation::HWND),
         )
     }
 
     fn publish_settings(&mut self) {
-        self.runtime
-            .replace_settings(&self.settings.runtime_settings_snapshot());
-        self.sync_tray();
+        if let Some(error) = self.publish_settings_with_tray_warning() {
+            self.error_message = error;
+        }
+    }
+
+    fn publish_settings_with_tray_warning(&mut self) -> Option<String> {
+        let snapshot = self.settings.runtime_settings_snapshot();
+        if notifications_required(self.settings.persisted()) {
+            // Register the tray before the worker can reserve the first alert.
+            let warning = self.sync_tray_warning();
+            self.runtime.replace_settings(&snapshot);
+            warning
+        } else {
+            self.runtime.replace_settings(&snapshot);
+            self.sync_tray_warning()
+        }
+    }
+
+    fn load_catalog(&mut self) -> Task<Message> {
+        self.catalog_loading = true;
+        let cached = Arc::clone(&self.candidates);
+        tasks::run(move || super::app_picker::load(&cached))
+            .map(|result| Message::Catalog(result.and_then(|result| result)))
     }
 
     fn load_power_plans(&mut self) -> Task<Message> {
@@ -2207,14 +2916,77 @@ impl WinderustApp {
             .map(|result| Message::PowerPlans(result.and_then(|result| result)))
     }
 
+    fn tray_intent(&self) -> (bool, bool) {
+        let saved = self.settings.persisted();
+        (
+            self.settings.global().general.hide_to_tray,
+            saved.general.start_minimized
+                || saved.general.show_winderust_shortcut.is_some()
+                || notifications_required(saved),
+        )
+    }
+
     fn tray_retry_pending(&self) -> bool {
-        (self.settings.global().general.hide_to_tray
-            || self.settings.persisted().general.start_minimized
-            || notifications_required(self.settings.persisted()))
-            && self.tray.as_ref().is_none_or(|icon| !icon.is_registered())
+        let intent = self.tray_intent();
+        (intent.0 || intent.1) && self.tray.as_ref().is_none_or(|icon| !icon.is_registered())
+    }
+
+    fn ensure_tray(tray: &mut Option<tray::TrayIcon>) -> Result<(), String> {
+        match tray {
+            Some(icon) if icon.is_registered() => Ok(()),
+            Some(icon) => icon.register(),
+            None => tray::TrayIcon::install().map(|icon| *tray = Some(icon)),
+        }
+    }
+
+    fn prepare_show_shortcut(
+        tray: &mut Option<tray::TrayIcon>,
+        saved: Option<crate::config::ShowWinderustShortcut>,
+        requested: Option<crate::config::ShowWinderustShortcut>,
+    ) -> Result<Option<tray::PreparedShortcut>, tray::ShortcutError> {
+        if requested == saved {
+            return Ok(None);
+        }
+        if requested.is_some() {
+            Self::ensure_tray(tray).map_err(|error| {
+                crate::backend::diagnostics::error(&error);
+                tray::ShortcutError::Unavailable
+            })?;
+        }
+        tray.as_ref()
+            .filter(|icon| requested.is_some() || icon.has_live_owner())
+            .map(|icon| icon.prepare_show_shortcut(requested))
+            .transpose()
+    }
+
+    fn commit_show_shortcut(&mut self, prepared: Option<tray::PreparedShortcut>) {
+        if let Some(prepared) = prepared {
+            let Some(tray) = &mut self.tray else {
+                unreachable!("The tray still owns the prepared Show Winderust shortcut");
+            };
+            tray.commit_show_shortcut(prepared);
+        }
+    }
+
+    fn show_shortcut_error(&self) -> Option<tray::ShortcutError> {
+        let saved = self.settings.persisted().general.show_winderust_shortcut?;
+        if self.settings.global().general.show_winderust_shortcut != Some(saved) {
+            return None;
+        }
+        self.tray
+            .as_ref()
+            .map_or(Some(tray::ShortcutError::Unavailable), |icon| {
+                icon.show_shortcut_error()
+            })
     }
 
     fn sync_tray(&mut self) {
+        if let Some(error) = self.sync_tray_warning() {
+            self.error_message = error;
+        }
+    }
+
+    fn sync_tray_warning(&mut self) -> Option<String> {
         let profile = if crate::backend::power_source::is_plugged_in() != Some(false) {
             PowerSourceProfile::PluggedIn
         } else {
@@ -2239,18 +3011,13 @@ impl WinderustApp {
                     let items: Vec<_> = section
                         .pages
                         .iter()
+                        .filter(|page| **page != Page::AdaptiveProcessorPower)
                         .filter_map(|page| {
                             navigation::feature_page_enabled(
-                                if matches!(
-                                    *page,
-                                    Page::Watchdog
-                                        | Page::KeepRunning
-                                        | Page::InstanceLimits
-                                        | Page::InstanceBalancing
-                                ) {
-                                    saved
-                                } else {
+                                if page.supports_power_source_profiles() {
                                     settings
+                                } else {
+                                    saved
                                 },
                                 *page,
                             )
@@ -2265,45 +3032,55 @@ impl WinderustApp {
                 })
                 .collect(),
         });
-        let intent = (
-            self.settings.global().general.hide_to_tray,
-            self.settings.persisted().general.start_minimized
-                || notifications_required(self.settings.persisted()),
-        );
+        let shortcut = saved.general.show_winderust_shortcut;
+        let intent = self.tray_intent();
         if !intent.0 && !intent.1 {
             self.tray = None;
             self.tray_attempt = None;
+            return None;
+        }
+        if tray::take_taskbar_created() {
+            self.tray_attempt = None;
+            if let Some(icon) = &mut self.tray {
+                icon.invalidate();
+            }
+        }
+        let missing = self.tray.as_ref().is_none_or(|icon| !icon.is_registered());
+        let now = std::time::Instant::now();
+        if missing && tray_retry_due(self.tray_attempt, intent, now) {
+            let first_attempt = self.tray_attempt.is_none();
+            self.tray_attempt = Some((intent, now));
+            if let Err(error) = Self::ensure_tray(&mut self.tray) {
+                if first_attempt {
+                    return Some(error);
+                }
+            }
+        }
+        self.tray
+            .as_mut()?
+            .sync_show_shortcut(shortcut)
+            .map(|error| error.localized())
+    }
+
+    fn exit_blocking_status(&self) -> Option<&'static str> {
+        if self.interrupt_timing.export_writing() {
+            Some("interrupt_timing.export_saving")
         } else {
-            if tray::take_taskbar_created() {
-                self.tray_attempt = None;
-                if let Some(icon) = &mut self.tray {
-                    icon.invalidate();
-                }
-            }
-            let missing = self.tray.as_ref().is_none_or(|icon| !icon.is_registered());
-            let now = std::time::Instant::now();
-            if missing && tray_retry_due(self.tray_attempt, intent, now) {
-                let first_attempt = self.tray_attempt.is_none();
-                self.tray_attempt = Some((intent, now));
-                let result = if let Some(icon) = &mut self.tray {
-                    icon.register()
-                } else {
-                    tray::TrayIcon::install().map(|icon| self.tray = Some(icon))
-                };
-                if let Err(error) = result {
-                    if first_attempt {
-                        self.error_message = error;
-                    }
-                }
-            }
+            self.power_plan_control
+                .pending
+                .then_some("power_plan_control.switching")
         }
     }
 
     fn shutdown(&mut self) -> Task<Message> {
+        if self.exit_blocking_status().is_some() {
+            return Task::none();
+        }
         crate::backend::diagnostics::event("Exit requested; restoring managed state.");
         self.exiting = true;
         self.closing = true;
         self.error_message.clear();
+        let interrupt_timing = self.interrupt_timing.cancel_for_exit();
         let runtime = self.runtime.clone();
         let recovery_client = Arc::clone(&self.recovery_client);
         tasks::run(move || {
@@ -2317,6 +3094,13 @@ impl WinderustApp {
             {
                 crate::backend::diagnostics::error(&error);
             }
+            if let Some(capture) = interrupt_timing {
+                if let Err(error) = capture.finish() {
+                    crate::backend::diagnostics::error(&format!(
+                        "Interrupt Timing cleanup failed with {error}"
+                    ));
+                }
+            }
         })
         .map(Message::ShutdownFinished)
     }
@@ -2327,24 +3111,75 @@ impl WinderustApp {
         iced::exit()
     }
 
-    fn view(&self, _window: iced::window::Id) -> Element<'_, Message> {
-        let picker_open = !self.navigation_search_open
+    fn picker_open(&self) -> bool {
+        !self.navigation_search_open
             && !self.closing
+            && self.power_tuning.review_origin().is_none()
             && self.error_message.is_empty()
             && match self.page {
                 Page::ByTime => self.time_rules.picker_open(),
                 Page::LanguageAndAppearance => self.preferences.picker_open(),
                 _ => false,
-            };
-        window_frame::view(
+            }
+    }
+
+    fn process_context_open(&self) -> bool {
+        self.page == Page::Dashboard && self.processes.context_open()
+    }
+
+    fn side_panel_available(&self) -> bool {
+        self.page == Page::ActionLog || !SidePanelTab::for_page(self.page).is_empty()
+    }
+
+    fn dashboard_status_open(&self) -> bool {
+        self.page == Page::Dashboard
+            && self.side_panel_open
+            && self.side_panel_tab == SidePanelTab::Status
+    }
+
+    fn visible_page_needs_power_plans(&self) -> bool {
+        self.dashboard_status_open()
+            || page_needs_power_plans(self.page, self.processes.rulesets_open())
+    }
+
+    fn side_panel_toggle_state(&self) -> Option<bool> {
+        (self.side_panel_available() && !self.navigation_search_open && self.search_available())
+            .then_some(self.side_panel_open)
+    }
+
+    fn view(&self, _window: iced::window::Id) -> Element<'_, Message> {
+        let picker_open = self.picker_open();
+        let search_available = self.search_available();
+        let search_open = search_available && self.navigation_search_open;
+        let frame = window_frame::view(
             super::modal::picker(self.view_workspace(), picker_open, Message::DismissPickers),
+            navigation_search_input(&self.navigation_search, search_available, search_open),
             self.maximized,
+            !picker_open
+                && !search_open
+                && (!self.process_context_open() || self.closing || !self.error_message.is_empty()),
             Message::WindowAction,
-        )
+        );
+        if search_open {
+            super::modal::dismiss_on_escape(frame, Message::CloseNavigationSearch)
+        } else {
+            frame
+        }
     }
 
     fn view_workspace(&self) -> Element<'_, Message> {
         let content = self.view_content();
+        if let Some(modal) = self.power_tuning.apply_review_modal(
+            &self.power_plans,
+            &self.status.power_plan_status,
+            self.effective_power_mode
+                .as_ref()
+                .map_or(crate::power::EffectivePowerMode::Unknown, |monitor| {
+                    monitor.snapshot()
+                }),
+        ) {
+            return centered_modal(content, modal.map(Message::PowerTuning));
+        }
         if self.closing || !self.error_message.is_empty() {
             let mut actions =
                 row![iced::widget::Space::new().width(Fill)].spacing(design::space::SMALL);
@@ -2361,36 +3196,37 @@ impl WinderustApp {
             )]
             .spacing(design::space::LARGE);
             if !self.exiting && self.closing {
-                body = body.push(text(
-                    t!(if self.pending_changes() {
-                        "exit_prompt.unsaved"
-                    } else {
-                        "exit_prompt.message"
-                    })
-                    .to_string(),
-                ));
+                let pending_changes = self.pending_settings_changes();
+                let blocking_status = self.exit_blocking_status();
+                let can_exit = blocking_status.is_none();
+                let status = blocking_status.unwrap_or(if pending_changes {
+                    "exit_prompt.unsaved"
+                } else {
+                    "exit_prompt.message"
+                });
+                body = body.push(text(t!(status).to_string()));
                 actions = actions.push(
                     action_button(t!("common.cancel").to_string())
                         .style(widgets::tertiary_button)
                         .on_press(Message::Stay),
                 );
-                if self.pending_changes() {
+                if pending_changes {
                     actions = actions
                         .push(
                             action_button(t!("exit_prompt.save_and_exit").to_string())
                                 .style(widgets::primary_button)
-                                .on_press(Message::Save),
+                                .on_press_maybe(can_exit.then_some(Message::Save)),
                         )
                         .push(
                             action_button(t!("exit_prompt.without_saving").to_string())
                                 .style(widgets::danger_button)
-                                .on_press(Message::DiscardAndClose),
+                                .on_press_maybe(can_exit.then_some(Message::DiscardAndClose)),
                         );
                 } else {
                     actions = actions.push(
                         action_button(t!("tray.exit").to_string())
                             .style(widgets::danger_button)
-                            .on_press(Message::DiscardAndClose),
+                            .on_press_maybe(can_exit.then_some(Message::DiscardAndClose)),
                     );
                 }
             } else if !self.exiting {
@@ -2400,8 +3236,19 @@ impl WinderustApp {
                         .on_press(Message::DismissError),
                 );
             }
-            if !self.exiting && !self.error_message.is_empty() {
-                body = body.push(text(&self.error_message));
+            let export_failure = (self.closing && self.exit_export_failed)
+                .then(|| self.interrupt_timing.export_failure())
+                .flatten();
+            if !self.exiting && (!self.error_message.is_empty() || export_failure.is_some()) {
+                let mut details = column![].spacing(design::space::SMALL);
+                if !self.error_message.is_empty() {
+                    details = details
+                        .push(text(&self.error_message).wrapping(text::Wrapping::WordOrGlyph));
+                }
+                if let Some(error) = export_failure {
+                    details = details.push(text(error).wrapping(text::Wrapping::WordOrGlyph));
+                }
+                body = body.push(container(scrollable(details)).max_height(320));
             }
             if !self.exiting {
                 body = body.push(actions);
@@ -2433,7 +3280,23 @@ impl WinderustApp {
             ]
             .into();
         }
-        if self.page == Page::ProcessList && self.processes.context_open() {
+        if self.preferences.replace_settings_open {
+            return centered_modal(
+                content,
+                self.preferences
+                    .replace_settings_modal()
+                    .map(Message::Preferences),
+            );
+        }
+        if let Some((kind, editor)) = self.process_power_plan_preview() {
+            if let Some(preview) = editor.preview_modal(&self.power_plans) {
+                return centered_modal(
+                    content,
+                    preview.map(move |message| Message::ProcessPowerPlans(kind, message)),
+                );
+            }
+        }
+        if self.process_context_open() {
             iced::widget::stack![
                 content,
                 iced::widget::opaque(
@@ -2450,8 +3313,26 @@ impl WinderustApp {
         }
     }
 
-    fn side_panel(&self, page: Page) -> Option<Element<'_, Message>> {
-        let panel = if page == Page::ProcessList {
+    fn side_panel(
+        &self,
+        read_power_source: impl FnOnce() -> Option<bool>,
+    ) -> Option<Element<'_, Message>> {
+        let body = self.side_panel_body(read_power_source)?;
+        Some(page_side_panel(self.page, self.side_panel_tab, body))
+    }
+
+    fn side_panel_body(
+        &self,
+        read_power_source: impl FnOnce() -> Option<bool>,
+    ) -> Option<Element<'_, Message>> {
+        let page = self.page;
+        if self.dashboard_status_open() {
+            Some(
+                self.dashboard
+                    .status(self.settings.persisted(), &self.status, &self.power_plans)
+                    .map(Message::Dashboard),
+            )
+        } else if page == Page::Dashboard {
             Some(self.processes.side_panel().map(Message::Processes))
         } else if page == Page::ActionLog {
             Some(
@@ -2469,10 +3350,21 @@ impl WinderustApp {
                     .presets_panel(&self.settings)
                     .map(Message::Adaptive),
             )
+        } else if page == Page::AdaptiveProcessorPower
+            && self.side_panel_tab == SidePanelTab::Presets
+        {
+            Some(
+                self.adaptive_processor_power
+                    .presets_panel(&self.settings)
+                    .map(Message::AdaptiveProcessorPower),
+            )
         } else if page == Page::AdvancedPowerPlanTuning {
             Some(
                 self.power_tuning
-                    .presets_panel(&self.settings.advanced_power_plan_tuning_presets)
+                    .presets_panel(
+                        &self.settings.global().advanced_power_plan_tuning_presets,
+                        &self.power_plans,
+                    )
                     .map(Message::PowerTuning),
             )
         } else if page == Page::CpuSetsSoft && self.side_panel_tab == SidePanelTab::Presets {
@@ -2490,244 +3382,93 @@ impl WinderustApp {
                     .map(|m| Message::Allocation(cpu_allocation::Kind::Hard, m)),
             )
         } else {
-            status_rail::view(page, &self.settings, &self.status, &self.power_plans).map(|panel| {
-                let panel = panel.map(Message::Status);
-                if page == Page::MemoryTrim {
-                    column![
-                        panel,
-                        iced::widget::rule::horizontal(1),
-                        container(
-                            button(
-                                container(text(t!("memory_trim.trim_now").to_string()))
-                                    .center_x(Fill)
-                            )
-                            .width(Fill)
-                            .height(32)
-                            .style(widgets::primary_button)
-                            .on_press_maybe(
-                                self.settings
-                                    .memory_trim
-                                    .enabled
-                                    .then_some(Message::Trim(memory_trim::Message::TrimNow))
-                            )
-                        )
-                        .padding([design::space::MEDIUM as u16, 0])
-                    ]
-                    .height(Fill)
-                    .into()
-                } else if matches!(page, Page::ByTime | Page::ByCpuLoad) {
-                    let kind = if page == Page::ByTime {
-                        power_rules::Kind::Time
-                    } else {
-                        power_rules::Kind::CpuLoad
-                    };
-                    column![
-                        panel,
-                        iced::widget::rule::horizontal(1),
-                        container(
-                            button(container(text(t!("common.create").to_string())).center_x(Fill))
-                                .width(Fill)
-                                .height(32)
-                                .style(widgets::primary_button)
-                                .on_press(Message::PowerRules(kind, power_rules::Message::Add))
-                        )
-                        .padding([design::space::MEDIUM as u16, 0])
-                    ]
-                    .height(Fill)
-                    .into()
-                } else {
-                    panel
-                }
-            })
-        };
-        feature_info_sidebar(panel, page, self.side_panel_tab)
+            let observed_plugged_in = read_power_source();
+            let settings = status_rail::saved_rail_settings(
+                &self.settings,
+                page,
+                &self.status,
+                observed_plugged_in,
+            );
+            status_rail::view(
+                page,
+                settings,
+                &self.status,
+                &self.power_plans,
+                observed_plugged_in,
+            )
+            .map(|panel| panel.map(Message::Status))
+        }
     }
 
     fn view_content(&self) -> Element<'_, Message> {
-        iced::widget::responsive(|size| self.view_content_at_width(size.width)).into()
+        iced::widget::responsive(|size| self.view_content_at_size(size)).into()
     }
 
-    fn view_content_at_width(&self, width: f32) -> Element<'_, Message> {
+    fn view_content_at_size(&self, size: iced::Size) -> Element<'_, Message> {
+        let observed_power_source = std::cell::OnceCell::new();
+        let read_power_source =
+            || *observed_power_source.get_or_init(crate::backend::power_source::is_plugged_in);
+        let process_actions_open = self.page == Page::Dashboard
+            && (self.processes.modal_open() || self.processes.context_open());
         let shield = |content| {
-            if self.page == Page::ProcessList && self.processes.modal_open() {
+            if process_actions_open {
                 super::modal::background(content)
             } else {
                 content
             }
         };
-        let (navigation_width, side_panel_width, page_padding) = shell_widths(width);
-        if self.preferences.show_update && !self.closing {
-            return (container(
-                column![
-                    text(t!("about.updates").to_string()).size(design::typography::DIALOG_TITLE),
-                    text(self.preferences.latest.as_deref().unwrap_or_default()),
-                    row![
-                        iced::widget::Space::new().width(Fill),
-                        action_button(t!("about.download_update").to_string())
-                            .style(widgets::primary_button)
-                            .on_press_maybe(self.preferences.download.clone().map(|url| {
-                                Message::Preferences(settings_pages::Message::Open(url))
-                            })),
-                        action_button(t!("common.cancel").to_string())
-                            .style(crate::ui::widgets::tertiary_button)
-                            .on_press(Message::Preferences(settings_pages::Message::DismissUpdate))
-                    ]
-                    .spacing(design::space::SMALL)
-                ]
-                .spacing(design::space::LARGE),
-            )
-            .padding(design::space::SECTION as u16))
-            .into();
-        }
-        let mut primary = column![].spacing(design::space::TIGHT).width(Fill);
-        let mut utilities = column![].spacing(design::space::TIGHT).width(Fill);
-        for page in navigation::rail_pages(self.settings.global().advanced.show_advanced_controls) {
-            let item = super::navigation_flyout::view(
-                page,
-                navigation::rail_item(
-                    page,
-                    self.page.section_landing_page() == page,
-                    navigation::Event::Select(page),
-                ),
-                (self.navigation.section == Some(page)).then(|| self.navigation_panel(page)),
-            )
-            .map(Message::Navigation);
-            if navigation::is_utility(page) {
-                utilities = utilities.push(item);
-            } else {
-                primary = primary.push(item);
-            }
-        }
-        let search = super::navigation_flyout::search(
-            button(
-                container(
-                    column![
-                        navigation::glyph("icons/search.svg"),
-                        text(t!("home.search").to_string())
-                            .size(design::typography::BADGE)
-                            .width(Fill)
-                            .align_x(iced::Center),
-                    ]
-                    .spacing(design::space::TIGHT)
-                    .align_x(iced::Center),
-                )
-                .center_x(Fill)
-                .center_y(Fill),
-            )
-            .width(Fill)
-            .height(design::NAVIGATION_ITEM_HEIGHT)
-            .padding([design::space::CONTROL as u16, design::space::TIGHT as u16])
-            .selected(self.navigation_search_open, |theme, status| {
-                let mut style = widgets::quiet(theme, status);
-                if status == iced::widget::button::Status::Active {
-                    style.background = Some(theme.palette().primary.scale_alpha(0.05).into());
-                }
-                style
-            })
-            .on_press(navigation::Event::Search)
-            .into(),
+        let page_list = navigation::page_list(self.page, &self.settings);
+        let (navigation_width, side_panel_width, page_padding) =
+            shell_widths(size.width, page_list.is_some());
+        let top_bar = navigation::top_bar(
+            self.page,
+            &self.settings,
+            self.side_panel_toggle_state(),
+            size.width,
         )
         .map(Message::Navigation);
-        let rail = navigation::rail(search, primary.into(), utilities.into());
-        let navigation = row![rail, iced::widget::rule::vertical(1)];
-        let navigation = container(navigation)
-            .width(navigation_width)
-            .height(Fill)
+        let top_bar = container(top_bar)
+            .width(Fill)
             .style(widgets::navigation_surface);
-        let navigation = shield(navigation.into());
-        let side_panel = self.side_panel(self.page).map(shield);
-        const BREADCRUMB_TEXT_SIZE: u32 = design::typography::SUBTITLE;
-        let mut header = row![].spacing(design::space::COMPACT).align_y(iced::Center);
-        for (index, page) in self.breadcrumb.iter().copied().enumerate() {
-            let mut item = row![].spacing(design::space::COMPACT).align_y(iced::Center);
-            if index > 0 {
-                item = item.push(navigation::glyph("icons/chevron-right.svg"));
-            }
-            item = if page == self.page {
-                item.push(widgets::heading(page.label(), BREADCRUMB_TEXT_SIZE))
-            } else {
-                item.push(
-                    button(text(page.label()).size(BREADCRUMB_TEXT_SIZE))
-                        .padding(0)
-                        .style(widgets::quiet)
-                        .on_press(Message::Page(page)),
-                )
-            };
-            header = header.push(item);
-        }
-        let breadcrumb =
-            container(header.wrap().vertical_spacing(design::space::TIGHT)).width(Fill);
-        let mut profile_controls = None;
-        if self.page.supports_power_source_profiles() {
-            let plugged_in = crate::backend::power_source::is_plugged_in();
-            let mut tabs = row![];
-            for (profile, key, live) in [
-                (
-                    PowerSourceProfile::PluggedIn,
-                    "power_source.plugged_in",
-                    plugged_in == Some(true),
-                ),
-                (
-                    PowerSourceProfile::OnBattery,
-                    "power_source.on_battery",
-                    plugged_in == Some(false),
-                ),
-            ] {
-                let selected = self.power_source == profile;
-                let mut label = row![widgets::heading(
-                    t!(key).to_string(),
-                    design::typography::BODY
-                )]
-                .spacing(design::space::TIGHT)
-                .align_y(iced::Center);
-                label = label.push(
-                    container(iced::widget::Space::new())
-                        .width(6)
-                        .height(6)
-                        .style(move |theme: &Theme| container::Style {
-                            background: live.then(|| theme.palette().primary.into()),
-                            border: iced::border::rounded(3),
-                            ..Default::default()
-                        }),
-                );
-                tabs = tabs.push(
-                    button(container(label).center_y(Fill))
-                        .height(32)
-                        .padding([0, design::space::MEDIUM as u16])
-                        .on_press(Message::PowerSource(profile))
-                        .style(move |theme, status| widgets::tab_style(theme, status, selected)),
-                );
-            }
-            profile_controls = Some(container(tabs).style(widgets::tab_bar));
-        }
-        let panel_button = side_panel.as_ref().map(|_| {
-            button(
-                row![
-                    navigation::glyph("icons/panel-right-open.svg"),
-                    text(t!("nav.side_panel").to_string()),
-                ]
-                .spacing(design::space::CONTROL)
-                .height(Fill)
-                .align_y(iced::Center),
-            )
-            .height(design::BUTTON_HEIGHT)
-            .padding([0, design::space::MEDIUM as u16])
-            .style(if self.side_panel_open {
-                widgets::selected
-            } else {
-                widgets::secondary_button
-            })
-            .on_press(Message::ToggleSidePanel)
-            .into()
-        });
-        let heading = page_header(
-            breadcrumb.into(),
-            profile_controls.map(Into::into),
-            panel_button,
-        );
+        let side_panel = (self.side_panel_open && self.side_panel_available())
+            .then(|| self.side_panel(read_power_source))
+            .flatten()
+            .map(shield);
+        let editor_width = size.width
+            - navigation_width
+            - side_panel.as_ref().map_or(0.0, |_| side_panel_width + 1.0)
+            - 2.0 * f32::from(page_padding);
+        let compact = editor_width < EDITOR_TABS_MIN_WIDTH;
+        let tabs = match self.page {
+            Page::AdaptiveEngine => Some(self.adaptive.tabs(compact).map(Message::Adaptive)),
+            Page::AdaptiveProcessorPower => Some(
+                self.adaptive_processor_power
+                    .tabs(compact)
+                    .map(Message::AdaptiveProcessorPower),
+            ),
+            page => feature_tabs::view(page, self.feature_tab(), compact, Message::FeatureTab),
+        };
+        let compact_profiles = compact && tabs.is_some();
+        let profile_controls = self
+            .page
+            .supports_power_source_profiles()
+            .then(|| power_source_tabs(self.power_source, read_power_source(), compact_profiles));
+        let settings_are_pending = self.pending_settings_changes();
+        let heading = page_header(self.page.label(), tabs, profile_controls, compact);
+        let floating_card = if process_actions_open {
+            None
+        } else if settings_are_pending {
+            Some(floating_save_card(self.power_plan_control.pending))
+        } else {
+            self.preferences
+                .show_update
+                .then(|| floating_update_card(&self.preferences))
+        };
+        let content_height = (size.height - design::NAVIGATION_ROW_HEIGHT as f32 - 1.0).max(0.0);
+        let content = self.page_view(settings_are_pending, read_power_source, content_height);
         let content = container(super::motion::wrap(
             super::motion::wrap(
-                super::scrolling::repaint_group(self.page_view()),
+                super::scrolling::repaint_group(content),
                 true,
                 super::motion::Effect::Content(self.power_source as u64),
             ),
@@ -2736,34 +3477,45 @@ impl WinderustApp {
         ))
         .width(Fill)
         .height(Fill);
-        let body = page_canvas(shield(heading), content.into());
-        let panel_visible = self.side_panel_open && side_panel.is_some();
-        let layout = row![
-            navigation,
+        let toast = if self.page == Page::Dashboard && !process_actions_open {
+            self.processes
+                .action_toast()
+                .map(|toast| toast.map(Message::Processes))
+        } else {
+            None
+        };
+        let body = page_canvas(shield(heading), content.into(), floating_card, toast);
+        let mut workspace = row![].height(Fill);
+        if let Some(page_list) = page_list {
+            let navigation = container(page_list.map(Message::Navigation))
+                .width(navigation_width - 1.0)
+                .height(Fill)
+                .style(widgets::navigation_surface);
+            workspace = workspace
+                .push(shield(navigation.into()))
+                .push(iced::widget::rule::vertical(1));
+        }
+        workspace = workspace.push(
             container(body)
-                .padding([design::space::SECTION as u16, page_padding])
+                .padding([0, page_padding])
                 .width(Fill)
                 .height(Fill),
+        );
+        let layout = column![
+            shield(top_bar.into()),
+            iced::widget::rule::horizontal(1),
+            side_panel_dock(workspace.into(), side_panel, side_panel_width),
         ]
         .height(Fill)
         .into();
-        let layout = side_panel_dock(
-            layout,
-            side_panel.filter(|_| panel_visible),
-            side_panel_width,
-        );
-        if self.navigation_search_open {
+        if self.navigation_search_open && self.search_available() {
             let searching = !self.navigation_search.trim().is_empty();
-            let choices = navigation_search_choices(
-                &self.navigation_search,
-                self.settings.global().advanced.show_advanced_controls,
-                self.navigation_search_scope,
-            );
+            let choices = self.search_choices();
             let show_results = searching || self.navigation_search_scope.0.is_some();
             let mut results = column![].spacing(design::space::TINY);
             if show_results && choices.is_empty() {
                 results = results.push(
-                    container(text(t!("home.no_matching_functions").to_string()))
+                    container(text(t!("dashboard.no_matching_functions").to_string()))
                         .padding(design::space::MEDIUM as u16),
                 );
             }
@@ -2789,6 +3541,7 @@ impl WinderustApp {
                         .height(Fill)
                         .align_y(iced::Center),
                     )
+                    .pointer_only()
                     .width(Fill)
                     .height(48)
                     .padding([6, 12])
@@ -2802,59 +3555,33 @@ impl WinderustApp {
                     .on_press(Message::Page(page)),
                 );
             }
-            let mut input = text_input(&t!("home.search_placeholder"), &self.navigation_search)
-                .id("navigation-search")
-                .size(design::typography::SECTION)
-                .padding([12, 0])
-                .style(|theme, status| {
-                    let mut style = iced::widget::text_input::default(theme, status);
-                    style.background = iced::Background::Color(iced::Color::TRANSPARENT);
-                    style.border = iced::Border::default();
-                    style
-                })
-                .on_input(Message::NavigationSearch);
-            if selected_result.is_some() {
-                input = input.on_submit(Message::ConfirmSearch);
-            }
-            let scopes = std::iter::once(SearchScope(None))
+            let scopes: Vec<_> = std::iter::once(SearchScope(None))
                 .chain(
-                    navigation::dashboard_sections_in_nav_order(
+                    navigation::workspace_sections(
                         self.settings.global().advanced.show_advanced_controls,
                     )
-                    .into_iter()
                     .map(|section| SearchScope(Some(section.landing_page))),
                 )
                 .collect();
-            let mut search_content = column![
-                container(
-                    row![
-                        navigation::glyph("icons/search.svg"),
-                        input,
-                        button(text("Esc").size(design::typography::CAPTION))
-                            .on_press(Message::CloseNavigationSearch),
-                    ]
-                    .spacing(design::space::MEDIUM)
-                    .align_y(iced::Center)
-                )
-                .padding([4, 16]),
-                iced::widget::rule::horizontal(1),
-                container(
-                    row![
-                        text(t!("home.search_filter").to_string())
-                            .size(design::typography::CAPTION)
-                            .style(text::secondary),
-                        super::select::Select::new(
-                            scopes,
-                            Some(self.navigation_search_scope),
-                            Message::NavigationSearchScope
-                        )
-                        .width(168),
-                    ]
-                    .spacing(design::space::SMALL)
-                    .align_y(iced::Center)
-                )
-                .padding([6, 12]),
-            ];
+            let mut search_content = column![container(
+                row![
+                    text(t!("dashboard.search_filter").to_string())
+                        .size(design::typography::CAPTION)
+                        .style(text::secondary),
+                    super::select::Select::new(
+                        scopes,
+                        Some(self.navigation_search_scope),
+                        Message::NavigationSearchScope
+                    )
+                    .width(168),
+                    iced::widget::Space::new().width(Fill),
+                    button(text("Esc").size(design::typography::CAPTION))
+                        .on_press(Message::CloseNavigationSearch),
+                ]
+                .spacing(design::space::SMALL)
+                .align_y(iced::Center)
+            )
+            .padding([6, 12])];
             if show_results {
                 search_content = search_content.push(iced::widget::rule::horizontal(1)).push(
                     container(
@@ -2880,10 +3607,10 @@ impl WinderustApp {
                 .keep_running
                 .modal(&self.candidates)
                 .map(|modal| modal.map(Message::KeepRunning)),
-            Page::Watchdog => self
-                .watchdog
+            Page::ResourceThresholds => self
+                .resource_thresholds
                 .modal(&self.candidates)
-                .map(|modal| modal.map(Message::Watchdog)),
+                .map(|modal| modal.map(Message::ResourceThresholds)),
             Page::CpuSetsSoft => self
                 .soft_allocation
                 .modal(&self.settings, cpu_allocation::Kind::Soft)
@@ -2894,17 +3621,26 @@ impl WinderustApp {
                 .map(|m| m.map(|m| Message::Allocation(cpu_allocation::Kind::Hard, m))),
             Page::CpuLimiter => self
                 .cpu_limiter
-                .modal(&self.candidates, &self.status.feature_status.cpu_limiter)
+                .modal(
+                    &self.candidates,
+                    &self.settings.global().cpu_allocation_presets,
+                    self.settings.global().general.enabled,
+                    self.cpu_limiter_rule_status(read_power_source),
+                )
                 .map(|modal| modal.map(Message::CpuLimiter)),
             Page::AdvancedPowerPlanTuning => self
                 .power_tuning
-                .preset_modal(&self.settings.advanced_power_plan_tuning_presets)
+                .preset_modal(&self.settings.global().advanced_power_plan_tuning_presets)
                 .map(|modal| modal.map(Message::PowerTuning)),
-            Page::AdaptiveEngine if self.adaptive.has_pending_editor() => Some(
+            Page::AdaptiveEngine if self.adaptive.preset_open() => Some(
                 self.adaptive
                     .preset_modal(&self.settings, &self.candidates)
                     .map(Message::Adaptive),
             ),
+            Page::AdaptiveProcessorPower => self
+                .adaptive_processor_power
+                .preset_modal(&self.settings)
+                .map(|modal| modal.map(Message::AdaptiveProcessorPower)),
             Page::ByTime => self
                 .time_rules
                 .modal(power_rules::Kind::Time, &self.power_plans)
@@ -2916,101 +3652,89 @@ impl WinderustApp {
             _ => None,
         };
         if let Some(modal) = modal {
-            return iced::widget::stack![
-                super::modal::background(layout),
-                iced::widget::opaque(super::scrolling::modal_backdrop()),
-                container(iced::widget::opaque(modal))
-                    .padding(16)
-                    .center_x(Fill)
-                    .center_y(Fill)
-            ]
-            .into();
+            return centered_modal(layout, modal);
         }
-        iced::widget::stack![
-            layout,
-            shield(
-                container(super::motion::wrap(
-                    widgets::settings_card(
-                        column![
-                            widgets::heading(
-                                t!("unsaved.title").to_string(),
-                                design::typography::BODY
-                            ),
-                            text(t!("unsaved.message").to_string()),
-                            row![
-                                iced::widget::Space::new().width(Fill),
-                                action_button(t!("common.discard").to_string())
-                                    .style(crate::ui::widgets::tertiary_button)
-                                    .on_press(Message::Cancel),
-                                action_button(t!("common.save").to_string())
-                                    .style(crate::ui::widgets::primary_button)
-                                    .on_press(Message::Save)
-                            ]
-                            .spacing(design::space::SMALL)
-                        ]
-                        .spacing(design::space::MEDIUM)
-                    )
-                    .width(360),
-                    self.pending_changes(),
-                    super::motion::Effect::Visible
-                ))
-                .padding(iced::Padding {
-                    right: design::space::LARGE as f32
-                        + if panel_visible {
-                            side_panel_width + 1.0
-                        } else {
-                            0.0
-                        },
-                    ..iced::Padding::new(design::space::LARGE as f32)
-                })
-                .width(Fill)
-                .height(Fill)
-                .align_x(iced::Right)
-                .align_y(iced::Bottom)
-                .into()
-            )
-        ]
-        .into()
+        // Match the background child in Search and other modal stacks.
+        iced::widget::stack![layout].into()
     }
 
-    fn page_view(&self) -> Element<'_, Message> {
+    fn cpu_limiter_rule_status(
+        &self,
+        read_power_source: impl FnOnce() -> Option<bool>,
+    ) -> Option<&CpuLimiterSnapshot> {
+        let status = &self.status.feature_status.cpu_limiter;
+        let selected_is_plugged_in = self.power_source == PowerSourceProfile::PluggedIn;
+        (status.source == Some(self.power_source)
+            && read_power_source() == Some(selected_is_plugged_in))
+        .then_some(status)
+    }
+
+    fn page_view(
+        &self,
+        settings_are_pending: bool,
+        read_power_source: impl FnOnce() -> Option<bool>,
+        shell_height: f32,
+    ) -> Element<'_, Message> {
         let general = &self.settings.global().general;
-        let toggle = |label: &'static str, value, action: fn(bool) -> Message| {
-            widgets::toggle_card(label, value, Some(action))
+        let tab = self.feature_tab();
+        let scroll_clearance = if settings_are_pending {
+            SAVE_CARD_SCROLL_CLEARANCE
+        } else {
+            0.0
+        };
+        let runtime_power_rules = || {
+            let context = self.status.power_plan_rule_context.as_ref()?;
+            (context.source == self.power_source).then(|| match context.source {
+                PowerSourceProfile::PluggedIn => context.settings.as_ref(),
+                PowerSourceProfile::OnBattery => context.settings.battery_profile(),
+            })
         };
         match self.page {
             Page::SleepPrevention => self
                 .sleep_prevention
                 .view(
-                    &self.settings.sleep_prevention,
-                    &self.status.feature_status.sleep_prevention,
+                    &self.settings.global().sleep_prevention,
                     &self.candidates,
+                    self.status.feature_status.sleep_prevention.temporary,
+                    tab,
                 )
                 .map(Message::SleepPrevention),
             Page::AppSuspension => self
                 .suspension
                 .view(
-                    &self.settings.app_suspension,
+                    &self.settings,
                     &self.status.feature_status.app_suspension,
                     &self.unavailable_candidates,
                     &self.candidates,
+                    tab,
+                    scroll_clearance,
                 )
                 .map(Message::Suspension),
-            Page::Watchdog => self
-                .watchdog
-                .view(&self.settings.global().watchdog, &self.candidates)
-                .map(Message::Watchdog),
+            Page::ResourceThresholds => self
+                .resource_thresholds
+                .view(
+                    &self.settings.global().resource_thresholds,
+                    &self.candidates,
+                    tab,
+                )
+                .map(Message::ResourceThresholds),
             Page::InstanceLimits => self
                 .instance_limits
                 .view(
                     &self.settings.global().instance_limits,
-                    &self.status.feature_status.instance_limits,
                     &self.candidates,
+                    tab,
+                    scroll_clearance,
                 )
                 .map(Message::InstanceLimits),
             Page::InstanceBalancing => self
                 .instance_balancing
-                .view(&self.settings.global().instance_balancing, &self.candidates)
+                .view(
+                    &self.settings.global().instance_balancing,
+                    &self.status.feature_status.instance_balancing,
+                    general.enabled,
+                    &self.candidates,
+                )
                 .map(Message::InstanceBalancing),
             Page::KeepRunning => self
                 .keep_running
@@ -3018,12 +3742,23 @@ impl WinderustApp {
                     &self.settings.global().keep_running,
                     &self.status.feature_status.keep_running,
                     &self.candidates,
+                    settings_are_pending,
                 )
                 .map(Message::KeepRunning),
-            Page::MemoryTrim => self
-                .trim
-                .view(&self.settings.memory_trim, &self.candidates)
-                .map(Message::Trim),
+            Page::MemoryTrim => {
+                let live = self.settings.persisted();
+                let trim_available = live.general.enabled && live.memory_trim.enabled;
+                self.trim
+                    .view(
+                        &self.settings.global().memory_trim,
+                        &self.candidates,
+                        trim_available,
+                        self.manual_trim_pending,
+                        tab,
+                        scroll_clearance,
+                    )
+                    .map(Message::Trim)
+            }
             Page::TimerResolution => self
                 .timer
                 .view(
@@ -3036,16 +3771,17 @@ impl WinderustApp {
                 .priority_separation
                 .view()
                 .map(Message::PrioritySeparation),
+            Page::AdaptiveProcessorPower => self
+                .adaptive_processor_power
+                .view(&self.settings)
+                .map(Message::AdaptiveProcessorPower),
             Page::AdvancedPowerPlanTuning => self
                 .power_tuning
                 .view(
-                    &self.settings.advanced_power_plan_tuning_presets,
+                    &self.settings.global().advanced_power_plan_tuning_presets,
                     &self.power_plans,
-                    self.effective_power_mode
-                        .as_ref()
-                        .map_or(crate::power::EffectivePowerMode::Unknown, |monitor| {
-                            monitor.snapshot()
-                        }),
+                    &self.status.power_plan_status,
+                    scroll_clearance,
                 )
                 .map(Message::PowerTuning),
 
@@ -3054,6 +3790,7 @@ impl WinderustApp {
                 .view(
                     power_rules::Kind::Time,
                     &self.settings,
+                    runtime_power_rules(),
                     &self.status.power_plan_status,
                 )
                 .map(|m| Message::PowerRules(power_rules::Kind::Time, m)),
@@ -3062,13 +3799,14 @@ impl WinderustApp {
                 .view(
                     power_rules::Kind::CpuLoad,
                     &self.settings,
+                    runtime_power_rules(),
                     &self.status.power_plan_status,
                 )
                 .map(|m| Message::PowerRules(power_rules::Kind::CpuLoad, m)),
-            Page::BackgroundEfficiency => self
-                .efficiency
-                .view(&self.settings, &self.candidates)
-                .map(Message::Efficiency),
+            Page::EfficiencyMode => self
+                .efficiency_mode
+                .view(&self.settings, &self.candidates, tab)
+                .map(Message::EfficiencyMode),
             Page::CpuSetsSoft => self
                 .soft_allocation
                 .view(&self.settings, cpu_allocation::Kind::Soft, &self.candidates)
@@ -3079,7 +3817,12 @@ impl WinderustApp {
                 .map(|m| Message::Allocation(cpu_allocation::Kind::Hard, m)),
             Page::AdaptiveEngine => self
                 .adaptive
-                .view(&self.settings, &self.candidates)
+                .view(
+                    &self.settings,
+                    &self.candidates,
+                    &self.interrupt_timing,
+                    shell_height,
+                )
                 .map(Message::Adaptive),
             Page::ProcessPriority => self
                 .priority
@@ -3087,6 +3830,8 @@ impl WinderustApp {
                     &self.settings,
                     priority_control::Kind::Process,
                     &self.candidates,
+                    tab,
+                    scroll_clearance,
                 )
                 .map(|m| Message::Priority(priority_control::Kind::Process, m)),
             Page::ThreadPriority => self
@@ -3095,11 +3840,19 @@ impl WinderustApp {
                     &self.settings,
                     priority_control::Kind::Thread,
                     &self.candidates,
+                    tab,
+                    scroll_clearance,
                 )
                 .map(|m| Message::Priority(priority_control::Kind::Thread, m)),
             Page::IoPriority => self
                 .priority
-                .view(&self.settings, priority_control::Kind::Io, &self.candidates)
+                .view(
+                    &self.settings,
+                    priority_control::Kind::Io,
+                    &self.candidates,
+                    tab,
+                    scroll_clearance,
+                )
                 .map(|m| Message::Priority(priority_control::Kind::Io, m)),
             Page::GpuPriority => self
                 .priority
@@ -3107,6 +3860,8 @@ impl WinderustApp {
                     &self.settings,
                     priority_control::Kind::Gpu,
                     &self.candidates,
+                    tab,
+                    scroll_clearance,
                 )
                 .map(|m| Message::Priority(priority_control::Kind::Gpu, m)),
             Page::MemoryPriority => self
@@ -3115,6 +3870,8 @@ impl WinderustApp {
                     &self.settings,
                     priority_control::Kind::Memory,
                     &self.candidates,
+                    tab,
+                    scroll_clearance,
                 )
                 .map(|m| Message::Priority(priority_control::Kind::Memory, m)),
             Page::DynamicPriorityBoost => self
@@ -3123,6 +3880,8 @@ impl WinderustApp {
                     &self.settings,
                     priority_control::Kind::DynamicBoost,
                     &self.candidates,
+                    tab,
+                    scroll_clearance,
                 )
                 .map(|m| Message::Priority(priority_control::Kind::DynamicBoost, m)),
 
@@ -3133,6 +3892,7 @@ impl WinderustApp {
                     &self.settings,
                     &self.power_plans,
                     &self.candidates,
+                    runtime_power_rules(),
                     &self.status.power_plan_status,
                 )
                 .map(|message| {
@@ -3145,6 +3905,7 @@ impl WinderustApp {
                     &self.settings,
                     &self.power_plans,
                     &self.candidates,
+                    runtime_power_rules(),
                     &self.status.power_plan_status,
                 )
                 .map(|message| {
@@ -3160,89 +3921,121 @@ impl WinderustApp {
                     &self.settings.cpu_limiter,
                     &self.candidates,
                     self.settings.global().general.enabled,
-                    &self.status.feature_status.cpu_limiter,
+                    self.cpu_limiter_rule_status(read_power_source),
+                    tab,
+                    scroll_clearance,
                 )
                 .map(Message::CpuLimiter),
-            Page::ProcessList => self
-                .processes
-                .view(
-                    &self.settings,
-                    &self.status,
-                    if self.power_plans_loading {
-                        process_list::PlanCatalog::Loading
-                    } else if self.power_plans_loaded {
-                        process_list::PlanCatalog::Loaded(&self.power_plans)
-                    } else {
-                        process_list::PlanCatalog::Unavailable
-                    },
-                )
-                .map(Message::Processes),
-            Page::Home => self
-                .home
-                .view(
-                    &self.settings,
-                    &self.status.feature_status,
-                    &self.status.action_log_entries,
-                )
-                .map(Message::Home),
+            Page::Dashboard => self.processes.view_with_header(
+                &self.settings,
+                if self.power_plans_loading {
+                    process_list::PlanCatalog::Loading
+                } else if self.power_plans_loaded {
+                    process_list::PlanCatalog::Loaded(&self.power_plans)
+                } else {
+                    process_list::PlanCatalog::Unavailable
+                },
+                Some(self.dashboard.metrics().map(Message::Dashboard)),
+                Message::Processes,
+            ),
             Page::WinderustBehaviour
             | Page::LanguageAndAppearance
             | Page::ExperimentalFeatures
             | Page::About => self
                 .preferences
-                .view(self.page, self.settings.global())
+                .view(
+                    self.page,
+                    self.settings.global(),
+                    self.can_replace_settings(),
+                    self.show_shortcut_error(),
+                )
                 .map(Message::Preferences),
-            Page::PowerPlanControl => column![
-                toggle(
-                    "power_plan_control.pause_plugged",
-                    general.pause_power_plan_switching_while_plugged_in,
-                    Message::PausePowerPlans
-                ),
-                toggle(
-                    "power_plan_control.restore_previous_plan",
-                    general.restore_previous_power_plan,
-                    Message::RestorePreviousPowerPlan
-                ),
-                self.child_pages(),
-            ]
-            .spacing(widgets::CARD_GAP)
+            Page::PowerPlanControl => scrollable(
+                if matches!(tab, FeatureTab::Automation | FeatureTab::Advanced) {
+                    self.child_pages()
+                } else {
+                    column![
+                        widgets::settings_section(
+                            "common.power_plan",
+                            power_plan_control::view(
+                                &self.status.power_plan_status,
+                                &self.power_plans,
+                                self.power_plans_loaded,
+                                self.power_plans_loading,
+                                self.settings.persisted().general.enabled,
+                                &self.power_plan_control,
+                            )
+                            .map(Message::PowerPlanControl),
+                        ),
+                        widgets::settings_section(
+                            "power_plan_control.switching_settings",
+                            widgets::settings_card(widgets::settings_rows([
+                                widgets::setting_row(
+                                    "power_plan_control.pause_plugged",
+                                    widgets::switch(
+                                        general.pause_power_plan_switching_while_plugged_in,
+                                        Some(Message::PausePowerPlans),
+                                    ),
+                                )
+                                .into(),
+                                widgets::setting_row(
+                                    "power_plan_control.restore_previous_plan",
+                                    widgets::switch(
+                                        general.restore_previous_power_plan,
+                                        Some(Message::RestorePreviousPowerPlan),
+                                    ),
+                                )
+                                .into(),
+                                self.power_plan_control
+                                    .fallback_polling_interval_field(general.check_interval_ms)
+                                    .map(Message::PowerPlanControl),
+                            ])),
+                        ),
+                    ]
+                    .spacing(widgets::CARD_GAP)
+                },
+            )
+            .id(feature_tabs::CONTENT_ID)
+            .height(Fill)
             .into(),
             Page::ActionLog => self
                 .action_log
                 .view(&self.status.action_log_entries, &self.candidates)
                 .map(Message::ActionLog),
-            Page::WinderustFeatures
+            Page::Watchdog
             | Page::CpuControl
             | Page::PriorityControl
             | Page::SettingsHome
-            | Page::AdvancedControls => self.child_pages(),
+            | Page::AdvancedControls => scrollable(self.child_pages()).height(Fill).into(),
         }
     }
 
-    fn child_pages(&self) -> Element<'_, Message> {
+    fn child_pages(&self) -> iced::widget::Column<'_, Message> {
         let mut pages = column![].spacing(widgets::CARD_GAP);
-        if self.page == Page::PowerPlanControl {
-            pages = pages.push(widgets::heading(
-                t!("power_plan_control.automation").to_string(),
-                design::typography::BODY,
-            ));
+        let power_tab = (self.page == Page::PowerPlanControl).then(|| self.feature_tab());
+        if power_tab == Some(FeatureTab::Automation) {
+            pages = pages.push(
+                text(t!("power_plan_control.rule_priority").into_owned())
+                    .size(design::typography::SECONDARY)
+                    .style(text::secondary),
+            );
         }
         if let Some(children) = self.page.child_pages() {
-            for page in children.iter().filter(|page| **page != self.page) {
-                if self.page == Page::PowerPlanControl && *page == Page::AdvancedPowerPlanTuning {
-                    pages = pages.push(widgets::heading(
-                        t!("settings.advanced").to_string(),
-                        design::typography::BODY,
-                    ));
+            for &page in children.iter().filter(|page| **page != self.page) {
+                let advanced = matches!(
+                    page,
+                    Page::AdvancedPowerPlanTuning | Page::AdaptiveProcessorPower
+                );
+                if power_tab.is_some_and(|tab| (tab == FeatureTab::Advanced) != advanced) {
+                    continue;
                 }
                 let mut heading = row![
-                    navigation::icon(*page, self.page == *page),
+                    navigation::icon(page, false),
                     widgets::heading(page.label(), design::typography::BODY).width(Fill)
                 ]
-                .spacing(design::space::COMPACT)
                 .align_y(iced::Center);
                 if self.settings.global().general.show_feature_status_on_cards {
-                    if let Some(enabled) = navigation::feature_page_enabled(&self.settings, *page) {
+                    if let Some(enabled) = navigation::feature_page_enabled(&self.settings, page) {
                         heading = heading.push(
                             text(
                                 if enabled {
@@ -3253,19 +4046,15 @@ impl WinderustApp {
                                 .to_string(),
                             )
                             .size(design::typography::CAPTION)
-                            .style(if enabled {
-                                text::success
-                            } else {
-                                text::secondary
-                            }),
+                            .style(text::base),
                         );
                     }
                 }
                 heading = heading.push(navigation::glyph("icons/chevron-right.svg"));
-                pages = pages.push(widgets::card_button(heading).on_press(Message::Page(*page)));
+                pages = pages.push(widgets::card_button(heading).on_press(Message::Page(page)));
             }
         }
-        scrollable(pages).height(Fill).into()
+        pages
     }
 }
 
@@ -3300,10 +4089,51 @@ fn priority_kind(page: Page) -> Option<priority_control::Kind> {
     }
 }
 
+fn picked_executable_message(page: Page, path: String) -> Message {
+    if page == Page::InstanceLimits {
+        return Message::InstanceLimits(instance_limits::Message::Path(path));
+    }
+    let path = super::process_rules::picked_path_input(path);
+    if let Some(kind) = priority_kind(page) {
+        return Message::Priority(kind, priority_control::Message::Path(path));
+    }
+    match page {
+        Page::SleepPrevention => Message::SleepPrevention(sleep_prevention::Message::Path(path)),
+        Page::AppSuspension => Message::Suspension(app_suspension::Message::Path(path)),
+        Page::ResourceThresholds => {
+            Message::ResourceThresholds(resource_thresholds::Message::Path(path))
+        }
+        Page::KeepRunning => Message::KeepRunning(keep_running::Message::Path(path)),
+        Page::MemoryTrim => Message::Trim(memory_trim::Message::Path(path)),
+        Page::TimerResolution => Message::Timer(timer_resolution::Message::Path(path)),
+        Page::CpuSetsSoft => Message::Allocation(
+            cpu_allocation::Kind::Soft,
+            cpu_allocation::Message::Path(path),
+        ),
+        Page::ProcessorAffinityHard => Message::Allocation(
+            cpu_allocation::Kind::Hard,
+            cpu_allocation::Message::Path(path),
+        ),
+        Page::EfficiencyMode => Message::EfficiencyMode(efficiency_mode::Message::Path(path)),
+        Page::AdaptiveEngine => Message::Adaptive(adaptive_engine::Message::Path(path)),
+        Page::CpuLimiter => Message::CpuLimiter(cpu_limiter::Message::Path(path)),
+        Page::ByFocus => Message::ProcessPowerPlans(
+            process_power_plans::Kind::Focus,
+            process_power_plans::Message::Path(path),
+        ),
+        Page::ByRunningApp => Message::ProcessPowerPlans(
+            process_power_plans::Kind::RunningApp,
+            process_power_plans::Message::Path(path),
+        ),
+        _ => unreachable!("Executable Browse is not wired for {page:?}"),
+    }
+}
+
 fn notifications_required(settings: &crate::config::Settings) -> bool {
     settings.general.enabled
-        && (settings.watchdog.notifications_required()
-            || settings.instance_limits.notifications_required())
+        && (settings.resource_thresholds.notifications_required()
+            || settings.instance_limits.notifications_required()
+            || settings.keep_running.notifications_required())
 }
 
 fn tray_retry_due(
@@ -3317,8 +4147,76 @@ fn tray_retry_due(
 }
 
 fn page_needs_power_plans(page: Page, process_rulesets_open: bool) -> bool {
-    (page == Page::ProcessList && process_rulesets_open)
+    (page == Page::Dashboard && process_rulesets_open)
         || page.section_landing_page() == Page::PowerPlanControl
+}
+
+fn page_needs_app_catalog(page: Page) -> bool {
+    matches!(
+        page,
+        Page::ActionLog
+            | Page::AdaptiveEngine
+            | Page::AppSuspension
+            | Page::EfficiencyMode
+            | Page::ByFocus
+            | Page::ByRunningApp
+            | Page::CpuLimiter
+            | Page::CpuSetsSoft
+            | Page::DynamicPriorityBoost
+            | Page::GpuPriority
+            | Page::InstanceBalancing
+            | Page::InstanceLimits
+            | Page::IoPriority
+            | Page::KeepRunning
+            | Page::MemoryPriority
+            | Page::MemoryTrim
+            | Page::ProcessPriority
+            | Page::ProcessorAffinityHard
+            | Page::SleepPrevention
+            | Page::ThreadPriority
+            | Page::TimerResolution
+            | Page::ResourceThresholds
+    )
+}
+
+fn combine_warnings(first: Option<String>, second: Option<String>) -> Option<String> {
+    match (first, second) {
+        (Some(mut first), Some(second)) => {
+            first.push('\n');
+            first.push_str(&second);
+            Some(first)
+        }
+        (first, second) => first.or(second),
+    }
+}
+
+fn power_plan_switch_error(error: RuntimeCommandError) -> String {
+    let key = match error {
+        RuntimeCommandError::PowerPlanUnavailable => "common.selected_plan_unavailable",
+        RuntimeCommandError::PowerPlan(ManualPowerPlanError::ManagedByAdaptive) => {
+            "power_plan_control.switch_managed_active"
+        }
+        RuntimeCommandError::PowerPlan(ManualPowerPlanError::ManagedTarget) => {
+            "power_plan_control.switch_managed_target"
+        }
+        RuntimeCommandError::PowerPlan(ManualPowerPlanError::ActiveRecoveryPending(detail)) => {
+            crate::backend::diagnostics::error(&format!(
+                "Manual power plan recovery update is unconfirmed: {detail}"
+            ));
+            "power_plan_control.switch_active_recovery_pending"
+        }
+        RuntimeCommandError::RuntimeStopped | RuntimeCommandError::WorkerExited => {
+            "power_plan_control.switch_runtime_unavailable"
+        }
+        RuntimeCommandError::QueueFull => "power_plan_control.switch_busy",
+        RuntimeCommandError::InvalidRequest(detail)
+        | RuntimeCommandError::CommandFailed(detail)
+        | RuntimeCommandError::PowerPlan(ManualPowerPlanError::SwitchFailed(detail)) => {
+            crate::backend::diagnostics::error(&format!("Power plan switch failed: {detail}"));
+            "power_plan_control.switch_failed"
+        }
+    };
+    t!(key).into_owned()
 }
 
 fn sync_active_power_plan(
@@ -3379,31 +4277,73 @@ fn ui_tick_interval(hidden: bool, retry_pending: bool) -> Option<Duration> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn search_overlay_blocks_background_hover_scroll_and_clicks_but_keeps_search_editable() {
+    fn title_search_opens_and_stays_editable_while_its_results_shield_the_workspace() {
         use super::*;
         use iced::advanced::{layout, widget::Tree, Layout, Shell};
+        use iced::keyboard::{key::Named, Key};
         use iced::{mouse, Event, Point, Rectangle, Size};
         let renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
         let bounds = Rectangle::with_size(Size::new(900.0, 620.0));
-        let background = iced::widget::mouse_area(
-            button("Home")
-                .width(Fill)
-                .height(Fill)
-                .on_press(Message::Page(Page::Home)),
-        )
-        .on_enter(Message::Page(Page::About))
-        .on_scroll(|_| Message::Page(Page::ActionLog));
-        let mut view = navigation_search_overlay(
-            background.into(),
-            navigation_search_panel(text_input("Search", "").on_input(Message::NavigationSearch)),
-        );
+        let frame = |open| {
+            let background = iced::widget::mouse_area(
+                button("Dashboard")
+                    .width(Fill)
+                    .height(Fill)
+                    .on_press(Message::Page(Page::Dashboard)),
+            )
+            .on_enter(Message::Page(Page::About))
+            .on_scroll(|_| Message::Page(Page::ActionLog));
+            let content = if open {
+                navigation_search_overlay(
+                    background.into(),
+                    navigation_search_panel(text("Filter")),
+                )
+            } else {
+                background.into()
+            };
+            let frame = window_frame::view(
+                content,
+                navigation_search_input("", true, open),
+                false,
+                true,
+                Message::WindowAction,
+            );
+            if open {
+                super::super::modal::dismiss_on_escape(frame, Message::CloseNavigationSearch)
+            } else {
+                frame
+            }
+        };
+        let limits = layout::Limits::new(Size::ZERO, bounds.size());
+        let input = Point::new(bounds.center_x(), 18.0);
+        let mut view = frame(false);
         let mut tree = Tree::new(&view);
-        let node = view.as_widget_mut().layout(
-            &mut tree,
-            &renderer,
-            &layout::Limits::new(Size::ZERO, bounds.size()),
-        );
-        let outside = Point::new(20.0, 40.0);
+        let node = view.as_widget_mut().layout(&mut tree, &renderer, &limits);
+        let mut messages = Vec::new();
+        for event in [
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+        ] {
+            view.as_widget_mut().update(
+                &mut tree,
+                &event,
+                Layout::new(&node),
+                mouse::Cursor::Available(input),
+                &renderer,
+                &mut iced::advanced::clipboard::Null,
+                &mut Shell::new(&mut messages),
+                &bounds,
+            );
+        }
+        assert!(matches!(
+            messages.as_slice(),
+            [Message::SearchFieldReleased]
+        ));
+
+        let mut view = frame(true);
+        tree.diff(&view);
+        let node = view.as_widget_mut().layout(&mut tree, &renderer, &limits);
+        let outside = Point::new(20.0, 100.0);
         for event in [
             Event::Mouse(mouse::Event::CursorMoved { position: outside }),
             Event::Mouse(mouse::Event::WheelScrolled {
@@ -3432,8 +4372,8 @@ mod tests {
                 .iter()
                 .all(|message| matches!(message, Message::CloseNavigationSearch)));
         }
-        let input = node.children()[2].children()[0].bounds().center();
-        let mut messages = Vec::new();
+        messages.clear();
+        let escape = Key::Named(Named::Escape);
         for event in [
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
             Event::Keyboard(iced::keyboard::Event::KeyPressed {
@@ -3443,6 +4383,17 @@ mod tests {
                 location: iced::keyboard::Location::Standard,
                 modifiers: iced::keyboard::Modifiers::default(),
                 text: Some("x".into()),
+                repeat: false,
+            }),
+            Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                key: escape.clone(),
+                modified_key: escape,
+                physical_key: iced::keyboard::key::Physical::Code(
+                    iced::keyboard::key::Code::Escape,
+                ),
+                location: iced::keyboard::Location::Standard,
+                modifiers: iced::keyboard::Modifiers::empty(),
+                text: None,
                 repeat: false,
             }),
         ] {
@@ -3457,28 +4408,60 @@ mod tests {
                 &bounds,
             );
         }
-        assert!(matches!(messages.as_slice(), [Message::NavigationSearch(text)] if text == "x"));
+        assert!(
+            matches!(messages.as_slice(), [Message::NavigationSearch(text), Message::CloseNavigationSearch] if text == "x")
+        );
     }
 
     #[test]
-    fn dock_reserves_content_width_and_keeps_header_alignment() {
+    fn save_controls_preserve_the_editor_viewport_and_scroll_range() {
         use iced::advanced::{layout, widget::Tree};
         let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
-        for width in [780.0, 1440.0, 1800.0] {
+        for width in [760.0, 1440.0, 1800.0] {
             let size = iced::Size::new(width, 600.0);
             let mut expected = None;
-            for profiles in [false, true] {
+            for (tabs, profiles, has_save_card, has_toast) in [
+                (false, false, false, false),
+                (true, false, false, false),
+                (false, true, false, false),
+                (true, true, false, false),
+                (false, false, true, false),
+                (true, true, true, false),
+                (false, false, false, true),
+                (false, true, true, true),
+            ] {
                 for available in [false, true] {
                     for open in [false, true] {
+                        let available_width = width - if available && open { 321.0 } else { 0.0 };
+                        let compact = available_width < EDITOR_TABS_MIN_WIDTH;
                         let heading = page_header(
-                            text("Home > Section > Feature").into(),
-                            profiles
-                                .then(|| button(text("Plugged In / On Battery")).height(32).into()),
-                            available.then(|| button(text("Side panel")).height(32).into()),
+                            Page::AdaptiveProcessorPower.label(),
+                            tabs.then(|| {
+                                super::super::adaptive_processor_power::Editor::default()
+                                    .tabs(compact)
+                                    .map(Message::AdaptiveProcessorPower)
+                            }),
+                            profiles.then(|| {
+                                power_source_tabs(
+                                    PowerSourceProfile::PluggedIn,
+                                    Some(true),
+                                    compact && tabs,
+                                )
+                            }),
+                            compact,
                         );
                         let workspace = page_canvas(
                             heading,
-                            iced::widget::Space::new().width(Fill).height(Fill).into(),
+                            scrollable(iced::widget::Space::new().width(Fill).height(930))
+                                .height(Fill)
+                                .into(),
+                            has_save_card.then(|| floating_save_card(false)),
+                            has_toast.then(|| {
+                                container(text("Action completed"))
+                                    .width(420)
+                                    .height(48)
+                                    .into()
+                            }),
                         );
                         let panel = (available && open)
                             .then(|| iced::widget::Space::new().height(Fill).into());
@@ -3489,15 +4472,63 @@ mod tests {
                             &renderer,
                             &layout::Limits::new(iced::Size::ZERO, size),
                         );
-                        let available_width = width - if available && open { 321.0 } else { 0.0 };
                         assert_eq!(node.children()[0].size().width, available_width);
                         if available && open {
                             assert_eq!(node.children()[1].bounds().x, available_width);
                         }
                         let workspace = &node.children()[0].children()[0];
                         let canvas = &workspace.children()[0];
-                        let column = &canvas.children()[0];
+                        let layers = &canvas.children()[0];
+                        let column = &layers.children()[0];
+                        let header = &column.children()[0];
+                        assert_eq!(header.size().height, design::PAGE_TITLE_HEIGHT as f32);
+                        assert_eq!(
+                            header.children().len(),
+                            1 + usize::from(tabs) + usize::from(profiles)
+                        );
+                        assert!(header.children().iter().all(|child| {
+                            child.bounds().y >= 0.0
+                                && child.bounds().y + child.size().height <= header.size().height
+                        }));
                         let mut bounds = column.children()[1].bounds();
+                        assert_eq!(bounds.y + bounds.height, size.height - PAGE_BOTTOM_INSET);
+                        assert_eq!(
+                            bounds.height,
+                            size.height
+                                - 2.0 * design::space::SECTION as f32
+                                - column.children()[0].size().height
+                                - design::space::WIDE as f32
+                        );
+                        assert_eq!(column.children()[1].children()[0].size().height, 930.0);
+                        if has_save_card || has_toast {
+                            let anchor = iced::advanced::Layout::new(&layers.children()[1]);
+                            let mut overlays = anchor.children().next().unwrap().children();
+                            let toast = has_toast.then(|| {
+                                let layout = overlays.next().unwrap().children().next().unwrap();
+                                let toast = layout.bounds();
+                                assert_eq!(toast.x + toast.width / 2.0, bounds.width / 2.0);
+                                toast
+                            });
+                            let card = overlays
+                                .next()
+                                .map(|layout| layout.children().next().unwrap().bounds());
+                            assert_eq!(card.is_some(), has_save_card);
+                            if let Some(toast) = toast {
+                                let bottom = card.map_or(
+                                    size.height - FLOATING_CARD_BOTTOM_INSET as f32,
+                                    |card| card.y - design::space::CONTROL as f32,
+                                );
+                                assert_eq!(toast.y + toast.height, bottom);
+                            }
+                            if let Some(card) = card {
+                                assert_eq!(
+                                    card.y + card.height,
+                                    size.height - FLOATING_CARD_BOTTOM_INSET as f32
+                                );
+                                assert_eq!(card.x + card.width, bounds.width - SCROLLBAR_GUTTER);
+                                assert_eq!(card.size(), iced::Size::new(320.0, 96.0));
+                            }
+                        }
                         assert_eq!(column.children()[0].bounds().x, bounds.x);
                         bounds.x += canvas.bounds().x;
                         let content_width = available_width.min(design::CONTENT_WIDTH as f32);
@@ -3515,77 +4546,236 @@ mod tests {
     }
 
     #[test]
-    fn dock_and_page_controls_remain_interactive_together() {
+    fn floating_card_buttons_and_dock_are_interactive() {
         use iced::advanced::{layout, widget::Tree, Layout, Shell};
+        use settings_pages::Message::{DismissUpdate, OpenUpdate};
+
+        let mut preferences = settings_pages::Editor::default();
+        let release = "https://example.com/releases/1.0.0";
+        preferences.latest = Some("1.0.0".into());
+        preferences.download = Some(release.into());
         let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
-        let workspace: Element<'_, Message> = button(text("Background action"))
-            .width(Fill)
-            .height(Fill)
-            .on_press(Message::Save)
-            .into();
-        let panel = button(text("Panel action"))
-            .width(Fill)
-            .height(Fill)
-            .on_press(Message::Cancel)
-            .into();
-        let mut view = side_panel_dock(workspace, Some(panel), 320.0);
-        let mut tree = Tree::new(&view);
-        let size = iced::Size::new(900.0, 620.0);
-        let node = view.as_widget_mut().layout(
-            &mut tree,
-            &renderer,
-            &layout::Limits::new(iced::Size::ZERO, size),
-        );
-        for (cursor, outside) in [
-            (iced::Point::new(100.0, 200.0), true),
-            (iced::Point::new(800.0, 200.0), false),
+        for (card, secondary_action, primary_action) in [
+            (floating_save_card(false), Message::Cancel, Message::Save),
+            (
+                floating_update_card(&preferences),
+                Message::Preferences(DismissUpdate),
+                Message::Preferences(OpenUpdate(release.into())),
+            ),
         ] {
-            let mut messages = Vec::new();
-            for event in [
-                iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left),
-                iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left),
-            ] {
-                view.as_widget_mut().update(
-                    &mut tree,
-                    &iced::Event::Mouse(event),
-                    Layout::new(&node),
-                    iced::mouse::Cursor::Available(cursor),
-                    &renderer,
-                    &mut iced::advanced::clipboard::Null,
-                    &mut Shell::new(&mut messages),
-                    &node.bounds(),
-                );
+            let workspace: Element<'_, Message> = button(text("Background action"))
+                .width(Fill)
+                .height(Fill)
+                .on_press(Message::Tick)
+                .into();
+            let panel = button(text("Panel action"))
+                .width(Fill)
+                .height(Fill)
+                .on_press(Message::Cancel)
+                .into();
+            let workspace = page_canvas(text("Editor").into(), workspace, Some(card), None);
+            let mut view = side_panel_dock(workspace, Some(panel), 320.0);
+            let mut tree = Tree::new(&view);
+            let size = iced::Size::new(900.0, 620.0);
+            let node = view.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(iced::Size::ZERO, size),
+            );
+            let mut card = Layout::new(&node);
+            for index in [0, 0, 0, 0, 1, 0, 0, 0] {
+                card = card.children().nth(index).unwrap();
             }
-            assert_eq!(messages.len(), 1);
-            assert!(matches!(messages[0], Message::Save) == outside);
-            assert!(matches!(messages[0], Message::Cancel) != outside);
+            let mut rows = card.children().next().unwrap().children();
+            let title = rows.next().unwrap();
+            let mut actions = rows.last().unwrap().children().skip(1);
+            let secondary = actions.next().unwrap();
+            let primary = actions.next().unwrap();
+            for (cursor, expected) in [
+                (iced::Point::new(100.0, 560.0), Some(Message::Tick)),
+                (iced::Point::new(800.0, 560.0), Some(Message::Cancel)),
+                (title.bounds().center(), None),
+                (secondary.bounds().center(), Some(secondary_action)),
+                (primary.bounds().center(), Some(primary_action)),
+            ] {
+                let mut messages = Vec::new();
+                for event in [
+                    iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left),
+                    iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left),
+                ] {
+                    view.as_widget_mut().update(
+                        &mut tree,
+                        &iced::Event::Mouse(event),
+                        Layout::new(&node),
+                        iced::mouse::Cursor::Available(cursor),
+                        &renderer,
+                        &mut iced::advanced::clipboard::Null,
+                        &mut Shell::new(&mut messages),
+                        &node.bounds(),
+                    );
+                }
+                match (messages.as_slice(), expected) {
+                    (
+                        [Message::Preferences(OpenUpdate(actual))],
+                        Some(Message::Preferences(OpenUpdate(expected))),
+                    ) => {
+                        assert_eq!(*actual, expected);
+                    }
+                    ([Message::Tick], Some(Message::Tick))
+                    | ([Message::Save], Some(Message::Save))
+                    | ([Message::Cancel], Some(Message::Cancel))
+                    | (
+                        [Message::Preferences(DismissUpdate)],
+                        Some(Message::Preferences(DismissUpdate)),
+                    )
+                    | ([], None) => {}
+                    (actual, expected) => {
+                        panic!("Expected {expected:?} from {cursor:?}, got {actual:?}")
+                    }
+                }
+            }
         }
     }
 
     #[test]
-    fn feature_info_fits_the_sidebar_without_changing_its_bounds() {
+    fn closing_dock_with_keyboard_returns_focus_to_its_navigation_button() {
+        use iced::advanced::{
+            layout,
+            widget::{operation::focusable, Operation, Tree},
+            Layout, Shell,
+        };
+        use iced::keyboard::{key::Named, Key, Location, Modifiers};
+
+        let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
+        let viewport = iced::Rectangle::with_size(iced::Size::new(900.0, 620.0));
+        let limits = layout::Limits::new(iced::Size::ZERO, viewport.size());
+        let dock = |open: bool| {
+            let top_bar = navigation::top_bar(
+                Page::Dashboard,
+                &crate::config::Settings::default(),
+                Some(open),
+                viewport.width,
+            )
+            .map(Message::Navigation);
+            let workspace = iced::widget::column![
+                page_header("Editor".into(), None, None, false),
+                button(text("Editor action")).on_press(Message::Save),
+            ];
+            let panel = open.then(|| iced::widget::Space::new().height(Fill).into());
+            window_frame::view(
+                iced::widget::column![
+                    top_bar,
+                    side_panel_dock(workspace.into(), panel, design::SIDE_PANEL_WIDTH),
+                ]
+                .into(),
+                iced::widget::Space::new().into(),
+                false,
+                true,
+                Message::WindowAction,
+            )
+        };
+        let activate =
+            |view: &mut Element<'_, Message>, tree: &mut Tree, layout: Layout<'_>, key| {
+                let mut messages = Vec::new();
+                let mut shell = Shell::new(&mut messages);
+                view.as_widget_mut().update(
+                    tree,
+                    &iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                        key: Key::Named(key),
+                        modified_key: Key::Named(key),
+                        physical_key: iced::keyboard::key::Physical::Unidentified(
+                            iced::keyboard::key::NativeCode::Unidentified,
+                        ),
+                        location: Location::Standard,
+                        modifiers: Modifiers::empty(),
+                        text: None,
+                        repeat: false,
+                    }),
+                    layout,
+                    iced::mouse::Cursor::Unavailable,
+                    &renderer,
+                    &mut iced::advanced::clipboard::Null,
+                    &mut shell,
+                    &viewport,
+                );
+                assert!(shell.is_event_captured());
+                messages
+            };
+
+        for key in [Named::Enter, Named::Space] {
+            let mut open = true;
+            let mut view = dock(open);
+            let mut tree = Tree::new(&view);
+            let node = view.as_widget_mut().layout(&mut tree, &renderer, &limits);
+            let layout = Layout::new(&node);
+            view.as_widget_mut().operate(
+                &mut tree,
+                layout,
+                &renderer,
+                &mut focusable::focus(SIDE_PANEL_CLOSE.into()),
+            );
+            assert!(matches!(
+                activate(&mut view, &mut tree, layout, key).as_slice(),
+                [Message::CloseSidePanel]
+            ));
+
+            let mut restore = close_side_panel(&mut open);
+            assert!(!open);
+            let mut view = dock(open);
+            tree.diff(&view);
+            let node = view.as_widget_mut().layout(&mut tree, &renderer, &limits);
+            let layout = Layout::new(&node);
+            view.as_widget_mut()
+                .operate(&mut tree, layout, &renderer, &mut restore);
+            assert!(matches!(
+                activate(&mut view, &mut tree, layout, key).as_slice(),
+                [Message::Navigation(navigation::Event::ToggleSidePanel)]
+            ));
+
+            let mut next = focusable::focus_next::<()>();
+            view.as_widget_mut()
+                .operate(&mut tree, layout, &renderer, &mut next);
+            let iced::advanced::widget::operation::Outcome::Chain(mut next) = next.finish() else {
+                panic!("focus traversal must produce its second step");
+            };
+            view.as_widget_mut()
+                .operate(&mut tree, layout, &renderer, next.as_mut());
+            assert!(matches!(
+                activate(&mut view, &mut tree, layout, key).as_slice(),
+                [Message::Save]
+            ));
+        }
+    }
+
+    #[test]
+    fn side_panel_tabs_fit_the_dock_without_changing_its_bounds() {
         use super::*;
         use iced::advanced::{layout, widget::Tree};
 
         let renderer = iced::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
-        assert!(feature_info_sidebar(None, Page::Home, SidePanelTab::Info).is_none());
-        for page in
-            std::iter::once(Page::SettingsHome).chain(navigation::children(Page::SettingsHome))
-        {
-            assert!(feature_info_sidebar(None, page, SidePanelTab::Info).is_none());
+        assert_eq!(
+            SidePanelTab::for_page(Page::Dashboard),
+            &[SidePanelTab::Settings, SidePanelTab::Status]
+        );
+        assert!(SidePanelTab::for_page(Page::Win32PrioritySeparation).is_empty());
+        for landing in [Page::SettingsHome, Page::Watchdog] {
+            for page in std::iter::once(landing).chain(navigation::children(landing)) {
+                assert!(SidePanelTab::for_page(page).is_empty());
+            }
         }
         for width in [216.0, 296.0] {
             for height in [500.0, 1000.0] {
                 let size = iced::Size::new(width, height);
                 for feature_page in [
-                    Page::CpuLimiter,
+                    Page::Dashboard,
                     Page::AdaptiveEngine,
-                    Page::AdvancedPowerPlanTuning,
+                    Page::AdaptiveProcessorPower,
+                    Page::CpuSetsSoft,
+                    Page::ProcessorAffinityHard,
                 ] {
                     for &selected in SidePanelTab::for_page(feature_page) {
                         let panel = iced::widget::Space::new().width(Fill).height(Fill).into();
-                        let mut view = feature_info_sidebar(Some(panel), feature_page, selected)
-                            .expect("feature page has information");
+                        let mut view = page_side_panel(feature_page, selected, panel);
                         let mut tree = Tree::new(&view);
                         let node = view.as_widget_mut().layout(
                             &mut tree,
@@ -3599,16 +4789,21 @@ mod tests {
                         assert!(body.size().height >= height - 60.0);
                     }
                 }
-                let mut view =
-                    feature_info_sidebar(None, Page::TimerResolution, SidePanelTab::Status)
-                        .expect("feature information is available without a runtime panel");
-                let mut tree = Tree::new(&view);
-                let node = view.as_widget_mut().layout(
-                    &mut tree,
-                    &renderer,
-                    &layout::Limits::new(iced::Size::ZERO, size),
-                );
-                assert_eq!(node.size(), size);
+                for (page, tab) in [
+                    (Page::TimerResolution, SidePanelTab::Status),
+                    (Page::AdvancedPowerPlanTuning, SidePanelTab::Presets),
+                ] {
+                    let panel = iced::widget::Space::new().width(Fill).height(Fill).into();
+                    let mut view = page_side_panel(page, tab, panel);
+                    let mut tree = Tree::new(&view);
+                    let node = view.as_widget_mut().layout(
+                        &mut tree,
+                        &renderer,
+                        &layout::Limits::new(iced::Size::ZERO, size),
+                    );
+                    assert_eq!(node.size(), size);
+                    assert!(node.children().is_empty());
+                }
             }
         }
     }
@@ -3769,36 +4964,41 @@ mod tests {
             design::palette(false, None),
             design::extended_palette,
         );
-        let bounds = iced::Rectangle::with_size(iced::Size::new(800.0, 400.0));
-        let viewport =
-            iced::advanced::graphics::Viewport::with_physical_size(iced::Size::new(800, 400), 1.0);
+        let size = iced::Size::new(900, 620);
+        let bounds =
+            iced::Rectangle::with_size(iced::Size::new(size.width as f32, size.height as f32));
+        let viewport = iced::advanced::graphics::Viewport::with_physical_size(size, 1.0);
         let mut renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
-        let mut pixels = tiny_skia::Pixmap::new(800, 400).unwrap();
-        let mut mask = tiny_skia::Mask::new(800, 400).unwrap();
+        let mut pixels = tiny_skia::Pixmap::new(size.width, size.height).unwrap();
+        let mut mask = tiny_skia::Mask::new(size.width, size.height).unwrap();
         let mut previous = Vec::new();
         let mut tree = Tree::empty();
         for query in ["", "c", "cp", "cpu", ""] {
-            let panel = navigation_search_panel(iced::widget::column![
-                text_input("Search", query).padding(12),
-                iced::widget::rule::horizontal(1),
-                container(
-                    iced::widget::row![
-                        text("Filter")
-                            .size(design::typography::CAPTION)
-                            .style(text::secondary),
-                        super::super::select::Select::new(
-                            vec![SearchScope(None), SearchScope(Some(Page::PowerPlanControl))],
-                            Some(SearchScope(None)),
-                            Message::NavigationSearchScope,
-                        )
-                        .width(168),
-                    ]
-                    .spacing(design::space::SMALL)
-                    .align_y(iced::Center)
-                )
-                .padding(12),
-            ]);
-            let mut view: Element<'_, Message> = container(panel).padding(60).into();
+            let mut content = iced::widget::column![container(
+                iced::widget::row![
+                    text("Filter")
+                        .size(design::typography::CAPTION)
+                        .style(text::secondary),
+                    super::super::select::Select::new(
+                        vec![SearchScope(None), SearchScope(Some(Page::PowerPlanControl))],
+                        Some(SearchScope(None)),
+                        Message::NavigationSearchScope,
+                    )
+                    .width(168),
+                ]
+                .spacing(design::space::SMALL)
+                .align_y(iced::Center)
+            )
+            .padding(12),];
+            if !query.is_empty() {
+                content = content
+                    .push(iced::widget::rule::horizontal(1))
+                    .push(container(text(query)).padding(12));
+            }
+            let mut view = navigation_search_overlay(
+                iced::widget::Space::new().width(Fill).height(Fill).into(),
+                navigation_search_panel(content),
+            );
             tree.diff(&view);
             let node = view.as_widget_mut().layout(
                 &mut tree,
@@ -3837,7 +5037,7 @@ mod tests {
                 &damage,
                 theme.palette().background,
             );
-            let mut full = tiny_skia::Pixmap::new(800, 400).unwrap();
+            let mut full = tiny_skia::Pixmap::new(size.width, size.height).unwrap();
             renderer.draw(
                 &mut full.as_mut(),
                 &mut mask,
@@ -3847,7 +5047,7 @@ mod tests {
             );
             assert!(
                 pixels.data() == full.data(),
-                "Search panel accumulated stale pixels for query {query:?}"
+                "Search accumulated stale pixels for query {query:?}, damage {damage:?}"
             );
             previous = renderer.layers().to_vec();
         }
@@ -3868,6 +5068,17 @@ mod tests {
     }
 
     #[test]
+    fn search_returns_matching_section_landing_before_children() {
+        use Page::PowerPlanControl;
+        for scope in [SearchScope(None), SearchScope(Some(PowerPlanControl))] {
+            let pages = navigation_search_choices("restore previous plan", false, scope);
+            assert_eq!(pages.first(), Some(&PowerPlanControl));
+            assert!(pages.contains(&Page::ByFocus));
+            assert!(!pages[1..].contains(&PowerPlanControl));
+        }
+    }
+
+    #[test]
     fn exit_guard_keeps_pending_completions_but_rejects_new_work() {
         assert!(
             Message::Processes(process_list::Message::Loaded(Err("fixture".into())))
@@ -3880,21 +5091,18 @@ mod tests {
         let mut editor = settings_pages::Editor::default();
         let mut settings = crate::config::Settings::default();
         let channel = settings.general.update_channel;
-        assert!(editor.begin_check(false));
-        let completed = Message::Preferences(settings_pages::Message::Checked(
-            channel,
-            Err("fixture".into()),
-        ));
+        let check = editor.begin_check(channel, false).unwrap();
+        let completed = Message::Preferences(settings_pages::Message::Checked(check, Err(())));
         assert!(completed.allowed_during_exit());
         if let Message::Preferences(message) = completed {
             editor.update(&mut settings, message);
         }
-        assert!(editor.begin_check(false));
+        assert!(editor.begin_check(channel, false).is_some());
         assert!(Message::ShutdownFinished(Err("fixture".into())).allowed_during_exit());
         for message in [
             Message::Processes(process_list::Message::Refresh),
             Message::Processes(process_list::Message::ConfirmStop),
-            Message::Preferences(settings_pages::Message::SaveColor),
+            Message::Preferences(settings_pages::Message::AddColor),
             Message::Preferences(settings_pages::Message::Check),
             Message::Preferences(settings_pages::Message::ColorPicked(iced::Color::WHITE)),
             Message::Save,
@@ -3902,6 +5110,22 @@ mod tests {
             Message::DiscardAndClose,
         ] {
             assert!(!message.allowed_during_exit());
+        }
+    }
+
+    #[test]
+    fn app_catalog_refresh_requires_a_page_that_uses_it() {
+        for page in [
+            Page::AdaptiveProcessorPower,
+            Page::ByActivity,
+            Page::ByCpuLoad,
+            Page::ByTime,
+        ] {
+            assert!(page.supports_power_source_profiles());
+            assert!(!page_needs_app_catalog(page));
+        }
+        for page in [Page::ByFocus, Page::ByRunningApp, Page::ActionLog] {
+            assert!(page_needs_app_catalog(page));
         }
     }
 
@@ -3941,34 +5165,41 @@ mod tests {
             (2560.0, 1.5),
         ] {
             let width = physical_width / scale;
-            let (navigation, panel, padding) = shell_widths(width);
-            assert_eq!(navigation, design::NAVIGATION_RAIL_WIDTH + 1.0);
-            assert!(panel <= design::SIDE_PANEL_WIDTH);
-            let content = width - navigation - 2.0 * padding as f32;
-            assert!(content >= 800.0, "{width}: {content}");
+            let (navigation, panel, padding) = shell_widths(width, true);
+            let content = width - navigation - panel - 2.0 * padding as f32;
+            assert!(content >= 440.0, "{width}: {content}");
         }
         assert_eq!(
-            shell_widths(1920.0),
+            shell_widths(1920.0, true),
             (
-                design::NAVIGATION_RAIL_WIDTH + 1.0,
+                design::PAGE_NAVIGATION_WIDTH,
                 design::SIDE_PANEL_WIDTH,
                 design::space::WIDE as u16
             )
         );
-        let (navigation, _, padding) = shell_widths(900.0);
-        assert!(900.0 - navigation - 2.0 * padding as f32 >= 780.0);
+        let (navigation, panel, padding) = shell_widths(900.0, true);
+        assert!(900.0 - navigation - panel - 2.0 * padding as f32 >= 440.0);
+        let (navigation, panel, _) = shell_widths(900.0, false);
+        assert_eq!(navigation, 0.0);
+        assert_eq!(panel, design::SIDE_PANEL_WIDTH);
     }
 
     #[test]
-    fn process_rulesets_request_power_plans_only_when_visible() {
-        assert!(!page_needs_power_plans(Page::ProcessList, false));
-        assert!(page_needs_power_plans(Page::ProcessList, true));
+    fn power_plan_catalog_is_requested_on_pages_that_use_it() {
+        assert!(!page_needs_power_plans(Page::Dashboard, false));
+        assert!(page_needs_power_plans(Page::Dashboard, true));
         for process_rulesets_open in [false, true] {
             assert!(page_needs_power_plans(
                 Page::PowerPlanControl,
                 process_rulesets_open
             ));
-            assert!(!page_needs_power_plans(Page::Home, process_rulesets_open));
+            for &page in Page::PowerPlanControl.child_pages().unwrap() {
+                assert!(page_needs_power_plans(page, process_rulesets_open));
+            }
+            assert!(!page_needs_power_plans(
+                Page::ActionLog,
+                process_rulesets_open
+            ));
         }
     }
 
@@ -3979,23 +5210,25 @@ mod tests {
                 guid: "balanced".into(),
                 name: "Balanced".into(),
                 active: true,
+                managed_adaptive: false,
             },
             crate::power::PowerPlan {
                 guid: "ultimate".into(),
                 name: "Ultimate".into(),
                 active: false,
+                managed_adaptive: false,
             },
         ];
         assert!(!sync_active_power_plan(&mut plans, None, None));
-        assert_eq!(plans[0].display_name(), "Balanced (active)");
+        assert!(plans[0].active);
 
         assert!(sync_active_power_plan(
             &mut plans,
             Some("balanced"),
             Some("ULTIMATE")
         ));
-        assert_eq!(plans[0].display_name(), "Balanced");
-        assert_eq!(plans[1].display_name(), "Ultimate (active)");
+        assert!(!plans[0].active);
+        assert!(plans[1].active);
 
         // A later native enumeration may be newer than the cached runtime GUID.
         plans[0].active = true;
@@ -4006,20 +5239,23 @@ mod tests {
             Some("ultimate")
         ));
         assert!(!sync_active_power_plan(&mut plans, Some("ULTIMATE"), None));
-        assert_eq!(plans[0].display_name(), "Balanced (active)");
-        assert_eq!(plans[1].display_name(), "Ultimate");
+        assert!(plans[0].active);
+        assert!(!plans[1].active);
+        assert_eq!(plans[0].name, "Balanced");
+        assert_eq!(plans[1].name, "Ultimate");
     }
 
     #[test]
     fn catalog_completion_after_a_runtime_switch_requires_a_fresh_query() {
-        let balanced = crate::power::PowerPlan {
+        let mut balanced = crate::power::PowerPlan {
             guid: "balanced".into(),
             name: "Balanced".into(),
             active: true,
+            managed_adaptive: false,
         };
         let mut plans = vec![balanced.clone()];
         let mut reload_pending =
-            sync_active_power_plan(&mut plans, Some("balanced"), Some("ultimate"));
+            sync_active_power_plan(&mut plans, Some("balanced"), Some("adaptive"));
         assert!(!accept_power_plan_catalog(
             &mut plans,
             Ok(vec![balanced.clone()]),
@@ -4029,18 +5265,33 @@ mod tests {
         assert!(!plans[0].active);
         assert!(!reload_pending);
 
-        assert!(
-            accept_power_plan_catalog(&mut plans, Ok(vec![balanced]), &mut reload_pending,)
-                .unwrap()
-        );
-        assert!(plans[0].active);
+        let adaptive = crate::power::PowerPlan {
+            guid: "adaptive".into(),
+            name: "Winderust Adaptive".into(),
+            active: true,
+            managed_adaptive: true,
+        };
+        balanced.active = false;
+        assert!(accept_power_plan_catalog(
+            &mut plans,
+            Ok(vec![balanced, adaptive]),
+            &mut reload_pending,
+        )
+        .unwrap());
+        assert!(!sync_active_power_plan(
+            &mut plans,
+            Some("adaptive"),
+            Some("ADAPTIVE")
+        ));
+        assert!(plans[1].active && plans[1].managed_adaptive);
 
-        reload_pending |= sync_active_power_plan(&mut plans, Some("ultimate"), Some("balanced"));
-        reload_pending |= sync_active_power_plan(&mut plans, Some("balanced"), Some("ultimate"));
+        reload_pending |= sync_active_power_plan(&mut plans, Some("adaptive"), Some("balanced"));
+        reload_pending |= sync_active_power_plan(&mut plans, Some("balanced"), Some("adaptive"));
         assert!(
             !accept_power_plan_catalog(&mut plans, Ok(Vec::new()), &mut reload_pending).unwrap()
         );
-        assert_eq!(plans.len(), 1);
+        assert_eq!(plans.len(), 2);
+        assert!(plans[1].active);
     }
 
     use super::*;

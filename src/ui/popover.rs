@@ -1,11 +1,14 @@
 use iced::advanced::{
     layout, renderer,
-    widget::{tree, Operation, Tree},
+    widget::{operation, tree, Id, Operation, Tree},
     Clipboard, Layout, Shell, Widget,
 };
 use iced::{
-    keyboard, mouse, overlay, Element, Event, Length, Rectangle, Renderer, Size, Theme, Vector,
+    keyboard::{self, key::Named},
+    mouse, overlay, Element, Event, Length, Rectangle, Renderer, Size, Theme, Vector,
 };
+
+use super::keyboard_focus::Focus;
 
 pub(super) fn view<'a, Message: 'a>(
     id: u64,
@@ -40,10 +43,17 @@ struct Popover<'a, Message> {
     content: Option<Box<dyn Fn() -> Element<'a, Message> + 'a>>,
     popup: Option<Element<'a, Message>>,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Trigger {
+    Pointer,
+    Keyboard,
+}
+
 #[derive(Default)]
 struct State {
     id: u64,
-    open: bool,
+    focus: Focus,
+    open: Option<Trigger>,
 }
 impl<'a, Message: 'a> Widget<Message, Theme, Renderer> for Popover<'a, Message> {
     fn size(&self) -> Size<Length> {
@@ -55,7 +65,7 @@ impl<'a, Message: 'a> Widget<Message, Theme, Renderer> for Popover<'a, Message> 
     fn state(&self) -> tree::State {
         tree::State::new(State {
             id: self.id,
-            open: false,
+            ..State::default()
         })
     }
     fn children(&self) -> Vec<Tree> {
@@ -70,7 +80,7 @@ impl<'a, Message: 'a> Widget<Message, Theme, Renderer> for Popover<'a, Message> 
         if state.id != self.id {
             *state = State {
                 id: self.id,
-                open: false,
+                ..State::default()
             };
             tree.children = self.children();
         }
@@ -105,6 +115,12 @@ impl<'a, Message: 'a> Widget<Message, Theme, Renderer> for Popover<'a, Message> 
             cursor,
             viewport,
         );
+        if self.content.is_some() && viewport.intersects(&layout.bounds()) {
+            tree.state
+                .downcast_ref::<State>()
+                .focus
+                .draw(renderer, theme, layout.bounds());
+        }
     }
     fn operate(
         &mut self,
@@ -113,9 +129,30 @@ impl<'a, Message: 'a> Widget<Message, Theme, Renderer> for Popover<'a, Message> 
         renderer: &Renderer,
         operation: &mut dyn Operation,
     ) {
-        self.anchor
-            .as_widget_mut()
-            .operate(&mut tree.children[0], layout, renderer, operation);
+        let anchor = self.anchor.as_widget_mut();
+        let anchor_tree = &mut tree.children[0];
+        // Iced visits an open context menu separately with its overlay layout.
+        if self.content.is_none()
+            && anchor
+                .overlay(
+                    anchor_tree,
+                    layout,
+                    renderer,
+                    &layout.bounds(),
+                    Vector::ZERO,
+                )
+                .is_some()
+        {
+            return;
+        }
+        if self.content.is_some() {
+            operation.focusable(
+                None,
+                layout.bounds(),
+                &mut tree.state.downcast_mut::<State>().focus,
+            );
+        }
+        anchor.operate(anchor_tree, layout, renderer, operation);
     }
     fn update(
         &mut self,
@@ -154,22 +191,28 @@ impl<'a, Message: 'a> Widget<Message, Theme, Renderer> for Popover<'a, Message> 
             );
             return;
         }
-        let trigger = matches!(
-            event,
-            Event::Mouse(
-                mouse::Event::CursorMoved { .. } | mouse::Event::ButtonPressed(mouse::Button::Left)
-            )
-        );
-        if trigger && cursor.is_over(layout.bounds()) && cursor.is_over(*viewport) {
-            let state = tree.state.downcast_mut::<State>();
-            if !state.open {
-                state.open = true;
-                shell.invalidate_layout();
-                shell.request_redraw();
+        let state = tree.state.downcast_mut::<State>();
+        state.focus.clear_on_pointer(event, shell);
+        let bounds = layout.bounds();
+        let trigger = if viewport.intersects(&bounds) && state.focus.activate(event, shell) {
+            Trigger::Keyboard
+        } else if cursor.is_over(bounds) && cursor.is_over(*viewport) {
+            match event {
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                    shell.capture_event();
+                    Trigger::Pointer
+                }
+                Event::Mouse(mouse::Event::CursorMoved { .. }) if state.open.is_none() => {
+                    Trigger::Pointer
+                }
+                _ => return,
             }
-            if matches!(event, Event::Mouse(mouse::Event::ButtonPressed(_))) {
-                shell.capture_event();
-            }
+        } else {
+            return;
+        };
+        if state.open.replace(trigger) != Some(trigger) {
+            shell.invalidate_layout();
+            shell.request_redraw();
         }
     }
     fn mouse_interaction(
@@ -208,12 +251,10 @@ impl<'a, Message: 'a> Widget<Message, Theme, Renderer> for Popover<'a, Message> 
             );
         }
         let state = tree.state.downcast_mut::<State>();
-        if !state.open {
-            return None;
-        }
+        state.open?;
         let anchor = layout.bounds() + translation;
         if !viewport.intersects(&anchor) {
-            state.open = false;
+            state.open = None;
             return None;
         }
         if self.popup.is_none() {
@@ -237,7 +278,7 @@ impl<'a, Message: 'a> Widget<Message, Theme, Renderer> for Popover<'a, Message> 
 struct Popup<'a, 'b, Message> {
     content: &'b mut Element<'a, Message>,
     tree: &'b mut Tree,
-    open: &'b mut bool,
+    open: &'b mut Option<Trigger>,
     anchor: Rectangle,
 }
 impl<Message> iced::advanced::Overlay<Message, Theme, Renderer> for Popup<'_, '_, Message> {
@@ -297,17 +338,41 @@ impl<Message> iced::advanced::Overlay<Message, Theme, Renderer> for Popup<'_, '_
                 ..
             })
         );
+        let key = match event {
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(key),
+                modifiers,
+                ..
+            }) if modifiers.is_empty()
+                || (*key == Named::Tab && *modifiers == keyboard::Modifiers::SHIFT) =>
+            {
+                Some(*key)
+            }
+            _ => None,
+        };
+        let keyboard_open = *self.open == Some(Trigger::Keyboard);
         if escape
+            || key == Some(Named::Tab)
+            || (!keyboard_open && matches!(key, Some(Named::Enter | Named::Space)))
             || matches!(event, Event::Window(iced::window::Event::Unfocused))
             || (outside && matches!(event, Event::Mouse(mouse::Event::ButtonPressed(_))))
             || (outside && matches!(event, Event::Mouse(mouse::Event::CursorMoved { .. })))
         {
-            *self.open = false;
+            *self.open = None;
             shell.invalidate_layout();
             shell.request_redraw();
             if escape {
                 shell.capture_event();
             }
+            return;
+        }
+        if let Some(mut scroll) = key
+            .filter(|_| keyboard_open)
+            .and_then(PopupScroll::from_key)
+        {
+            self.operate(layout, renderer, &mut scroll);
+            shell.capture_event();
+            shell.request_redraw();
             return;
         }
         self.content.as_widget_mut().update(
@@ -350,6 +415,56 @@ impl<Message> iced::advanced::Overlay<Message, Theme, Renderer> for Popup<'_, '_
     }
 }
 
+enum PopupScroll {
+    Line(f32),
+    Page(f32),
+    Edge(f32),
+}
+
+impl PopupScroll {
+    fn from_key(key: Named) -> Option<Self> {
+        match key {
+            Named::ArrowUp => Some(Self::Line(-36.0)),
+            Named::ArrowDown => Some(Self::Line(36.0)),
+            Named::PageUp => Some(Self::Page(-1.0)),
+            Named::PageDown => Some(Self::Page(1.0)),
+            Named::Home => Some(Self::Edge(0.0)),
+            Named::End => Some(Self::Edge(1.0)),
+            _ => None,
+        }
+    }
+}
+
+impl Operation for PopupScroll {
+    fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn Operation)) {
+        visit(self);
+    }
+
+    fn scrollable(
+        &mut self,
+        _: Option<&Id>,
+        bounds: Rectangle,
+        content: Rectangle,
+        _: Vector,
+        state: &mut dyn operation::Scrollable,
+    ) {
+        use operation::scrollable::{AbsoluteOffset, RelativeOffset};
+
+        let y = match *self {
+            Self::Line(y) => y,
+            Self::Page(direction) => direction * bounds.height,
+            Self::Edge(edge) => {
+                state.snap_to(RelativeOffset {
+                    x: None,
+                    y: Some(edge),
+                });
+                return;
+            }
+        };
+        state.scroll_by(AbsoluteOffset { x: 0.0, y }, bounds, content);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,13 +475,19 @@ mod tests {
         fn menu(id: u64) -> Element<'static, ()> {
             context_menu(
                 id,
-                iced::widget::button("Color").width(42).height(42).into(),
+                crate::ui::widgets::button(iced::widget::Space::new())
+                    .width(42)
+                    .height(42)
+                    .on_press(())
+                    .into(),
                 || {
-                    iced::widget::button("Edit")
-                        .width(140)
-                        .height(32)
-                        .on_press(())
-                        .into()
+                    iced::widget::container(iced::widget::column![
+                        crate::ui::widgets::action_button("Edit")
+                            .width(iced::Fill)
+                            .on_press(())
+                    ])
+                    .width(140)
+                    .into()
                 },
             )
         }
@@ -393,6 +514,9 @@ mod tests {
                 &mut Shell::new(&mut messages),
                 &viewport,
             );
+            let mut focus = iced::advanced::widget::operation::focusable::focus_next::<()>();
+            view.as_widget_mut()
+                .operate(&mut tree, Layout::new(&node), &renderer, &mut focus);
             {
                 let mut overlay = view
                     .as_widget_mut()
@@ -406,6 +530,7 @@ mod tests {
                     .unwrap();
                 let overlay = overlay.as_overlay_mut();
                 let node = overlay.layout(&renderer, viewport.size());
+                overlay.operate(Layout::new(&node), &renderer, &mut focus);
                 let content = node.children()[0].bounds();
                 assert!(viewport.contains(content.center()));
                 overlay.update(
@@ -628,7 +753,7 @@ mod tests {
             )
             .is_none());
         assert_eq!(builds.get(), 2);
-        assert!(!tree.state.downcast_ref::<State>().open);
+        assert!(tree.state.downcast_ref::<State>().open.is_none());
         element.as_widget_mut().update(
             &mut tree,
             &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
@@ -654,7 +779,7 @@ mod tests {
         element.as_widget().diff(&mut tree);
         assert_eq!(builds.get(), 2);
         assert_eq!(tree.children.len(), 1);
-        assert!(!tree.state.downcast_ref::<State>().open);
+        assert!(tree.state.downcast_ref::<State>().open.is_none());
     }
 
     #[test]
@@ -668,7 +793,7 @@ mod tests {
             .width(Length::Shrink)
             .into();
         let mut tree = Tree::new(&content);
-        let mut open = true;
+        let mut open = Some(Trigger::Pointer);
         let anchor = Rectangle {
             x: 390.0,
             y: 270.0,
@@ -707,7 +832,7 @@ mod tests {
             &mut shell,
         );
         assert!(shell.is_event_captured());
-        assert!(*popup.open);
+        assert!(popup.open.is_some());
         for (position, expected) in [
             (anchor.center(), true),
             (bounds.center(), true),
@@ -722,7 +847,7 @@ mod tests {
                 &mut iced::advanced::clipboard::Null,
                 &mut shell,
             );
-            assert_eq!(*popup.open, expected);
+            assert_eq!(popup.open.is_some(), expected);
             if position == bounds.center() {
                 assert!(shell.is_event_captured());
             }

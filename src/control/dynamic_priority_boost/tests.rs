@@ -899,7 +899,7 @@ fn dynamic_priority_boost_live_apply_and_clean_release() -> Result<(), String> {
             Err(error) => return Err(error.to_string()),
         }
     };
-    let baseline = current_dynamic_priority_boost_state(&target)?;
+    let baseline = current_dynamic_priority_boost_state(&target, true)?;
     let expected = if baseline == DynamicPriorityBoostState::Enabled {
         DynamicPriorityBoostState::Disabled
     } else {
@@ -910,8 +910,14 @@ fn dynamic_priority_boost_live_apply_and_clean_release() -> Result<(), String> {
     controller
         .apply_process_list_action(&target, expected, true)
         .map_err(|error| error.to_string())?;
-    assert_eq!(current_dynamic_priority_boost_state(&target)?, expected);
+    assert_eq!(
+        current_dynamic_priority_boost_state(&target, true)?,
+        expected
+    );
     controller.shutdown()?;
-    assert_eq!(current_dynamic_priority_boost_state(&target)?, baseline);
+    assert_eq!(
+        current_dynamic_priority_boost_state(&target, true)?,
+        baseline
+    );
     Ok(())
 }

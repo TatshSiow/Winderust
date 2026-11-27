@@ -33,12 +33,7 @@ jobs:
 
       - name: Ensure ripgrep is available
         shell: pwsh
-        run: |
-          if (-not (Get-Command rg -ErrorAction SilentlyContinue)) {
-              choco install ripgrep --yes --no-progress
-              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
-          rg --version
+        run: .\scripts\ensure_ripgrep.ps1
 
       - name: Check architecture ownership
         run: .\scripts\check_architecture_ownership.ps1

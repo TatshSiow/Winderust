@@ -12,14 +12,14 @@ use crate::{
     },
     platform::windows::{
         job::{self as windows_job, JobHandle, JobObjectError},
-        suspension as windows_suspension,
+        process as windows_process, suspension as windows_suspension,
     },
     win_util::WinHandle,
 };
 
 use super::process::{
-    open_process_for_job_assignment, ProcessControlError, ProcessControlTarget, ProcessIdentity,
-    ProcessTargetKey,
+    open_process_for_job_assignment, open_process_for_observation, ProcessControlError,
+    ProcessControlTarget, ProcessIdentity, ProcessTargetKey,
 };
 
 const APP_SUSPENSION_ONLY_BUILT_IN_EXCLUSIONS: &[&str] = &[
@@ -113,6 +113,29 @@ pub(crate) fn process_is_suspendable(target: &ProcessActionTarget) -> bool {
         && target.is_service_account == Some(false)
 }
 
+pub(crate) fn verify_unmanaged_resume_target(
+    target: &SuspensionTarget,
+    allow_cross_session_process_control: bool,
+) -> Result<(), SuspensionError> {
+    if is_builtin_excluded(&target.process.name) || target.is_service_account != Some(false) {
+        return Err(SuspensionError::AccessDenied);
+    }
+    let (identity, process) =
+        open_process_for_observation(&target.process, allow_cross_session_process_control)
+            .map_err(map_process_control_error)?;
+    if identity.session_id.is_none_or(|session_id| session_id == 0)
+        || process_runs_as_service_account_from_handle(&process) != Some(false)
+    {
+        return Err(SuspensionError::AccessDenied);
+    }
+    if windows_process::poll_exit(&process)
+        .map_err(|error| map_process_control_error(error.into()))?
+    {
+        return Err(SuspensionError::ProcessExited);
+    }
+    Ok(())
+}
+
 pub(crate) trait SuspensionPlatform {
     type Handle;
     type Intent;
@@ -128,6 +151,7 @@ pub(crate) trait SuspensionPlatform {
         target: &SuspensionTarget,
         allow_cross_session_process_control: bool,
     ) -> Result<bool, SuspensionError>;
+    fn job_has_no_active_processes(&self, handle: &Self::Handle) -> bool;
     fn begin_freeze(
         &mut self,
         identity: &ProcessIdentity,
@@ -185,6 +209,55 @@ pub(crate) struct SuspensionController<P: SuspensionPlatform = WindowsSuspension
 impl Default for SuspensionController<WindowsSuspensionPlatform> {
     fn default() -> Self {
         Self::new(WindowsSuspensionPlatform)
+    }
+}
+
+impl SuspensionController<WindowsSuspensionPlatform> {
+    pub(crate) fn app_suspension_blocks_restart(
+        &self,
+        targets: &[ProcessActionTarget],
+        allow_cross_session_process_control: bool,
+    ) -> Result<bool, String> {
+        let frozen_jobs = self
+            .managed
+            .values()
+            .filter(|managed| {
+                // A failed thaw can clear the freeze request while the job stays frozen.
+                managed
+                    .app_suspension_phase
+                    .is_some_and(|frozen| frozen || managed.retry.is_some())
+                    && matches!(
+                        managed.state,
+                        SuspensionState::Frozen | SuspensionState::FrozenCompensationPending
+                    )
+            })
+            .map(|managed| {
+                managed
+                    .handle
+                    .job_handle
+                    .as_ref()
+                    .ok_or("App Suspension job handle is unavailable.")
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if frozen_jobs.is_empty() {
+            return Ok(false);
+        }
+        // The restart parent can pass the entire job to its replacement, including its freeze.
+        for target in targets {
+            let (_, process) = open_process_for_observation(
+                &ProcessControlTarget::from_action_target(target),
+                allow_cross_session_process_control,
+            )
+            .map_err(|error| error.to_string())?;
+            for job in &frozen_jobs {
+                if windows_job::process_is_in_job(&process, Some(job))
+                    .ok_or("Could not verify App Suspension job membership.")?
+                {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
     }
 }
 
@@ -462,9 +535,7 @@ where
         let Some(managed) = self.managed.get(&owner.key()) else {
             return Ok(false);
         };
-        if managed.cpu_limiter_phase.is_none() {
-            return Ok(false);
-        }
+        // The CPU Limiter worker still owns this job while it retries thawing.
         self.platform.contains_process(
             &managed.handle,
             candidate,
@@ -515,10 +586,10 @@ where
                 .get(&key)
                 .and_then(|managed| managed.cpu_limiter_phase);
             if cpu_limiter_phase.is_some() {
+                self.thaw_keep_key(&key, force)?;
                 if let Some(managed) = self.managed.get_mut(&key) {
                     managed.app_suspension_phase = None;
                 }
-                self.thaw_keep_key(&key, force)?;
             } else {
                 self.release_key(&key, force)?;
             }
@@ -526,17 +597,19 @@ where
         Ok(true)
     }
 
-    pub(crate) fn managed_process_ids(&self) -> impl Iterator<Item = u32> + '_ {
+    pub(crate) fn managed_process_paths(&self) -> impl Iterator<Item = (u32, &Path)> + '_ {
         self.managed
             .iter()
             .filter(|(_key, managed)| managed.app_suspension_phase.is_some())
-            .map(|(key, _managed)| key.id)
+            .map(|(key, managed)| (key.id, managed.identity.executable_path.as_path()))
+    }
+
+    pub(crate) fn managed_process_ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.managed_process_paths().map(|(id, _path)| id)
     }
 
     pub(crate) fn contains_process(&self, process_id: u32) -> bool {
-        self.managed
-            .iter()
-            .any(|(key, managed)| key.id == process_id && managed.app_suspension_phase.is_some())
+        self.managed_process_ids().any(|id| id == process_id)
     }
 
     pub(crate) fn matches_target(&self, target: &SuspensionTarget) -> bool {
@@ -546,13 +619,8 @@ where
     }
 
     pub(crate) fn matches_process_path(&self, process_id: u32, executable_path: &Path) -> bool {
-        self.managed.iter().any(|(key, managed)| {
-            key.id == process_id
-                && managed.app_suspension_phase.is_some()
-                && crate::foreground::same_executable_path(
-                    &managed.identity.executable_path,
-                    executable_path,
-                )
+        self.managed_process_paths().any(|(id, path)| {
+            id == process_id && crate::foreground::same_executable_path(path, executable_path)
         })
     }
 
@@ -567,12 +635,34 @@ where
         })
     }
 
-    pub(crate) fn is_frozen_target(&self, target: &SuspensionTarget) -> bool {
-        self.managed.get(&target.key()).is_some_and(|managed| {
+    pub(crate) fn is_frozen_target(&self, key: &ProcessTargetKey) -> bool {
+        self.managed.get(key).is_some_and(|managed| {
             matches!(
                 managed.state,
                 SuspensionState::Frozen | SuspensionState::FrozenCompensationPending
             )
+        })
+    }
+
+    pub(crate) fn release_empty_app_suspension(&mut self, key: &ProcessTargetKey) {
+        let can_release = self.managed.get(key).is_some_and(|managed| {
+            managed.app_suspension_phase == Some(true)
+                && managed.cpu_limiter_phase.is_none()
+                && managed.state == SuspensionState::Frozen
+                && self.ensure_retry_due(key, false).is_ok()
+                && self.platform.job_has_no_active_processes(&managed.handle)
+        });
+        if can_release {
+            // Release failures stay attached to the exact Job for reporting and retry.
+            let _ = self.release_key(key, false);
+        }
+    }
+
+    pub(crate) fn app_suspension_retry_error(&self) -> Option<&str> {
+        self.managed.values().find_map(|managed| {
+            let retry = managed.retry.as_ref()?;
+            // A temporarily thawed App Suspension claim can coexist with a CPU Limiter retry.
+            (managed.app_suspension_phase == Some(true)).then_some(retry.message.as_str())
         })
     }
 
@@ -969,6 +1059,13 @@ impl SuspensionPlatform for WindowsSuspensionPlatform {
         })
     }
 
+    fn job_has_no_active_processes(&self, handle: &Self::Handle) -> bool {
+        handle
+            .job_handle
+            .as_ref()
+            .is_some_and(windows_job::has_no_active_processes)
+    }
+
     fn begin_freeze(
         &mut self,
         _identity: &ProcessIdentity,
@@ -1092,6 +1189,7 @@ mod tests {
     struct FakeState {
         allow_cross_session: Vec<bool>,
         freeze_calls: Vec<bool>,
+        job_active_processes: Option<u32>,
         forget_calls: usize,
         begin_results: VecDeque<Result<(), SuspensionError>>,
         freeze_results: VecDeque<Result<(), SuspensionError>>,
@@ -1134,6 +1232,10 @@ mod tests {
             _allow_cross_session_process_control: bool,
         ) -> Result<bool, SuspensionError> {
             Ok(false)
+        }
+
+        fn job_has_no_active_processes(&self, _handle: &Self::Handle) -> bool {
+            self.0.borrow().job_active_processes == Some(0)
         }
 
         fn begin_freeze(
@@ -1325,19 +1427,67 @@ mod tests {
 
     #[test]
     fn failed_thaw_retains_frozen_state_for_retry() {
+        for shared_job in [false, true] {
+            let (mut controller, state) = controller();
+            let target = target(7);
+            if shared_job {
+                controller
+                    .set_cpu_limiter_phase(&target, false, true)
+                    .unwrap();
+            }
+            controller.freeze(&target, true).unwrap();
+            state
+                .borrow_mut()
+                .freeze_results
+                .push_back(Err(SuspensionError::Failed("thaw failed".to_owned())));
+
+            assert!(controller.release_process(42, true).is_err());
+            assert!(controller.is_frozen_process(42));
+
+            controller.release_process(42, true).unwrap();
+            assert!(!controller.contains_process(42));
+            assert!(!controller.is_frozen_target(&target.key()));
+        }
+    }
+
+    #[test]
+    fn restart_preflight_checks_retained_app_suspension_thaws() {
+        let mut controller = SuspensionController::default();
+        let target = target(7);
+        controller.insert_inert(target.clone(), true);
+        let managed = controller.managed.get_mut(&target.key()).unwrap();
+        managed.app_suspension_phase = Some(false);
+        schedule_retry(managed, "thaw failed".to_owned());
+
+        // The inert job has no Windows handle, so preflight must fail closed until thawed.
+        assert!(controller
+            .app_suspension_blocks_restart(&[], false)
+            .is_err());
+        controller.thaw_keep_target(&target, true).unwrap();
+        assert_eq!(
+            controller.app_suspension_blocks_restart(&[], false),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn manual_suspension_releases_only_a_confirmed_empty_job() {
         let (mut controller, state) = controller();
-        controller.freeze(&target(7), true).unwrap();
-        state
-            .borrow_mut()
-            .freeze_results
-            .push_back(Err(SuspensionError::Failed("thaw failed".to_owned())));
+        let target = target(7);
+        let key = target.key();
+        controller.freeze(&target, true).unwrap();
 
-        assert!(controller.release_process(42, true).is_err());
-        assert!(controller.contains_process(42));
-        assert!(controller.is_frozen_process(42));
+        for count in [Some(1), None] {
+            state.borrow_mut().job_active_processes = count;
+            controller.release_empty_app_suspension(&key);
+            assert!(controller.is_frozen_target(&key));
+        }
 
-        controller.release_process(42, true).unwrap();
-        assert!(!controller.contains_process(42));
+        state.borrow_mut().job_active_processes = Some(0);
+        controller.release_empty_app_suspension(&key);
+        assert!(!controller.contains_process(target.process.id));
+        assert_eq!(state.borrow().freeze_calls, vec![true, false]);
+        assert_eq!(state.borrow().forget_calls, 1);
     }
 
     #[test]
@@ -1408,7 +1558,7 @@ mod tests {
 
         controller.thaw_keep_target(&target, true).unwrap();
 
-        assert!(controller.is_frozen_target(&target));
+        assert!(controller.is_frozen_target(&target.key()));
         assert_eq!(state.borrow().freeze_calls, vec![true]);
     }
 
@@ -1448,7 +1598,7 @@ mod tests {
         assert!(controller.managed_process_ids().next().is_none());
         assert!(!controller.matches_target(&target));
         assert!(!controller.is_frozen_process(42));
-        assert!(controller.is_frozen_target(&target));
+        assert!(controller.is_frozen_target(&target.key()));
     }
 
     #[test]

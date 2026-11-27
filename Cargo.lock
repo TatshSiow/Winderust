@@ -3379,7 +3379,7 @@ dependencies = [
 
 [[package]]
 name = "winderust"
-version = "0.11.0-alpha"
+version = "0.12.0-alpha"
 dependencies = [
  "atomic-write-file",
  "chrono",
@@ -3401,6 +3401,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tiny-skia",
  "toml 0.8.23",
+ "usvg",
  "windows",
  "windows-sys 0.61.2",
  "winreg",

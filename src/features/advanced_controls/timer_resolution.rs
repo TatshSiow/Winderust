@@ -12,17 +12,23 @@ const SYSTEM_TARGET_NAME: &str = "System";
 pub struct TimerResolutionSnapshot {
     pub enabled: bool,
     pub requested_100ns: Option<u32>,
-    pub active_rule_process: Option<String>,
     pub maximum_100ns: Option<u32>,
     pub minimum_100ns: Option<u32>,
-    pub failed_actions: usize,
-    pub message: String,
+    pub observation_paused: bool,
+    pub waiting_for_power_source: bool,
     pub last_error: Option<String>,
+}
+
+struct AppliedRule {
+    process: String,
+    requested_period_ms: u32,
 }
 
 #[derive(Default)]
 pub struct TimerResolutionManager {
-    active_rule_process: Option<String>,
+    active_rule: Option<AppliedRule>,
+    last_release_error: Option<String>,
+    last_query_error: Option<String>,
 }
 
 impl TimerResolutionManager {
@@ -35,11 +41,19 @@ impl TimerResolutionManager {
         action_log: &mut ActionLog,
     ) -> TimerResolutionSnapshot {
         if !automation_enabled {
-            return self.disable(controller, action_log, "automation disabled");
+            return self.disable(
+                controller,
+                action_log,
+                "timer_resolution.log_automation_disabled",
+            );
         }
 
         if !settings.enabled {
-            return self.disable(controller, action_log, "timer resolution control disabled");
+            return self.disable(
+                controller,
+                action_log,
+                "timer_resolution.log_control_disabled",
+            );
         }
 
         if !settings.rules.iter().any(|rule| {
@@ -48,33 +62,12 @@ impl TimerResolutionManager {
             return self.release_inactive(
                 controller,
                 true,
-                None,
+                false,
                 action_log,
-                "no timer resolution foreground rules are enabled",
-                "No timer resolution foreground rules configured.",
+                "timer_resolution.log_no_active_rules",
+                false,
             );
         }
-
-        let info = match controller.query() {
-            Ok(info) => info,
-            Err(err) => {
-                let message = err;
-                action_log.record(
-                    ActionLogFeature::TimerResolution,
-                    None,
-                    SYSTEM_TARGET_NAME,
-                    ActionLogResult::Failed,
-                    message.clone(),
-                );
-                return TimerResolutionSnapshot {
-                    enabled: true,
-                    failed_actions: 1,
-                    message: "Timer resolution query failed.".to_owned(),
-                    last_error: Some(message),
-                    ..Default::default()
-                };
-            }
-        };
 
         let Some(foreground_executable_path) =
             foreground_executable_path.filter(|path| !path.trim().is_empty())
@@ -82,10 +75,10 @@ impl TimerResolutionManager {
             return self.release_inactive(
                 controller,
                 true,
-                Some(info),
+                true,
                 action_log,
-                "foreground app is unknown",
-                "Paused: foreground app is unknown.",
+                "timer_resolution.log_unknown_foreground",
+                true,
             );
         };
 
@@ -95,96 +88,133 @@ impl TimerResolutionManager {
             return self.release_inactive(
                 controller,
                 true,
-                Some(info),
+                true,
                 action_log,
-                "no foreground timer resolution rule matched",
-                "Waiting for a matching foreground app.",
+                "timer_resolution.log_no_match",
+                false,
             );
+        };
+
+        let requested_period_ms = resolution_100ns_to_period_ms(requested_100ns);
+        let info = match controller.query() {
+            Ok(info) => {
+                self.last_query_error = None;
+                info
+            }
+            Err(error) => {
+                record_query_failure(&mut self.last_query_error, action_log, &error);
+                if self
+                    .active_rule
+                    .as_ref()
+                    .is_some_and(|rule| rule.requested_period_ms != requested_period_ms)
+                {
+                    let mut status = self.release_inactive(
+                        controller,
+                        true,
+                        false,
+                        action_log,
+                        "timer_resolution.log_period_changed_without_bounds",
+                        false,
+                    );
+                    status.last_error.get_or_insert(error);
+                    return status;
+                }
+                return TimerResolutionSnapshot {
+                    enabled: true,
+                    requested_100ns: controller.active_request_100ns(),
+                    last_error: Some(error),
+                    ..Default::default()
+                };
+            }
         };
 
         let desired_100ns =
             normalize_desired_resolution(requested_100ns, info.minimum_100ns, info.maximum_100ns);
 
         let previous_target = self
-            .active_rule_process
-            .clone()
-            .unwrap_or_else(|| SYSTEM_TARGET_NAME.to_owned());
-        match controller.set_request(desired_100ns) {
+            .active_rule
+            .as_ref()
+            .map_or(SYSTEM_TARGET_NAME, |rule| rule.process.as_str());
+        let result = controller.set_request(desired_100ns);
+        let released = match &result {
+            Ok(transition) => transition.released_100ns,
+            Err(error) => error.released_100ns,
+        };
+        if let Some(previous_100ns) = released {
+            self.last_release_error = None;
+            action_log.record(
+                ActionLogFeature::TimerResolution,
+                None,
+                previous_target,
+                ActionLogResult::Restored,
+                rust_i18n::t!(
+                    "timer_resolution.log_released_previous",
+                    resolution = format_resolution_ms(previous_100ns)
+                ),
+            );
+        }
+        match result {
             Ok(transition) => {
-                if let Some(previous_100ns) = transition.released_100ns {
-                    action_log.record(
-                        ActionLogFeature::TimerResolution,
-                        None,
-                        previous_target,
-                        ActionLogResult::Restored,
-                        format!(
-                            "Released previous timer resolution request {}.",
-                            format_resolution_ms(previous_100ns)
-                        ),
-                    );
-                }
                 if transition.changed {
                     action_log.record(
                         ActionLogFeature::TimerResolution,
                         None,
-                        rule_process_name.clone(),
+                        rule_process_name,
                         ActionLogResult::Applied,
-                        format!(
-                            "Requested timer resolution {} while {} is foreground.",
-                            format_resolution_ms(transition.active_100ns),
-                            rule_process_name
+                        rust_i18n::t!(
+                            "timer_resolution.log_requested",
+                            resolution = format_resolution_ms(transition.active_100ns),
+                            app = rule_process_name
                         ),
                     );
                 }
-                self.active_rule_process = Some(rule_process_name.clone());
+                match &mut self.active_rule {
+                    Some(rule) if rule.process == rule_process_name => {
+                        rule.requested_period_ms = requested_period_ms;
+                    }
+                    _ => {
+                        self.active_rule = Some(AppliedRule {
+                            process: rule_process_name.to_owned(),
+                            requested_period_ms,
+                        });
+                    }
+                }
             }
             Err(error) => {
-                if let Some(previous_100ns) = error.released_100ns {
+                let failure = match error.stage {
+                    TimerResolutionTransitionStage::ReleasePrevious
+                        if remember_error(&mut self.last_release_error, &error.message) =>
+                    {
+                        Some((
+                            previous_target,
+                            rust_i18n::t!(
+                                "timer_resolution.log_release_previous_failed",
+                                error = error.message
+                            )
+                            .into_owned(),
+                        ))
+                    }
+                    TimerResolutionTransitionStage::ReleasePrevious => None,
+                    TimerResolutionTransitionStage::RequestDesired => {
+                        self.active_rule = None;
+                        Some((rule_process_name, error.message.clone()))
+                    }
+                };
+                if let Some((target, reason)) = failure {
                     action_log.record(
                         ActionLogFeature::TimerResolution,
                         None,
-                        previous_target.clone(),
-                        ActionLogResult::Restored,
-                        format!(
-                            "Released previous timer resolution request {}.",
-                            format_resolution_ms(previous_100ns)
-                        ),
+                        target,
+                        ActionLogResult::Failed,
+                        reason,
                     );
                 }
-
-                let (failed_target, action_message, snapshot_message) = match error.stage {
-                    TimerResolutionTransitionStage::ReleasePrevious => (
-                        previous_target,
-                        format!(
-                            "Failed to release previous timer resolution request: {}",
-                            error.message
-                        ),
-                        "Timer resolution request update failed.",
-                    ),
-                    TimerResolutionTransitionStage::RequestDesired => {
-                        self.active_rule_process = None;
-                        (
-                            rule_process_name,
-                            error.message.clone(),
-                            "Timer resolution request failed.",
-                        )
-                    }
-                };
-                action_log.record(
-                    ActionLogFeature::TimerResolution,
-                    None,
-                    failed_target,
-                    ActionLogResult::Failed,
-                    action_message,
-                );
                 return snapshot_from_query(
                     true,
                     error.active_100ns,
-                    self.active_rule_process.clone(),
                     Some(info),
-                    1,
                     Some(error.message),
-                    snapshot_message,
+                    false,
                 );
             }
         }
@@ -192,85 +222,132 @@ impl TimerResolutionManager {
         snapshot_from_query(
             true,
             controller.active_request_100ns(),
-            Some(rule_process_name),
             Some(info),
-            0,
             None,
-            "Timer resolution request active.",
+            false,
         )
+    }
+
+    pub(crate) fn pause_for_power_source(
+        &mut self,
+        controller: &mut TimerResolutionController,
+        action_log: &mut ActionLog,
+    ) -> TimerResolutionSnapshot {
+        TimerResolutionSnapshot {
+            waiting_for_power_source: true,
+            ..self.release_inactive(
+                controller,
+                true,
+                false,
+                action_log,
+                "timer_resolution.log_unknown_power_source",
+                true,
+            )
+        }
     }
 
     fn disable(
         &mut self,
         controller: &mut TimerResolutionController,
         action_log: &mut ActionLog,
-        reason: &str,
+        reason_key: &str,
     ) -> TimerResolutionSnapshot {
-        let info = controller.query().ok();
-        self.release_inactive(
-            controller,
-            false,
-            info,
-            action_log,
-            reason,
-            "Timer resolution control disabled.",
-        )
+        self.last_query_error = None;
+        self.release_inactive(controller, false, true, action_log, reason_key, false)
     }
 
     fn release_inactive(
         &mut self,
         controller: &mut TimerResolutionController,
         enabled: bool,
-        info: Option<TimerResolutionInfo>,
+        refresh_bounds: bool,
         action_log: &mut ActionLog,
-        reason: &str,
-        message: &str,
+        reason_key: &str,
+        observation_paused: bool,
     ) -> TimerResolutionSnapshot {
-        let mut failures = 0;
-        let mut last_error = None;
-        if let Some(previous_100ns) = controller.active_request_100ns() {
-            let previous_target = self
-                .active_rule_process
-                .clone()
-                .unwrap_or_else(|| SYSTEM_TARGET_NAME.to_owned());
-            match controller.release() {
-                Ok(_) => {
-                    self.active_rule_process = None;
-                    action_log.record(
-                        ActionLogFeature::TimerResolution,
-                        None,
-                        previous_target,
-                        ActionLogResult::Restored,
-                        format!(
-                            "Released timer resolution request {}: {reason}.",
-                            format_resolution_ms(previous_100ns)
-                        ),
-                    );
-                }
-                Err(message) => {
-                    failures += 1;
-                    last_error = Some(message.clone());
-                    action_log.record(
-                        ActionLogFeature::TimerResolution,
-                        None,
-                        previous_target,
-                        ActionLogResult::Failed,
-                        message,
-                    );
-                }
+        let mut last_error = match controller.release() {
+            Ok(Some(previous_100ns)) => {
+                let previous_target = self
+                    .active_rule
+                    .take()
+                    .map_or_else(|| SYSTEM_TARGET_NAME.to_owned(), |rule| rule.process);
+                self.last_release_error = None;
+                action_log.record(
+                    ActionLogFeature::TimerResolution,
+                    None,
+                    previous_target,
+                    ActionLogResult::Restored,
+                    rust_i18n::t!(
+                        "timer_resolution.log_released",
+                        resolution = format_resolution_ms(previous_100ns),
+                        reason = rust_i18n::t!(reason_key)
+                    ),
+                );
+                None
             }
-        }
+            Ok(None) => None,
+            Err(message) => {
+                if remember_error(&mut self.last_release_error, &message) {
+                    action_log.record(
+                        ActionLogFeature::TimerResolution,
+                        None,
+                        self.active_rule
+                            .as_ref()
+                            .map_or(SYSTEM_TARGET_NAME, |rule| rule.process.as_str()),
+                        ActionLogResult::Failed,
+                        message.clone(),
+                    );
+                }
+                Some(message)
+            }
+        };
 
+        // Releasing the exact owned request does not depend on current device capabilities.
+        let info = if refresh_bounds {
+            match controller.query() {
+                Ok(info) => {
+                    self.last_query_error = None;
+                    Some(info)
+                }
+                Err(error) if enabled && last_error.is_none() => {
+                    record_query_failure(&mut self.last_query_error, action_log, &error);
+                    last_error = Some(error);
+                    None
+                }
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
         snapshot_from_query(
             enabled,
             controller.active_request_100ns(),
-            self.active_rule_process.clone(),
             info,
-            failures,
             last_error,
-            message,
+            observation_paused,
         )
     }
+}
+
+fn remember_error(last_error: &mut Option<String>, error: &str) -> bool {
+    if last_error.as_deref() == Some(error) {
+        return false;
+    }
+    *last_error = Some(error.to_owned());
+    true
+}
+
+fn record_query_failure(last_error: &mut Option<String>, action_log: &mut ActionLog, error: &str) {
+    if !remember_error(last_error, error) {
+        return;
+    }
+    action_log.record(
+        ActionLogFeature::TimerResolution,
+        None,
+        SYSTEM_TARGET_NAME,
+        ActionLogResult::Failed,
+        error.to_owned(),
+    );
 }
 
 pub fn normalize_desired_resolution(
@@ -298,20 +375,17 @@ pub fn format_resolution_ms(value_100ns: u32) -> String {
 fn snapshot_from_query(
     enabled: bool,
     requested_100ns: Option<u32>,
-    active_rule_process: Option<String>,
     info: Option<TimerResolutionInfo>,
-    failed_actions: usize,
     last_error: Option<String>,
-    message: &str,
+    observation_paused: bool,
 ) -> TimerResolutionSnapshot {
     TimerResolutionSnapshot {
         enabled,
         requested_100ns,
-        active_rule_process,
         maximum_100ns: info.map(|info| info.maximum_100ns),
         minimum_100ns: info.map(|info| info.minimum_100ns),
-        failed_actions,
-        message: message.to_owned(),
+        observation_paused,
+        waiting_for_power_source: false,
         last_error,
     }
 }

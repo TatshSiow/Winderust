@@ -1,6 +1,6 @@
 [package]
 name = "winderust"
-version = "0.11.0-alpha"
+version = "0.12.0-alpha"
 edition = "2021"
 authors = ["Tatsh Siow"]
 description = "Windows Performance & Power Manager"
@@ -32,6 +32,7 @@ serde_json = "1.0.150"
 semver = "1.0.27"
 thiserror = "2.0.18"
 toml = "0.8.23"
+usvg = { version = "=0.45.1", default-features = false }
 windows = { version = "0.61.3", features = [
     "UI_ViewManagement",
     "Win32_System_WinRT",
@@ -50,10 +51,12 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_Graphics_Gdi",
     "Win32_UI_Accessibility",
     "Win32_System_Environment",
+    "Win32_System_Diagnostics_Etw",
     "Win32_System_LibraryLoader",
     "Win32_System_Power",
     "Win32_System_RemoteDesktop",
     "Win32_System_Registry",
+    "Win32_System_Services",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Diagnostics_Debug",
     "Win32_System_Diagnostics_ProcessSnapshotting",
@@ -65,6 +68,7 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_System_SystemInformation",
     "Win32_System_StationsAndDesktops",
     "Win32_System_Threading",
+    "Win32_System_Time",
     "Win32_System_WindowsProgramming",
     "Wdk_Graphics_Direct3D",
     "Wdk_System_SystemInformation",

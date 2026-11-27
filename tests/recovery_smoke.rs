@@ -3,7 +3,7 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 
 use std::{
-    io::{BufRead, BufReader, Read},
+    io::{BufRead, BufReader, Read, Write},
     os::windows::{io::AsRawHandle, process::CommandExt},
     path::Path,
     process::{Child, Command, ExitStatus, Stdio},
@@ -15,14 +15,16 @@ use serde::{Deserialize, Serialize};
 use windows_sys::Win32::{
     Foundation::{CloseHandle, FILETIME, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
     System::Threading::{
-        GetExitCodeProcess, GetPriorityClass, GetProcessTimes, OpenProcess,
-        QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
-        BELOW_NORMAL_PRIORITY_CLASS, CREATE_NO_WINDOW, IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS,
-        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+        GetExitCodeProcess, GetPriorityClass, GetProcessDefaultCpuSets, GetProcessTimes,
+        OpenProcess, QueryFullProcessImageNameW, SetProcessDefaultCpuSets, TerminateProcess,
+        WaitForSingleObject, BELOW_NORMAL_PRIORITY_CLASS, CREATE_NO_WINDOW, IDLE_PRIORITY_CLASS,
+        NORMAL_PRIORITY_CLASS, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+        PROCESS_TERMINATE,
     },
 };
 
 const TIMEOUT: Duration = Duration::from_secs(5);
+const CPU_SETS_PENDING_APPLIED: &str = "cpu-sets-pending-applied";
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Identity {
@@ -34,6 +36,9 @@ struct Identity {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 enum FixtureState {
+    CpuSetSetup {
+        id: u32,
+    },
     Spawned {
         helper: Identity,
     },
@@ -170,6 +175,11 @@ fn unapplied_pending_intent_preserves_older_baseline_after_parent_death() -> Res
     exercise("pending-unapplied", true)
 }
 
+#[test]
+fn cleared_cpu_set_restores_its_exact_baseline_after_parent_death() -> Result<(), String> {
+    exercise(CPU_SETS_PENDING_APPLIED, true)
+}
+
 fn exercise(scenario: &str, kill_parent: bool) -> Result<(), String> {
     let system_root =
         std::env::var_os("SystemRoot").ok_or_else(|| "SystemRoot is unavailable.".to_owned())?;
@@ -210,6 +220,22 @@ fn exercise(scenario: &str, kill_parent: bool) -> Result<(), String> {
             .take()
             .ok_or_else(|| "Fixture stdout is unavailable.".to_owned())?,
     );
+    let cpu_set_baseline = if scenario == CPU_SETS_PENDING_APPLIED {
+        let FixtureState::CpuSetSetup { id } = next_state(&messages)? else {
+            return Err("Expected a CPU Set ID before starting the helper.".to_owned());
+        };
+        seed_default_cpu_set(&target.0, id)?;
+        parent
+            .0
+            .stdin
+            .as_mut()
+            .ok_or_else(|| "Fixture stdin is unavailable.".to_owned())?
+            .write_all(b"S")
+            .map_err(|error| format!("Could not acknowledge the CPU Set baseline: {error}"))?;
+        Some(id)
+    } else {
+        None
+    };
     let FixtureState::Spawned { helper } = next_state(&messages)? else {
         return Err("Expected helper identity before readiness.".to_owned());
     };
@@ -222,20 +248,24 @@ fn exercise(scenario: &str, kill_parent: bool) -> Result<(), String> {
     else {
         return Err("Expected readiness after helper identity.".to_owned());
     };
-    let expected = if scenario == "pending-unapplied" {
-        BELOW_NORMAL_PRIORITY_CLASS
-    } else {
-        IDLE_PRIORITY_CLASS
+    let expected = match scenario {
+        "pending-unapplied" => BELOW_NORMAL_PRIORITY_CLASS,
+        CPU_SETS_PENDING_APPLIED => NORMAL_PRIORITY_CLASS,
+        _ => IDLE_PRIORITY_CLASS,
     };
+    let expected_rejections = if cpu_set_baseline.is_some() { 9 } else { 6 };
     if reported_target != identity.id
         || reported_priority != expected
-        || rejected != 6
+        || rejected != expected_rejections
         || priority(&target.0)? != expected
     {
         return Err(
             "Fixture readiness did not establish acknowledged transitions and scope rejection."
                 .to_owned(),
         );
+    }
+    if cpu_set_baseline.is_some() && default_cpu_set(&target.0)?.is_some() {
+        return Err("The target CPU Set was not cleared before parent termination.".to_owned());
     }
     if kill_parent {
         parent
@@ -246,6 +276,9 @@ fn exercise(scenario: &str, kill_parent: bool) -> Result<(), String> {
         drop(parent.0.stdin.take());
     }
     let status = wait_child(&mut parent.0)?;
+    if kill_parent && status.success() {
+        return Err("Terminated fixture parent reported a successful exit.".to_owned());
+    }
     if !kill_parent && !status.success() {
         return Err(format!("Fixture parent failed during clean EOF: {status}."));
     }
@@ -260,6 +293,15 @@ fn exercise(scenario: &str, kill_parent: bool) -> Result<(), String> {
     }
     if priority(&target.0)? != NORMAL_PRIORITY_CLASS {
         return Err("Helper exited without restoring the original Normal priority.".to_owned());
+    }
+    if let Some(expected) = cpu_set_baseline {
+        let restored = default_cpu_set(&target.0)?;
+        if restored != Some(expected) {
+            return Err(format!(
+                "Helper exited with CPU Set {restored:?}. Expected original CPU Set {expected}."
+            ));
+        }
+        println!("Restored default CPU Set {expected} after fixture parent termination.");
     }
     Ok(())
 }
@@ -320,6 +362,41 @@ fn priority(child: &Child) -> Result<u32, String> {
     } else {
         Ok(value)
     }
+}
+
+fn default_cpu_set(child: &Child) -> Result<Option<u32>, String> {
+    let mut id = 0;
+    let mut count = 0;
+    // SAFETY: Child owns the process handle with query access. Both outputs are writable.
+    let ok =
+        unsafe { GetProcessDefaultCpuSets(child.as_raw_handle().cast(), &mut id, 1, &mut count) };
+    if ok == 0 {
+        return Err(format!(
+            "Could not query the fixture's single default CPU Set: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    match count {
+        0 => Ok(None),
+        1 => Ok(Some(id)),
+        _ => Err(format!(
+            "The fixture returned an unexpected CPU Set count {count}."
+        )),
+    }
+}
+
+fn seed_default_cpu_set(child: &Child, id: u32) -> Result<(), String> {
+    // SAFETY: Child owns the exact fixture process handle with set access. The ID is initialized.
+    if unsafe { SetProcessDefaultCpuSets(child.as_raw_handle().cast(), &id, 1) } == 0 {
+        return Err(format!(
+            "Could not set the fixture's default CPU Set {id}: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if default_cpu_set(child)? != Some(id) {
+        return Err(format!("Windows did not report the fixture CPU Set {id}."));
+    }
+    Ok(())
 }
 
 fn creation_time(handle: HANDLE) -> Result<u64, String> {

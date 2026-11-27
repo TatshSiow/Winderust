@@ -51,22 +51,45 @@ cargo build --locked --release --features runtime-benchmark
 .\scripts\adaptive_throughput_benchmark.ps1
 ```
 
-This uses the production Speed preset function and automation/recovery controllers
-without the UI. It never reads or writes your saved settings. The default matrix
-rotates Default, Speed, SpeedThreadDefault, and SpeedThreadDefaultPowerOff over four
-passes. Default means automation disabled on the current Windows power plan, not
-an automatic switch to Balanced. Each case must restore that original plan and
-complete runtime/watchdog shutdown before the next case. Failures stop the matrix;
-the harness never force-kills the runtime or deletes a plan to hide a failed restore.
+This uses the production Speed process preset, fixed benchmark power settings, and
+automation/recovery controllers without the UI. It never reads or writes your
+saved settings. The default matrix
+rotates Default, Speed, and SpeedPowerOff over three passes. Default leaves the
+current Windows power plan in place with automation disabled. SpeedPowerOff uses
+the Speed settings with Adaptive Processor Power disabled. Each case must restore
+the original plan and complete runtime/watchdog shutdown before the next case.
+The matrix stops on failure, leaving runtime and recovery helper cleanup intact.
 
-CPU Pressure Restraint stays at its fresh-settings value (off) in those cases.
-Its Thread Priority helper is pressure-gated, so the thread-only comparison is also
-a negative control. Optional `SpeedRestraint` and `SpeedRestraintThreadDefault` cases
-explicitly enable restraint to exercise that helper. The saved settings, sampled
-pressure state, final runtime status, binary hash, raw CSV and transcript accompany
-every run under `target/throughput-*`. This measures the headless engine, not UI
-rendering overhead. The host has a ten-minute timeout and retains the normal
-single-instance and recovery barriers. The feature is excluded from normal builds.
+Speed and SpeedPowerOff use temporary Below Normal priority and limit processors
+only during verified restraint. The optional `SpeedRestraint` case runs Speed
+with processor placement disabled. To compare the CPU presets with a fixed Windows
+power plan, pass `-Cases Default,PowerSavePowerOff,BalancedPowerOff,PerformancePowerOff,SpeedPowerOff`.
+Those cases apply the named Adaptive Engine preset with Adaptive Processor Power
+off. The host waits for verified
+ownership of the managed power plan when Adaptive Processor Power is enabled and
+for unpaused process observations when any Adaptive Engine policy is enabled.
+For a power-only run, set `adaptive_engine_enabled` to `false` in `request.json`.
+For an isolated EcoQoS comparison, use `PowerSavePowerOff` with
+`restraint_energy_efficient_scheduling` set to `false` and `true` in matched
+runs. Check completed work and package energy per unit of work alongside watts.
+The exported settings, sampled pressure state, final runtime status, binary hash, raw CSV and
+transcript accompany every run under `target/throughput-*`. The host measures the
+headless engine, has a ten-minute timeout, and retains the normal single-instance
+and recovery barriers. The feature is excluded from normal builds.
+
+For a diagnostic run, create `trace-engine-pressure` in a fresh runtime
+benchmark directory before startup. At shutdown the host writes
+`engine-pressure.json` with the CPU observations and pressure decisions.
+While the workload is active, create `capture-interrupt-timing` in that same
+directory to request one five-second Interrupt Timing capture. Leave the run
+active until `interrupt-timing.json` is written. Setting the `stop` marker
+before the capture completes cancels it and reports an unfinished capture
+while still running the normal shutdown and recovery.
+
+Use the capture's UTC start and timing uncertainty to line up its one-second
+buckets with the engine decisions and Action Log. Check the event loss and
+invalid interval counts before interpreting the result. Keep diagnostic runs
+separate from performance measurements because capture adds work to the system.
 
 For placement/power diagnostics, include `DefaultPCores` and use `-Telemetry`.
 `DefaultPCores` uses the same disabled-engine settings as Default, but restricts

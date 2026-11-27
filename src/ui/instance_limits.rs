@@ -1,11 +1,14 @@
-use super::{app_picker, design, widgets};
+use super::{
+    app_picker, design,
+    feature_tabs::{self, FeatureTab},
+    widgets,
+};
 use crate::{
     config::{InstanceLimitsRule, InstanceLimitsSettings},
-    control::instance_limits::{paths_equal, CountObservation},
-    features::advanced_controls::instance_limits::{InstanceLimitsSnapshot, NotificationStatus},
+    control::instance_limits::{paths_equal, validate_path},
 };
 use iced::{
-    widget::{column, row, text},
+    widget::{column, text, Column},
     Element, Fill,
 };
 use rust_i18n::t;
@@ -26,6 +29,7 @@ pub(super) enum Message {
     Edit(usize),
     Remove(usize),
     RuleEnabled(usize, bool),
+    RuleNotify(usize, bool),
     Maximum(String),
     SaveRule,
     CancelRule,
@@ -75,6 +79,11 @@ impl Editor {
                     rule.enabled = enabled;
                 }
             }
+            Message::RuleNotify(index, notify) => {
+                if let Some(rule) = settings.rules.get_mut(index) {
+                    rule.notify = notify;
+                }
+            }
             Message::Maximum(value) => {
                 if let Some((_, _, maximum)) = &mut self.draft {
                     *maximum = value;
@@ -101,183 +110,105 @@ impl Editor {
     pub(super) fn view<'a>(
         &'a self,
         settings: &'a InstanceLimitsSettings,
-        status: &'a InstanceLimitsSnapshot,
         candidates: &'a [app_picker::Candidate],
+        tab: FeatureTab,
+        scroll_clearance: f32,
     ) -> Element<'a, Message> {
+        let body = if tab == FeatureTab::Setup {
+            Self::setup(settings)
+        } else {
+            self.custom_rules(settings, candidates)
+        };
+        feature_tabs::scroll_content(body, scroll_clearance)
+    }
+
+    fn setup(settings: &InstanceLimitsSettings) -> Column<'_, Message> {
+        column![
+            widgets::toggle_card(
+                "instance_limits.enable",
+                settings.enabled,
+                Some(Message::Enabled),
+            ),
+            widgets::settings_section(
+                "nav.settings",
+                widgets::settings_card(widgets::setting_row(
+                    "instance_limits.notify",
+                    widgets::switch(settings.notify, Some(Message::Notify)),
+                )),
+            ),
+        ]
+        .spacing(widgets::CARD_GAP)
+    }
+
+    fn custom_rules<'a>(
+        &'a self,
+        settings: &'a InstanceLimitsSettings,
+        candidates: &'a [app_picker::Candidate],
+    ) -> Column<'a, Message> {
         let rules = settings
             .rules
             .iter()
             .enumerate()
             .map(|(index, rule)| {
-                // An unsaved rule must never inherit counts or incidents from a different maximum.
-                let runtime = status.rules.iter().find(|entry| {
-                    entry.executable_path == rule.executable_path
-                        && entry.max_instances == rule.max_instances
-                        && entry.enabled == rule.enabled
-                });
-                let label = if !settings.enabled || !status.enabled || !rule.enabled {
-                    t!("common.off").to_string()
-                } else {
-                    count_label(
-                        runtime
-                            .filter(|entry| sample_fresh(entry.sampled_at))
-                            .map(|entry| &entry.count),
-                        rule.max_instances,
-                    )
-                };
-                let header = widgets::process_rule_header(
-                    &rule.executable_path,
-                    candidates,
-                    widgets::checkbox(rule.enabled)
-                        .on_toggle(move |value| Message::RuleEnabled(index, value))
-                        .into(),
-                    Some(
-                        text(label)
-                            .size(design::typography::SECONDARY)
-                            .style(
-                                if settings.enabled
-                                    && status.enabled
-                                    && rule.enabled
-                                    && runtime.is_some_and(|entry| {
-                                        sample_fresh(entry.sampled_at)
-                                            && exceeds(&entry.count, rule.max_instances)
-                                    })
-                                {
-                                    text::danger
-                                } else {
-                                    text::default
-                                },
-                            )
-                            .into(),
-                    ),
-                    Vec::new(),
-                    row![
-                        widgets::tooltip(
-                            widgets::icon_button("icons/pencil.svg").on_press(Message::Edit(index)),
-                            text(t!("common.edit").to_string()),
-                            iced::widget::tooltip::Position::Top
-                        ),
-                        widgets::rule_delete_button(Some(Message::Remove(index))),
-                    ]
-                    .spacing(design::space::SMALL)
-                    .into(),
-                );
-                let mut details = column![text(
-                    t!(
-                        "instance_limits.maximum_value",
-                        maximum = rule.max_instances
-                    )
-                    .to_string()
-                )
-                .size(design::typography::SECONDARY)]
-                .spacing(design::space::SMALL);
-                if settings.enabled && status.enabled && rule.enabled {
-                    if let Some(runtime) = runtime {
-                        if let Some(reason) = count_reason(&runtime.count) {
-                            details =
-                                details.push(text(reason).size(design::typography::SECONDARY));
-                        }
-                        if runtime.incident {
-                            details = details.push(
-                                text(t!("instance_limits.incident").to_string())
-                                    .style(text::danger),
-                            );
-                        }
-                        let notification = match &runtime.notification {
-                            NotificationStatus::NotAttempted => None,
-                            NotificationStatus::Pending => {
-                                Some(t!("instance_limits.notification_pending").to_string())
-                            }
-                            NotificationStatus::Accepted => {
-                                Some(t!("instance_limits.notification_accepted").to_string())
-                            }
-                            NotificationStatus::Failed(error) => Some(
-                                t!("instance_limits.notification_failed", error = error)
-                                    .to_string(),
-                            ),
-                        };
-                        if let Some(notification) = notification {
-                            details = details
-                                .push(text(notification).size(design::typography::SECONDARY));
-                        }
-                        if let Some(sampled_at) = runtime.sampled_at {
-                            let seconds = sampled_at.elapsed().as_secs();
-                            details = details.push(
-                                text(
-                                    t!(
-                                        if sample_fresh(Some(sampled_at)) {
-                                            "instance_limits.sample_age"
-                                        } else {
-                                            "instance_limits.stale_sample"
-                                        },
-                                        seconds = seconds
-                                    )
-                                    .to_string(),
-                                )
-                                .size(design::typography::SECONDARY),
-                            );
-                        }
-                    }
-                }
                 (
                     widgets::stable_key(&rule.executable_path),
                     column![
-                        header,
-                        iced::widget::container(details).padding(iced::Padding {
-                            top: 0.0,
-                            right: widgets::CARD_PADDING as f32,
-                            bottom: widgets::CARD_PADDING as f32,
-                            left: widgets::CARD_PADDING as f32
-                        }),
+                        widgets::process_rule_header_with_notify(
+                            &rule.executable_path,
+                            candidates,
+                            widgets::checkbox(rule.enabled)
+                                .on_toggle(move |value| Message::RuleEnabled(index, value))
+                                .into(),
+                            widgets::rule_notify_checkbox(rule.notify, move |value| {
+                                Message::RuleNotify(index, value)
+                            }),
+                            None,
+                            vec![text(rule.max_instances.to_string()).into()],
+                            widgets::rule_actions(
+                                Some(Message::Edit(index)),
+                                Some(Message::Remove(index)),
+                            ),
+                        ),
                         widgets::settings_divider(),
                     ]
                     .into(),
                 )
             })
             .collect();
-        let mut picker = column![app_picker::view(
-            &self.path,
-            candidates,
-            true,
-            Message::Path,
-            Message::Browse,
-            Self::can_add(settings, &self.path).then_some(Message::Add),
-            |path| Self::can_add(settings, path).then_some(true)
-        )]
+        let can_add = Self::can_add(settings, &self.path);
+        let mut picker = column![
+            widgets::help_text("instance_limits.rules_help"),
+            app_picker::view(
+                &self.path,
+                candidates,
+                true,
+                Message::Path,
+                Message::Browse,
+                can_add.then_some(Message::Add),
+                |path| Self::can_add(settings, path).then_some(true)
+            ),
+        ]
         .spacing(design::space::SMALL);
-        if !self.path.is_empty() {
-            if let Err(error) = InstanceLimitsRule::new(self.path.clone()).validate() {
+        if !can_add && app_picker::is_path_query(&self.path) {
+            if validate_path(&self.path).is_err() {
+                picker = picker.push(
+                    text(t!("common.executable_path_format_hint").to_string()).style(text::danger),
+                );
+            } else if let Err(error) = InstanceLimitsRule::new(self.path.clone()).validate() {
                 picker = picker
                     .push(text(t!("instance_limits.invalid").to_string()).style(text::danger))
                     .push(text(error).size(design::typography::SECONDARY));
             }
         }
-        super::scrolling::scrollable(
-            column![
-                widgets::toggle_card(
-                    "instance_limits.enable",
-                    settings.enabled,
-                    Some(Message::Enabled)
-                ),
-                widgets::toggle_card(
-                    "instance_limits.notify",
-                    settings.notify,
-                    Some(Message::Notify)
-                ),
-                widgets::setting_title("common.rules"),
-                picker,
-                widgets::process_rules_table_with_actions(
-                    [],
-                    rules,
-                    t!("instance_limits.empty").to_string(),
-                    80,
-                    true
-                ),
-            ]
-            .spacing(widgets::CARD_GAP),
-        )
-        .height(Fill)
-        .into()
+        column![
+            widgets::settings_card(picker),
+            widgets::process_rules_table_with_notify(
+                [t!("instance_limits.maximum").into_owned()],
+                rules,
+                false,
+            ),
+        ]
+        .spacing(widgets::CARD_GAP)
     }
 
     pub(super) fn modal<'a>(
@@ -286,139 +217,46 @@ impl Editor {
     ) -> Option<Element<'a, Message>> {
         let (index, rule, maximum) = self.draft.as_ref()?;
         let valid = self.validated_draft().is_some();
-        let mut body = column![
+        let mut fields = column![widgets::numeric_setting(
+            "instance_limits.maximum",
+            "",
+            move || {
+                widgets::stepper(maximum, 1..=u64::from(u32::MAX), 1, Some(Message::Maximum))
+            }
+        )]
+        .spacing(design::space::SMALL);
+        if !valid {
+            fields =
+                fields.push(text(t!("instance_limits.invalid").to_string()).style(text::danger));
+        }
+        let body = column![
             app_picker::app_name(&rule.executable_path, candidates),
             text(rule.executable_path.clone()).style(text::secondary),
             widgets::heading(
                 t!("common.rule_details").to_string(),
                 design::typography::BODY
             ),
-            widgets::settings_card(
-                column![
-                    widgets::setting_title("instance_limits.maximum"),
-                    widgets::stepper(maximum, 1..=u64::from(u32::MAX), 1, Some(Message::Maximum)),
-                ]
-                .spacing(design::space::SMALL)
-            ),
-            text(t!("instance_limits.intro_2").to_string()).size(design::typography::SECONDARY),
+            widgets::settings_card(fields),
         ]
         .spacing(widgets::CARD_GAP);
-        if !valid {
-            body = body.push(text(t!("instance_limits.invalid").to_string()).style(text::danger));
-        }
-        Some(widgets::modal_frame(
-            row![
-                widgets::heading(
-                    t!(if index.is_some() {
-                        "instance_limits.edit_rule"
-                    } else {
-                        "instance_limits.add_rule"
-                    })
-                    .to_string(),
-                    design::typography::SECTION
-                )
-                .width(Fill),
-                widgets::icon_button("icons/x.svg").on_press(Message::CancelRule)
-            ]
-            .align_y(iced::Center),
+        Some(widgets::rule_dialog(
+            t!(if index.is_some() {
+                "instance_limits.edit_rule"
+            } else {
+                "instance_limits.add_rule"
+            })
+            .to_string(),
             super::scrolling::scrollable_pane(body).height(Fill),
-            row![
-                iced::widget::Space::new().width(Fill),
-                widgets::action_button(t!("common.cancel").to_string())
-                    .style(widgets::tertiary_button)
-                    .on_press(Message::CancelRule),
-                widgets::action_button(t!("common.ok").to_string())
-                    .style(widgets::primary_button)
-                    .on_press_maybe(valid.then_some(Message::SaveRule))
-            ]
-            .spacing(design::space::SMALL),
+            Message::CancelRule,
+            valid.then_some(Message::SaveRule),
             (760, 460),
         ))
-    }
-}
-
-fn count_label(count: Option<&CountObservation>, maximum: u32) -> String {
-    match count {
-        Some(CountObservation::Complete(count)) => format!("{count} / {maximum}"),
-        Some(CountObservation::Incomplete {
-            known_lower_bound: 0,
-            ..
-        }) => t!("instance_limits.incomplete").to_string(),
-        Some(CountObservation::Incomplete {
-            known_lower_bound, ..
-        }) => t!(
-            "instance_limits.at_least",
-            count = known_lower_bound,
-            maximum = maximum
-        )
-        .to_string(),
-        Some(CountObservation::Conflict) => t!("instance_limits.conflict").to_string(),
-        Some(CountObservation::Unavailable { .. }) | None => {
-            t!("instance_limits.unknown").to_string()
-        }
-    }
-}
-
-fn count_reason(count: &CountObservation) -> Option<&str> {
-    match count {
-        CountObservation::Incomplete { reason, .. } | CountObservation::Unavailable { reason } => {
-            Some(reason)
-        }
-        _ => None,
-    }
-}
-
-pub(super) fn sample_fresh(sampled_at: Option<std::time::Instant>) -> bool {
-    sampled_at.is_some_and(|sampled_at| sampled_at.elapsed() <= std::time::Duration::from_secs(3))
-}
-
-fn exceeds(count: &CountObservation, maximum: u32) -> bool {
-    match count {
-        CountObservation::Complete(count)
-        | CountObservation::Incomplete {
-            known_lower_bound: count,
-            ..
-        } => *count > maximum,
-        _ => false,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn uncertain_counts_never_appear_as_complete_zero() {
-        assert!(!sample_fresh(None));
-        assert!(sample_fresh(Some(std::time::Instant::now())));
-        assert!(!sample_fresh(Some(
-            std::time::Instant::now() - std::time::Duration::from_secs(4)
-        )));
-        let incomplete = CountObservation::Incomplete {
-            known_lower_bound: 0,
-            reason: "Access denied".into(),
-        };
-        assert_eq!(
-            count_label(Some(&CountObservation::Complete(0)), 1),
-            "0 / 1"
-        );
-        assert_ne!(count_label(Some(&incomplete), 1), "0 / 1");
-        assert_eq!(count_reason(&incomplete), Some("Access denied"));
-        assert!(!exceeds(&incomplete, 1));
-        assert!(exceeds(
-            &CountObservation::Incomplete {
-                known_lower_bound: 2,
-                reason: "Access denied".into(),
-            },
-            1
-        ));
-        assert!(!exceeds(
-            &CountObservation::Unavailable {
-                reason: "No catalog".into()
-            },
-            1
-        ));
-    }
 
     #[test]
     fn invalid_maximum_stays_in_draft_and_cancel_preserves_saved_rule() {

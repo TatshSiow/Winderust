@@ -11,38 +11,80 @@ use iced::{
     keyboard, mouse, overlay, Element, Event, Length, Rectangle, Renderer, Size, Theme, Vector,
 };
 use rust_i18n::t;
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, ffi::OsString, sync::Arc};
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(super) struct Candidate {
     pub info: crate::foreground::ProcessCandidateInfo,
     icon: Option<Arc<image::Handle>>,
 }
 
-pub(super) fn load(cached: Vec<Candidate>) -> Result<Vec<Candidate>, String> {
+pub(super) fn load(cached: &[Candidate]) -> Result<Arc<Vec<Candidate>>, String> {
     crate::foreground::list_process_candidates().map(|items| {
         let cached = cached
-            .into_iter()
-            .map(|candidate| (candidate.info.image_path, candidate.icon))
+            .iter()
+            .map(|candidate| (candidate.info.image_path.as_path(), candidate))
             .collect::<HashMap<_, _>>();
-        items
+        let candidates = items
             .into_iter()
             .map(|info| {
                 let icon = cached
-                    .get(&info.image_path)
-                    .cloned()
+                    .get(info.image_path.as_path())
+                    .map(|candidate| candidate.icon.clone())
                     .unwrap_or_else(|| crate::process_icon::load_process_icon(&info.image_path));
                 Candidate { info, icon }
             })
-            .collect()
+            .collect();
+        Arc::new(candidates)
     })
 }
+
+pub(super) fn is_path_query(query: &str) -> bool {
+    query.contains(['\\', '/', ':'])
+}
+
+pub(super) fn path_format_hint<'a>() -> iced::widget::Text<'a> {
+    text(t!("common.executable_path_format_hint").to_string())
+        .style(text::danger)
+        .wrapping(text::Wrapping::WordOrGlyph)
+}
+
+pub(super) fn path_readd_hint<'a, M: 'a>() -> iced::widget::Container<'a, M> {
+    container(
+        text(t!("common.executable_path_readd").to_string())
+            .style(text::secondary)
+            .wrapping(text::Wrapping::WordOrGlyph),
+    )
+    .padding(iced::Padding::new(widgets::CARD_PADDING as f32).top(0.0))
+}
+
+type PathCallback<M> = fn(String) -> M;
 
 pub(super) fn view<'a, M: Clone + 'static>(
     query: &str,
     candidates: &'a [Candidate],
     enabled: bool,
     select: fn(String) -> M,
+    browse: M,
+    add: Option<M>,
+    allowed: impl Fn(&str) -> Option<bool>,
+) -> Element<'a, M> {
+    view_with_path_selection(
+        query,
+        candidates,
+        enabled,
+        (select, select),
+        browse,
+        add,
+        allowed,
+    )
+}
+
+pub(super) fn view_with_path_selection<'a, M: Clone + 'static>(
+    query: &str,
+    candidates: &'a [Candidate],
+    enabled: bool,
+    (edit, select): (PathCallback<M>, PathCallback<M>),
     browse: M,
     add: Option<M>,
     allowed: impl Fn(&str) -> Option<bool>,
@@ -69,27 +111,55 @@ pub(super) fn view<'a, M: Clone + 'static>(
     });
     let input = widgets::text_input(&t!("common.search_running_apps"), query)
         .padding(widgets::SEARCH_INPUT_PADDING)
-        .on_input_maybe(enabled.then_some(select))
+        .on_input_maybe(enabled.then_some(edit))
         .width(Length::Fill)
         .into();
-    row![
-        widgets::search_field(
-            Element::new(Picker {
-                input,
-                choices,
-                select,
-                browse,
-                enabled,
-                menu: None,
-            }),
-            (enabled && !query.is_empty()).then(|| select(String::new())),
-        ),
-        widgets::action_button(t!("common.add").to_string())
-            .style(crate::ui::widgets::primary_button)
-            .on_press_maybe(add),
-    ]
-    .spacing(design::space::SMALL)
-    .align_y(iced::Center)
+    rule_input(
+        Element::new(Picker {
+            input,
+            choices,
+            select,
+            browse,
+            enabled,
+            menu: None,
+        }),
+        (enabled && !query.is_empty()).then(|| edit(String::new())),
+        add,
+    )
+}
+
+pub(super) fn executable_name_input<M: Clone + 'static>(
+    placeholder: &str,
+    value: &str,
+    edit: fn(String) -> M,
+    add: Option<M>,
+) -> Element<'static, M> {
+    rule_input(
+        widgets::text_input(placeholder, value)
+            .padding(widgets::SEARCH_INPUT_PADDING)
+            .on_input(edit)
+            .on_submit_maybe(add.clone())
+            .width(Length::Fill)
+            .into(),
+        (!value.is_empty()).then(|| edit(String::new())),
+        add,
+    )
+}
+
+fn rule_input<'a, M: Clone + 'static>(
+    input: Element<'a, M>,
+    clear: Option<M>,
+    add: Option<M>,
+) -> Element<'a, M> {
+    container(
+        row![
+            widgets::search_field(input, clear),
+            widgets::rule_add_button(add),
+        ]
+        .spacing(design::space::SMALL)
+        .align_y(iced::Center),
+    )
+    .max_width(460)
     .into()
 }
 
@@ -146,16 +216,40 @@ pub(super) fn app_name<'a, M: 'a>(path: &str, candidates: &[Candidate]) -> Eleme
     .into()
 }
 
+type Choice<'a> = (&'a Candidate, bool);
+
+fn choice_identity<'a>((candidate, available): &Choice<'a>) -> (&'a std::ffi::OsStr, bool) {
+    (candidate.info.image_path.as_os_str(), *available)
+}
+
+enum Selection {
+    App(OsString),
+    Browse,
+}
+
 #[derive(Default)]
 struct State {
     focused: bool,
     open: bool,
-    selected: Option<usize>,
+    selected: Option<Selection>,
+    pressed_choices: Option<Vec<(OsString, bool)>>,
+}
+
+impl State {
+    fn selected_index(&self, choices: &[Choice<'_>]) -> Option<usize> {
+        match self.selected.as_ref()? {
+            Selection::App(path) => choices.iter().position(|choice| {
+                let (candidate, available) = choice_identity(choice);
+                available && path == candidate
+            }),
+            Selection::Browse => Some(choices.len()),
+        }
+    }
 }
 
 struct Picker<'a, M> {
     input: Element<'a, M>,
-    choices: Vec<(&'a Candidate, bool)>,
+    choices: Vec<Choice<'a>>,
     select: fn(String) -> M,
     browse: M,
     enabled: bool,
@@ -181,11 +275,12 @@ impl<M: Clone> Picker<'_, M> {
                         .center_y(20)
                         .into()
                 });
-            let path = candidate.info.image_path.to_string_lossy().into_owned();
+            let path = candidate.info.image_path.to_string_lossy();
+            let selection = available.then(|| (self.select)(path.as_ref().to_owned()));
             let detail = if *available {
-                path.clone()
+                path.into_owned()
             } else {
-                format!("{} ? {}", t!("app_suspension.indicator.unavailable"), path)
+                format!("{} · {path}", t!("app_suspension.indicator.unavailable"))
             };
             let content = row![
                 icon,
@@ -216,7 +311,7 @@ impl<M: Clone> Picker<'_, M> {
                     } else {
                         widgets::quiet
                     })
-                    .on_press_maybe(available.then(|| (self.select)(path))),
+                    .on_press_maybe(selection),
             );
         }
         let footer = widgets::button(
@@ -259,7 +354,7 @@ impl<M: Clone> Picker<'_, M> {
 
 impl<M: Clone + 'static> Widget<M, Theme, Renderer> for Picker<'_, M> {
     fn size(&self) -> Size<Length> {
-        Size::new(Length::Fixed(372.0), Length::Shrink)
+        Size::new(Length::Fill, Length::Shrink)
     }
     fn tag(&self) -> tree::Tag {
         tree::Tag::of::<State>()
@@ -272,6 +367,22 @@ impl<M: Clone + 'static> Widget<M, Theme, Renderer> for Picker<'_, M> {
     }
     fn diff(&self, tree: &mut Tree) {
         tree.children[0].diff(&self.input);
+        let state = tree.state.downcast_mut::<State>();
+        if state.selected_index(&self.choices).is_none() {
+            state.selected = None;
+        }
+        // Button press state follows the menu row. Drop an in-flight press
+        // when a refresh changes which executable that row represents.
+        let changed_during_press = state.pressed_choices.as_ref().is_some_and(|pressed| {
+            !pressed
+                .iter()
+                .map(|(path, available)| (path.as_os_str(), *available))
+                .eq(self.choices.iter().map(choice_identity))
+        });
+        if changed_during_press || (!self.enabled && state.pressed_choices.is_some()) {
+            tree.children[1] = Tree::empty();
+            state.pressed_choices = None;
+        }
     }
     fn layout(
         &mut self,
@@ -281,7 +392,7 @@ impl<M: Clone + 'static> Widget<M, Theme, Renderer> for Picker<'_, M> {
     ) -> layout::Node {
         self.input
             .as_widget_mut()
-            .layout(&mut tree.children[0], renderer, &limits.width(372))
+            .layout(&mut tree.children[0], renderer, limits)
     }
     fn draw(
         &self,
@@ -335,6 +446,7 @@ impl<M: Clone + 'static> Widget<M, Theme, Renderer> for Picker<'_, M> {
         {
             if !state.open {
                 tree.children[1] = Tree::empty();
+                state.pressed_choices = None;
             }
             state.open = true;
             state.selected = None;
@@ -372,6 +484,7 @@ impl<M: Clone + 'static> Widget<M, Theme, Renderer> for Picker<'_, M> {
         {
             if !state.open {
                 tree.children[1] = Tree::empty();
+                state.pressed_choices = None;
             }
             state.open = true;
             state.selected = None;
@@ -405,16 +518,22 @@ impl<M: Clone + 'static> Widget<M, Theme, Renderer> for Picker<'_, M> {
         translation: Vector,
     ) -> Option<overlay::Element<'b, M, Theme, Renderer>> {
         let state = tree.state.downcast_mut::<State>();
-        if !state.open || !self.enabled || !layout.bounds().intersects(viewport) {
+        if !state.open || !self.enabled {
+            return None;
+        }
+        let anchor = layout.bounds() + translation;
+        if !viewport.intersects(&anchor) {
+            state.open = false;
             return None;
         }
         // Keep native button status between overlay update and draw calls.
+        let selected = state.selected_index(&self.choices);
         if self
             .menu
             .as_ref()
-            .is_none_or(|(selected, _)| *selected != state.selected)
+            .is_none_or(|(shown, _)| *shown != selected)
         {
-            self.menu = Some((state.selected, self.menu(state.selected)));
+            self.menu = Some((selected, self.menu(selected)));
         }
         let (_, menu) = self.menu.as_mut()?;
         tree.children[1].diff(&*menu);
@@ -422,7 +541,7 @@ impl<M: Clone + 'static> Widget<M, Theme, Renderer> for Picker<'_, M> {
             content: menu,
             tree: &mut tree.children[1],
             state,
-            anchor: layout.bounds() + translation,
+            anchor,
             choices: &self.choices,
             select: self.select,
             browse: self.browse.clone(),
@@ -435,7 +554,7 @@ struct Menu<'a, M> {
     tree: &'a mut Tree,
     state: &'a mut State,
     anchor: Rectangle,
-    choices: &'a [(&'a Candidate, bool)],
+    choices: &'a [Choice<'a>],
     select: fn(String) -> M,
     browse: M,
 }
@@ -524,7 +643,7 @@ impl<M: Clone + 'static> iced::advanced::Overlay<M, Theme, Renderer> for Menu<'_
                         .collect();
                     let position = self
                         .state
-                        .selected
+                        .selected_index(self.choices)
                         .and_then(|selected| indices.iter().position(|i| *i == selected));
                     let next = if *key == keyboard::Key::Named(Named::ArrowUp) {
                         position.map_or(indices.len() - 1, |i| {
@@ -533,13 +652,17 @@ impl<M: Clone + 'static> iced::advanced::Overlay<M, Theme, Renderer> for Menu<'_
                     } else {
                         position.map_or(0, |i| (i + 1) % indices.len())
                     };
-                    self.state.selected = Some(indices[next]);
+                    let selected = indices[next];
+                    self.state.selected = Some(match self.choices.get(selected) {
+                        Some(choice) => Selection::App(choice_identity(choice).0.to_owned()),
+                        None => Selection::Browse,
+                    });
                     let mut scroll = iced::advanced::widget::operation::scrollable::scroll_to(
                         iced::advanced::widget::Id::new("running-app-options"),
                         iced::widget::scrollable::AbsoluteOffset {
                             x: None,
                             y: Some(
-                                (indices[next] as f32 * 40.0
+                                (selected as f32 * 40.0
                                     - (layout.bounds().height - 84.0).max(0.0) / 2.0)
                                     .max(0.0),
                             ),
@@ -555,7 +678,7 @@ impl<M: Clone + 'static> iced::advanced::Overlay<M, Theme, Renderer> for Menu<'_
                     return;
                 }
                 keyboard::Key::Named(Named::Enter) => {
-                    if let Some(index) = self.state.selected {
+                    if let Some(index) = self.state.selected_index(self.choices) {
                         if index == self.choices.len() {
                             shell.publish(self.browse.clone());
                         } else if let Some((candidate, true)) = self.choices.get(index) {
@@ -587,6 +710,27 @@ impl<M: Clone + 'static> iced::advanced::Overlay<M, Theme, Renderer> for Menu<'_
             &mut local,
             &layout.bounds(),
         );
+        match event {
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+            | Event::Touch(iced::touch::Event::FingerPressed { .. })
+                if local.is_event_captured() =>
+            {
+                self.state.pressed_choices = Some(
+                    self.choices
+                        .iter()
+                        .map(choice_identity)
+                        .map(|(path, available)| (path.to_owned(), available))
+                        .collect(),
+                );
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+            | Event::Touch(
+                iced::touch::Event::FingerLifted { .. } | iced::touch::Event::FingerLost { .. },
+            ) => {
+                self.state.pressed_choices = None;
+            }
+            _ => {}
+        }
         let chosen = !local.is_empty();
         shell.merge(local, |message| message);
         if chosen {
@@ -638,20 +782,19 @@ mod tests {
 
     #[test]
     fn log_icons_require_an_unambiguous_cached_executable() {
-        let candidate = Candidate {
+        let icon = Arc::new(image::Handle::from_rgba(1, 1, vec![255; 4]));
+        let candidate = |path: &str| Candidate {
             info: crate::foreground::ProcessCandidateInfo {
                 name: "app.exe".into(),
-                image_path: r"C:\Apps\app.exe".into(),
+                image_path: path.into(),
                 has_suspendable_instance: true,
             },
-            icon: Some(Arc::new(image::Handle::from_rgba(1, 1, vec![255; 4]))),
+            icon: Some(Arc::clone(&icon)),
         };
-        let mut candidates = vec![candidate.clone()];
+        let mut candidates = vec![candidate(r"C:\Apps\app.exe")];
         assert!(icon_for_name("APP.EXE", &candidates).is_some());
         assert!(icon_for_name("missing.exe", &candidates).is_none());
-        let mut other = candidate;
-        other.info.image_path = r"C:\Other\app.exe".into();
-        candidates.push(other);
+        candidates.push(candidate(r"C:\Other\app.exe"));
         assert!(icon_for_name("app.exe", &candidates).is_none());
     }
 
@@ -707,6 +850,60 @@ mod tests {
                 );
                 assert_eq!(checked.into_inner(), expected, "query {query:?}");
             }
+        }
+    }
+
+    #[test]
+    fn narrow_picker_keeps_the_full_add_rule_label() {
+        #[derive(Default)]
+        struct AddLabel(Option<Rectangle>);
+
+        impl Operation for AddLabel {
+            fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn Operation)) {
+                visit(self);
+            }
+
+            fn text(
+                &mut self,
+                _: Option<&iced::advanced::widget::Id>,
+                bounds: Rectangle,
+                content: &str,
+            ) {
+                if content == t!("common.add_rule").as_ref() {
+                    self.0 = Some(bounds);
+                }
+            }
+        }
+
+        let renderer = Renderer::new(design::typography::FONT, iced::Pixels(14.0));
+        for query in ["", r"C:\Apps\sample.exe"] {
+            let add_label = |width| {
+                let mut picker = view(
+                    query,
+                    &[],
+                    true,
+                    Message::Select,
+                    Message::Browse,
+                    Some(Message::Browse),
+                    |_| None,
+                );
+                let mut tree = Tree::new(&picker);
+                let limits = layout::Limits::new(Size::ZERO, Size::new(width, 32.0));
+                let node = picker.as_widget_mut().layout(&mut tree, &renderer, &limits);
+                let mut label = AddLabel::default();
+                picker.as_widget_mut().operate(
+                    &mut tree,
+                    Layout::new(&node),
+                    &renderer,
+                    &mut label,
+                );
+                label.0.unwrap()
+            };
+            let narrow = add_label(418.0);
+            let wide = add_label(740.0);
+            assert_eq!(narrow.size(), wide.size());
+            assert!(narrow.x < wide.x);
+            assert!(narrow.x + narrow.width <= 418.0);
         }
     }
 
@@ -786,7 +983,7 @@ mod tests {
         assert!(!menu.state.open);
         assert_eq!(messages.len(), 1);
         menu.state.open = true;
-        menu.state.selected = Some(picker.choices.len());
+        menu.state.selected = Some(Selection::Browse);
         menu.update(
             &key(keyboard::key::Named::Enter),
             layout,
@@ -871,5 +1068,98 @@ mod tests {
                 );
             }
         }
+    }
+    #[test]
+    fn catalog_refresh_keeps_the_highlight_and_cancels_a_stale_press() {
+        let renderer = Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0));
+        let make_candidate = |path: &str| Candidate {
+            info: crate::foreground::ProcessCandidateInfo {
+                name: "app.exe".into(),
+                image_path: path.into(),
+                has_suspendable_instance: true,
+            },
+            icon: None,
+        };
+        let first = make_candidate(r"C:\First\app.exe");
+        let selected = make_candidate(r"C:\Selected\app.exe");
+        let mut picker = Picker {
+            input: widgets::text_input("", "").into(),
+            choices: vec![(&selected, true)],
+            select: Message::Select,
+            browse: Message::Browse,
+            enabled: true,
+            menu: None,
+        };
+        let mut tree = Tree::new(&picker as &dyn Widget<Message, Theme, Renderer>);
+        tree.state.downcast_mut::<State>().open = true;
+        let viewport = Rectangle::with_size(Size::new(500.0, 300.0));
+        let send = |picker: &mut Picker<'_, Message>, tree: &mut Tree, event: Event, point| {
+            let input = picker.layout(
+                tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, viewport.size()),
+            );
+            let mut overlay = picker
+                .overlay(
+                    tree,
+                    Layout::new(&input),
+                    &renderer,
+                    &viewport,
+                    Vector::ZERO,
+                )
+                .unwrap();
+            let overlay = overlay.as_overlay_mut();
+            let node = overlay.layout(&renderer, viewport.size());
+            let mut messages = Vec::new();
+            overlay.update(
+                &event,
+                Layout::new(&node),
+                if point {
+                    mouse::Cursor::Available(iced::Point::new(
+                        node.bounds().x + 50.0,
+                        node.bounds().y + 24.0,
+                    ))
+                } else {
+                    mouse::Cursor::Unavailable
+                },
+                &renderer,
+                &mut iced::advanced::clipboard::Null,
+                &mut Shell::new(&mut messages),
+            );
+            messages
+        };
+        assert!(send(
+            &mut picker,
+            &mut tree,
+            key(keyboard::key::Named::ArrowDown),
+            false
+        )
+        .is_empty());
+        assert!(send(
+            &mut picker,
+            &mut tree,
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            true
+        )
+        .is_empty());
+        picker.choices.insert(0, (&first, true));
+        picker.menu = None;
+        tree.diff(&picker as &dyn Widget<Message, Theme, Renderer>);
+        assert!(send(
+            &mut picker,
+            &mut tree,
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+            true
+        )
+        .is_empty());
+        assert_eq!(
+            send(
+                &mut picker,
+                &mut tree,
+                key(keyboard::key::Named::Enter),
+                false
+            ),
+            vec![Message::Select(r"C:\Selected\app.exe".into())]
+        );
     }
 }

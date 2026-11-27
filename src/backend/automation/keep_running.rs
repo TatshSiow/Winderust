@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{
         mpsc::{self, Receiver, SyncSender},
         Arc,
@@ -9,15 +9,59 @@ use std::{
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
+    backend::tray,
     config::{KeepRunningRule, KeepRunningSettings},
     control::process::ProcessTargetKey,
-    features::advanced_controls::keep_running::{
+    features::watchdog::keep_running::{
         CleanupAcknowledgment, CleanupOutcome, CommitDisposition, DesktopBindingKey, FailureKind,
         KeepRunningManager, KeepRunningRuleSnapshot, KeepRunningSnapshot, KeepRunningState,
         LaunchTicket, Observation, PauseReason, PrepareDisposition, PreparedDisposition,
     },
     foreground::{same_executable_path, ProcessActionTarget},
 };
+use rust_i18n::t;
+
+use super::{AutomationWorkerState, Settings};
+
+#[derive(Default)]
+pub(super) struct PendingResets {
+    all: bool,
+    paths: BTreeSet<String>,
+}
+
+impl PendingResets {
+    pub(super) fn is_empty(&self) -> bool {
+        !self.all && self.paths.is_empty()
+    }
+
+    pub(super) fn affects(&self, path: &str) -> bool {
+        self.all || self.paths.contains(path)
+    }
+}
+
+pub(super) fn record_settings_changes(state: &mut AutomationWorkerState, settings: &Settings) {
+    let previous = &state.settings;
+    let pending = &mut state.pending_keep_running_resets;
+    pending.all |= previous.general.enabled != settings.general.enabled
+        || previous.keep_running.enabled != settings.keep_running.enabled;
+    if !pending.all {
+        // Only a previously saved rule can own state that must be invalidated.
+        pending.paths.extend(
+            previous
+                .keep_running
+                .rules
+                .iter()
+                .filter(|rule| {
+                    !settings
+                        .keep_running
+                        .rules
+                        .iter()
+                        .any(|current| current.same_policy(rule))
+                })
+                .map(|rule| rule.executable_path.clone()),
+        );
+    }
+}
 
 pub(super) struct Failure {
     message: String,
@@ -31,6 +75,7 @@ pub(super) struct PrepareFailure<L> {
 
 // This seam exercises real ownership/routing with a held fake native operation in tests.
 pub(super) trait Platform: Send + 'static {
+    type Catalog: Default;
     type Context;
     type Identity: Clone + Eq + Send;
     type Member;
@@ -38,11 +83,23 @@ pub(super) trait Platform: Send + 'static {
     fn context() -> Result<Self::Context, Failure>;
     fn binding(context: &Self::Context) -> String;
     fn identity(rule: &KeepRunningRule) -> Result<Self::Identity, Failure>;
+    fn action_identity(
+        target: &ProcessActionTarget,
+        context: &Self::Context,
+    ) -> Result<Self::Identity, Failure>;
     fn scan(
         rule: &KeepRunningRule,
         context: &Self::Context,
         exclude: Option<&ProcessTargetKey>,
+        catalog: Option<&Self::Catalog>,
     ) -> Result<Vec<Self::Member>, Failure>;
+    fn scan_fresh(
+        rule: &KeepRunningRule,
+        context: &Self::Context,
+        exclude: Option<&ProcessTargetKey>,
+    ) -> Result<Vec<Self::Member>, Failure> {
+        Self::scan(rule, context, exclude, None)
+    }
     fn key(member: &Self::Member) -> ProcessTargetKey;
     fn exited(member: &Self::Member) -> Result<bool, Failure>;
     fn prepare(
@@ -116,15 +173,60 @@ impl<P: Platform> Worker<P> {
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
+enum RuleError {
+    Pending(String),
+    Recorded(String),
+    AliasConflict,
+}
+
+impl RuleError {
+    fn message(&self) -> &str {
+        match self {
+            Self::Pending(message) | Self::Recorded(message) => message,
+            Self::AliasConflict => {
+                "Keep Running rules refer to the same executable; remove the duplicate rule."
+            }
+        }
+    }
+}
+
 struct Owner<P: Platform> {
     id: Arc<()>,
-    rule: KeepRunningRule,
+    rule: Arc<KeepRunningRule>,
     active: bool,
     policy: KeepRunningManager,
     identity: Option<P::Identity>,
+    replacement_identity: Option<P::Identity>,
     members: BTreeMap<ProcessTargetKey, P::Member>,
-    last_error: Option<String>,
-    published: Option<(KeepRunningState, Option<String>)>,
+    last_error: Option<RuleError>,
+    retry_error: Option<String>,
+    published: Option<(KeepRunningState, Option<RuleError>)>,
+}
+
+impl<P: Platform> Owner<P> {
+    fn launch_failed(
+        &mut self,
+        now: Instant,
+        ticket: &LaunchTicket,
+        failure: Failure,
+        log: &mut ActionLog,
+    ) {
+        let was_starting = self.policy.state() == KeepRunningState::Starting;
+        self.policy.failed(now, ticket, failure.kind);
+        log.record(
+            ActionLogFeature::KeepRunning,
+            None,
+            &self.rule.executable_path,
+            ActionLogResult::Failed,
+            &failure.message,
+        );
+        if was_starting && matches!(self.policy.state(), KeepRunningState::Retrying { .. }) {
+            self.retry_error = Some(failure.message);
+        } else {
+            self.last_error = Some(RuleError::Recorded(failure.message));
+        }
+    }
 }
 
 enum Phase<L> {
@@ -144,8 +246,11 @@ struct InFlight<L> {
 
 pub(super) type KeepRunningCoordinator = Coordinator<Windows>;
 
-fn lexical_key(path: &str) -> String {
-    crate::foreground::executable_path_key(std::path::Path::new(path)).to_ascii_lowercase()
+fn lexical_path_bytes(path: &str) -> impl Iterator<Item = u8> + '_ {
+    path.trim().bytes().map(|byte| match byte {
+        b'/' => std::path::MAIN_SEPARATOR as u8,
+        _ => byte.to_ascii_lowercase(),
+    })
 }
 
 pub(super) struct Coordinator<P: Platform> {
@@ -166,24 +271,45 @@ impl<P: Platform> Default for Coordinator<P> {
 
 impl<P: Platform> Coordinator<P> {
     pub(super) fn sync_settings(&mut self, settings: &KeepRunningSettings, general_enabled: bool) {
+        let enabled = general_enabled && settings.enabled;
+        if enabled
+            && self.owners.len() == settings.rules.len()
+            && self
+                .owners
+                .iter()
+                .zip(&settings.rules)
+                .all(|(owner, rule)| {
+                    owner.active
+                        && rule.enabled
+                        && owner.rule.as_ref() == rule
+                        && owner.policy.state() != KeepRunningState::Disabled
+                })
+        {
+            return;
+        }
+
+        let flight_owner = self.flight.as_ref().map(|flight| &flight.owner);
         for owner in &mut self.owners {
             owner.active = false;
         }
         for rule in &settings.rules {
             let index = self.owners.iter().position(|owner| {
-                lexical_key(&owner.rule.executable_path) == lexical_key(&rule.executable_path)
+                lexical_path_bytes(&owner.rule.executable_path)
+                    .eq(lexical_path_bytes(&rule.executable_path))
             });
             let owner = if let Some(index) = index {
                 &mut self.owners[index]
             } else {
                 self.owners.push(Owner {
                     id: Arc::new(()),
-                    rule: rule.clone(),
+                    rule: Arc::new(rule.clone()),
                     active: true,
                     policy: KeepRunningManager::default(),
                     identity: None,
+                    replacement_identity: None,
                     members: BTreeMap::new(),
                     last_error: None,
+                    retry_error: None,
                     published: None,
                 });
                 let Some(owner) = self.owners.last_mut() else {
@@ -192,14 +318,30 @@ impl<P: Platform> Coordinator<P> {
                 owner
             };
             owner.active = true;
-            if owner.rule != *rule {
+            if !owner.rule.same_policy(rule) {
+                let only_enabled_changed = owner.rule.same_launch_command(rule);
+                let owns_flight = flight_owner.is_some_and(|id| Arc::ptr_eq(id, &owner.id));
+                owner.last_error = if only_enabled_changed && owns_flight {
+                    // This diagnostic was already recorded when the previous snapshot published.
+                    owner
+                        .last_error
+                        .as_ref()
+                        .map(|error| error.message().to_owned())
+                        .or_else(|| owner.retry_error.take())
+                        .map(RuleError::Recorded)
+                } else {
+                    None
+                };
                 owner.policy.launch_settings_changed();
-                owner.rule = rule.clone();
                 owner.members.clear();
                 owner.identity = None;
-                owner.last_error = None;
+                owner.replacement_identity = None;
+                owner.retry_error = None;
             }
-            if general_enabled && settings.enabled && rule.enabled {
+            if owner.rule.as_ref() != rule {
+                owner.rule = Arc::new(rule.clone());
+            }
+            if enabled && rule.enabled {
                 owner.policy.enable();
             } else {
                 owner.policy.disable();
@@ -212,35 +354,83 @@ impl<P: Platform> Coordinator<P> {
                 owner.members.clear();
             }
         }
-        let flight = self.flight.as_ref().map(|flight| &flight.owner);
-        self.owners
-            .retain(|owner| owner.active || flight.is_some_and(|id| Arc::ptr_eq(id, &owner.id)));
+        self.owners.retain(|owner| {
+            owner.active || flight_owner.is_some_and(|id| Arc::ptr_eq(id, &owner.id))
+        });
     }
 
     pub(super) fn has_pending(&self) -> bool {
         self.flight.is_some()
     }
 
-    pub(super) fn invalidate_settings(&mut self) {
+    pub(super) fn invalidate_settings(&mut self, resets: &PendingResets) {
+        if resets.is_empty() {
+            return;
+        }
+        let flight_owner = self.flight.as_ref().map(|flight| &flight.owner);
         for owner in &mut self.owners {
+            if !resets.affects(&owner.rule.executable_path) {
+                continue;
+            }
             owner.policy.launch_settings_changed();
             owner.members.clear();
             owner.identity = None;
+            owner.replacement_identity = None;
+            // Retain an owned diagnostic until sync_settings can check the exact edit.
+            if !flight_owner.is_some_and(|id| Arc::ptr_eq(id, &owner.id)) {
+                owner.retry_error = None;
+            }
         }
     }
 
     pub(super) fn pause_targets(&mut self, targets: &[ProcessActionTarget], reason: PauseReason) {
+        if targets.is_empty() {
+            return;
+        }
+        let mut unmatched = Vec::new();
         for owner in &mut self.owners {
             if targets.iter().any(|target| {
-                owner.members.contains_key(
-                    &crate::control::process::ProcessControlTarget::from_action_target(target)
-                        .key(),
-                ) || same_executable_path(
+                owner.members.contains_key(&ProcessTargetKey::new(
+                    target.id,
+                    target.creation_time,
+                    &target.executable_path,
+                )) || same_executable_path(
                     &target.executable_path,
                     std::path::Path::new(&owner.rule.executable_path),
                 )
             }) {
                 owner.policy.pause(reason);
+            } else if let Some(identity) = owner.identity.as_ref().filter(|_| {
+                reason == PauseReason::IntentionalStop
+                    && owner.active
+                    && !matches!(
+                        owner.policy.state(),
+                        KeepRunningState::Disabled | KeepRunningState::Paused(_)
+                    )
+            }) {
+                unmatched.push((identity, &mut owner.policy));
+            }
+        }
+        if unmatched.is_empty() {
+            return;
+        }
+        let Ok(context) = P::context() else {
+            return;
+        };
+        for target in targets {
+            let Ok(identity) = P::action_identity(target, &context) else {
+                continue;
+            };
+            unmatched.retain_mut(|(pinned, policy)| {
+                if *pinned == &identity {
+                    policy.pause(reason);
+                    false
+                } else {
+                    true
+                }
+            });
+            if unmatched.is_empty() {
+                break;
             }
         }
     }
@@ -263,6 +453,7 @@ impl<P: Platform> Coordinator<P> {
                 )
             {
                 owner.last_error = None;
+                owner.retry_error = None;
                 owner.policy.resume(Instant::now(), binding.as_ref());
             }
         }
@@ -290,7 +481,7 @@ impl<P: Platform> Coordinator<P> {
         })
     }
 
-    fn completion(&mut self, now: Instant) {
+    fn completion(&mut self, now: Instant, log: &mut ActionLog) {
         let Some(mut flight) = self.flight.take() else {
             return;
         };
@@ -328,8 +519,7 @@ impl<P: Platform> Coordinator<P> {
                     };
                 }
                 Completion::Prepared(Err(failure)) => {
-                    owner.last_error = Some(failure.error.message);
-                    owner.policy.failed(now, &flight.ticket, failure.error.kind);
+                    owner.launch_failed(now, &flight.ticket, failure.error, log);
                     if let Some(launch) = failure.cleanup {
                         flight.phase = Phase::CleanupRetry(launch);
                     } else {
@@ -342,15 +532,31 @@ impl<P: Platform> Coordinator<P> {
                 Completion::Committed(launch, result) => {
                     if P::accepted(&launch) {
                         if let Some(key) = P::launch_key(&launch) {
+                            let process_id = key.id;
                             owner.policy.accepted(&flight.ticket, key);
-                            if let Err(error) = result {
-                                owner.last_error = Some(error.message);
-                            }
+                            let (result, reason) = match result {
+                                Ok(()) => (
+                                    ActionLogResult::Applied,
+                                    rust_i18n::t!("keep_running.relaunched").to_string(),
+                                ),
+                                Err(error) => {
+                                    owner.last_error =
+                                        Some(RuleError::Recorded(error.message.clone()));
+                                    (ActionLogResult::Failed, error.message)
+                                }
+                            };
+                            log.record(
+                                ActionLogFeature::KeepRunning,
+                                Some(process_id),
+                                &owner.rule.executable_path,
+                                result,
+                                reason,
+                            );
                             flight.phase = Phase::Accepted(launch);
                         } else {
-                            owner.last_error = Some(
+                            owner.last_error = Some(RuleError::Pending(
                                 "Accepted Keep Running process identity is unavailable.".into(),
-                            );
+                            ));
                             owner.policy.pause(PauseReason::CleanupUnconfirmed);
                             // Retain the accepted handle; it must never enter provisional disposal.
                             flight.phase = Phase::Accepted(launch);
@@ -360,8 +566,7 @@ impl<P: Platform> Coordinator<P> {
                             kind: FailureKind::Retryable,
                             message: "Keep Running launch was not accepted.".into(),
                         });
-                        owner.last_error = Some(error.message);
-                        owner.policy.failed(now, &flight.ticket, error.kind);
+                        owner.launch_failed(now, &flight.ticket, error, log);
                         flight.phase = Phase::CleanupRetry(launch);
                     }
                 }
@@ -373,7 +578,7 @@ impl<P: Platform> Coordinator<P> {
                             == CleanupAcknowledgment::Released;
                     }
                     Err(error) => {
-                        owner.last_error = Some(error.message);
+                        owner.last_error = Some(RuleError::Pending(error.message));
                         owner
                             .policy
                             .cleanup_ack(&flight.ticket, CleanupOutcome::Unknown);
@@ -382,8 +587,9 @@ impl<P: Platform> Coordinator<P> {
                 },
             }
         } else if matches!(completion, Some(Err(mpsc::TryRecvError::Disconnected))) {
-            self.owners[index].last_error =
-                Some("Keep Running worker disconnected; restart Winderust to recover.".into());
+            self.owners[index].last_error = Some(RuleError::Pending(
+                "Keep Running worker disconnected; restart Winderust to recover.".into(),
+            ));
             self.owners[index]
                 .policy
                 .pause(PauseReason::CleanupUnconfirmed);
@@ -394,7 +600,7 @@ impl<P: Platform> Coordinator<P> {
                 Phase::CleanupRetry(launch) => match self.send(Work::Dispose(launch)) {
                     Ok(()) => Phase::Cleaning,
                     Err((error, work)) => {
-                        self.owners[index].last_error = Some(error);
+                        self.owners[index].last_error = Some(RuleError::Pending(error));
                         let Work::Dispose(launch) = *work else {
                             unreachable!("dispose submission returns its own command")
                         };
@@ -408,12 +614,13 @@ impl<P: Platform> Coordinator<P> {
                         Phase::Quarantined
                     }
                     Ok(None) => {
-                        self.owners[index].last_error =
-                            Some("Keep Running accepted process handle is unavailable.".into());
+                        self.owners[index].last_error = Some(RuleError::Pending(
+                            "Keep Running accepted process handle is unavailable.".into(),
+                        ));
                         Phase::Accepted(launch)
                     }
                     Err(error) => {
-                        self.owners[index].last_error = Some(error.message);
+                        self.owners[index].last_error = Some(RuleError::Pending(error.message));
                         Phase::Accepted(launch)
                     }
                 },
@@ -449,6 +656,47 @@ impl<P: Platform> Coordinator<P> {
         )
     }
 
+    pub(super) fn notify_retry_exhaustion(
+        &mut self,
+        mut reserve: impl FnMut(&KeepRunningRule) -> bool,
+        log: &mut ActionLog,
+    ) {
+        for owner in &mut self.owners {
+            if !owner.policy.take_retry_exhaustion()
+                || !owner.active
+                || !owner.rule.enabled
+                || !owner.rule.notify
+                || !reserve(&owner.rule)
+            {
+                continue;
+            }
+            let path = &owner.rule.executable_path;
+            let app = std::path::Path::new(path)
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .unwrap_or(path);
+            let (result, reason) = match tray::show_notification(
+                &t!("keep_running.notification_title"),
+                &t!("keep_running.notification_body", app = app),
+                false,
+            ) {
+                Ok(()) => (
+                    ActionLogResult::Applied,
+                    t!("keep_running.notification_accepted").to_string(),
+                ),
+                Err(error) => (
+                    ActionLogResult::Failed,
+                    t!(
+                        "keep_running.notification_failed",
+                        error = error.localized()
+                    )
+                    .to_string(),
+                ),
+            };
+            log.record(ActionLogFeature::KeepRunning, None, path, result, reason);
+        }
+    }
+
     fn tick(
         &mut self,
         settings: &KeepRunningSettings,
@@ -466,16 +714,24 @@ impl<P: Platform> Coordinator<P> {
     ) -> KeepRunningSnapshot {
         let now = clock();
         self.sync_settings(settings, general_enabled);
-        self.completion(now);
+        self.completion(now, log);
         let enabled = general_enabled && settings.enabled;
-        let context = P::context();
-        let mut known = watcher_active && context.is_ok();
-        if !watcher_active {
+        let context = if watcher_active {
+            Some(P::context())
+        } else {
             self.pause_all(PauseReason::UnsupportedContext);
-        }
+            None
+        };
+        let mut known = matches!(&context, Some(Ok(_)));
         let mut evidence = BTreeMap::new();
-        if let Ok(context) = context {
+        if let Some(Ok(context)) = context {
             let binding = DesktopBindingKey::new(P::binding(&context));
+            let catalog = settings
+                .rules
+                .iter()
+                .filter(|rule| rule.enabled)
+                .nth(1)
+                .map(|_| P::Catalog::default());
             for (index, owner) in self
                 .owners
                 .iter_mut()
@@ -493,7 +749,7 @@ impl<P: Platform> Coordinator<P> {
                     }
                     Ok(false) => true,
                     Err(error) => {
-                        owner.last_error = Some(error.message);
+                        owner.last_error = Some(RuleError::Pending(error.message));
                         exits_known = false;
                         true
                     }
@@ -508,21 +764,24 @@ impl<P: Platform> Coordinator<P> {
                 }
                 match P::identity(&owner.rule) {
                     Ok(identity) if owner.identity.as_ref().is_none_or(|old| old == &identity) => {
-                        owner.identity = Some(identity)
+                        owner.identity.get_or_insert(identity);
+                        owner.replacement_identity = None;
                     }
-                    Ok(_) => {
+                    Ok(identity) => {
+                        // Use the current file for conflicts while keeping the launch identity pinned.
+                        owner.replacement_identity = Some(identity);
                         owner.policy.pause(PauseReason::UnsupportedContext);
-                        owner.last_error = Some(
+                        owner.last_error = Some(RuleError::Pending(
                             "The Keep Running executable changed; edit the rule before resuming."
                                 .into(),
-                        );
+                        ));
                         exits_known = false;
                     }
                     Err(error) => {
                         if matches!(error.kind, FailureKind::UnsupportedContext) {
                             owner.policy.pause(PauseReason::UnsupportedContext);
                         }
-                        owner.last_error = Some(error.message);
+                        owner.last_error = Some(RuleError::Pending(error.message));
                         exits_known = false;
                     }
                 }
@@ -534,10 +793,10 @@ impl<P: Platform> Coordinator<P> {
                         Phase::Ready(launch) => P::launch_key(launch),
                         _ => None,
                     });
-                let scan = P::scan(&owner.rule, &context, exclude.as_ref());
+                let scan = P::scan(&owner.rule, &context, exclude.as_ref(), catalog.as_ref());
                 let now = clock();
                 match scan {
-                    Ok(members) if exits_known && watcher_active => {
+                    Ok(members) if exits_known => {
                         if !matches!(owner.policy.state(), KeepRunningState::Paused(_)) {
                             owner.last_error = None;
                         }
@@ -564,35 +823,50 @@ impl<P: Platform> Coordinator<P> {
                         if matches!(error.kind, FailureKind::UnsupportedContext) {
                             owner.policy.pause(PauseReason::UnsupportedContext);
                         }
-                        owner.last_error = Some(error.message);
+                        owner.last_error = Some(RuleError::Pending(error.message));
                         owner.policy.observe(now, Observation::Unavailable);
                     }
                 }
             }
+            drop(catalog);
             // File identities catch hard links and reparse aliases; no rule wins by list order.
+            let mut conflicts = BTreeSet::new();
             for i in 0..self.owners.len() {
                 for j in i + 1..self.owners.len() {
                     let overlapping_members = evidence
                         .get(&i)
                         .zip(evidence.get(&j))
                         .is_some_and(|(a, b)| a.iter().any(|key| b.contains(key)));
-                    if self.owners[i].active
-                        && self.owners[j].active
-                        && self.owners[i].rule.enabled
-                        && self.owners[j].rule.enabled
-                        && ((self.owners[i].identity.is_some()
-                            && self.owners[i].identity == self.owners[j].identity)
+                    let left = &self.owners[i];
+                    let right = &self.owners[j];
+                    let left_identity = left
+                        .replacement_identity
+                        .as_ref()
+                        .or(left.identity.as_ref());
+                    let right_identity = right
+                        .replacement_identity
+                        .as_ref()
+                        .or(right.identity.as_ref());
+                    if left.active
+                        && right.active
+                        && left.rule.enabled
+                        && right.rule.enabled
+                        && ((left_identity.is_some() && left_identity == right_identity)
                             || overlapping_members)
                     {
                         for index in [i, j] {
-                            self.owners[index]
-                                .policy
-                                .pause(PauseReason::UnsupportedContext);
-                            self.owners[index].last_error = Some("Keep Running rules refer to the same executable; remove the duplicate rule.".into());
-                            evidence.remove(&index);
+                            let owner = &mut self.owners[index];
+                            owner.policy.pause(PauseReason::UnsupportedContext);
+                            if owner.replacement_identity.is_none() {
+                                owner.last_error = Some(RuleError::AliasConflict);
+                            }
+                            conflicts.insert(index);
                         }
                     }
                 }
+            }
+            for index in conflicts {
+                evidence.remove(&index);
             }
             if let Some(mut flight) = self.flight.take() {
                 if let Some(index) = self
@@ -602,55 +876,59 @@ impl<P: Platform> Coordinator<P> {
                 {
                     if let Phase::Ready(launch) = flight.phase {
                         // Re-enumerate immediately before the shared intake reservation, never use the cycle cache.
+                        let owner = &mut self.owners[index];
                         let exclude = P::launch_key(&launch);
-                        let fresh = P::scan(&self.owners[index].rule, &context, exclude.as_ref());
+                        let fresh = P::scan_fresh(&owner.rule, &context, exclude.as_ref());
                         let now = clock();
-                        let disposition = if let Ok(members) = fresh {
-                            let keys: Vec<_> = members.iter().map(P::key).collect();
-                            let owner = &mut self.owners[index];
-                            let observation = Observation::Complete {
-                                observed_at: now,
-                                context: &binding,
-                                members: &keys,
-                            };
-                            let disposition = reserve(
-                                &owner.rule,
-                                &mut owner.policy,
-                                &flight.ticket,
-                                now,
-                                observation,
-                            );
-                            for member in members {
-                                owner.members.entry(P::key(&member)).or_insert(member);
+                        let disposition = match fresh {
+                            Ok(members) => {
+                                let keys: Vec<_> = members.iter().map(P::key).collect();
+                                let observation = Observation::Complete {
+                                    observed_at: now,
+                                    context: &binding,
+                                    members: &keys,
+                                };
+                                let disposition = reserve(
+                                    &owner.rule,
+                                    &mut owner.policy,
+                                    &flight.ticket,
+                                    now,
+                                    observation,
+                                );
+                                for member in members {
+                                    owner.members.entry(P::key(&member)).or_insert(member);
+                                }
+                                disposition
                             }
-                            disposition
-                        } else if let Err(error) = fresh {
-                            let owner = &mut self.owners[index];
-                            owner.last_error = Some(error.message);
-                            if matches!(error.kind, FailureKind::UnsupportedContext) {
-                                owner.policy.pause(PauseReason::UnsupportedContext);
+                            Err(error) => {
+                                known = false;
+                                owner.last_error = Some(RuleError::Pending(error.message));
+                                if matches!(error.kind, FailureKind::UnsupportedContext) {
+                                    owner.policy.pause(PauseReason::UnsupportedContext);
+                                }
+                                owner.policy.timeout(now, &flight.ticket);
+                                if owner.policy.disposal_required(&flight.ticket) {
+                                    CommitDisposition::DisposeProvisional
+                                } else {
+                                    CommitDisposition::Deferred
+                                }
                             }
-                            owner.policy.timeout(now, &flight.ticket);
-                            if owner.policy.disposal_required(&flight.ticket) {
-                                CommitDisposition::DisposeProvisional
-                            } else {
-                                CommitDisposition::Deferred
-                            }
-                        } else {
-                            unreachable!("fresh observation is either members or an error")
                         };
                         flight.phase = match disposition {
                             CommitDisposition::Reserved => match self.send(Work::Commit(launch)) {
                                 Ok(()) => Phase::Committing,
                                 Err((error, work)) => {
-                                    self.owners[index].last_error = Some(error);
                                     let Work::Commit(launch) = *work else {
                                         unreachable!("commit submission returns its own command")
                                     };
-                                    self.owners[index].policy.failed(
+                                    self.owners[index].launch_failed(
                                         now,
                                         &flight.ticket,
-                                        FailureKind::Retryable,
+                                        Failure {
+                                            message: error,
+                                            kind: FailureKind::Retryable,
+                                        },
+                                        log,
                                     );
                                     Phase::CleanupRetry(launch)
                                 }
@@ -663,21 +941,21 @@ impl<P: Platform> Coordinator<P> {
                     }
                 }
                 self.flight = Some(flight);
-            } else if enabled && watcher_active {
+            } else if enabled {
                 for index in evidence.keys().copied() {
                     let now = clock();
                     if !matches!(self.owners[index].policy.state(), KeepRunningState::Retrying { next_attempt } if now >= next_attempt)
                     {
                         continue;
                     }
-                    let members = match P::scan(&self.owners[index].rule, &context, None) {
+                    let members = match P::scan_fresh(&self.owners[index].rule, &context, None) {
                         Ok(members) => members,
                         Err(error) => {
                             let owner = &mut self.owners[index];
                             if matches!(error.kind, FailureKind::UnsupportedContext) {
                                 owner.policy.pause(PauseReason::UnsupportedContext);
                             }
-                            owner.last_error = Some(error.message);
+                            owner.last_error = Some(RuleError::Pending(error.message));
                             owner.policy.observe(clock(), Observation::Unavailable);
                             known = false;
                             continue;
@@ -701,7 +979,7 @@ impl<P: Platform> Coordinator<P> {
                             },
                         )
                     {
-                        let rule = self.owners[index].rule.clone();
+                        let rule = self.owners[index].rule.as_ref().clone();
                         let owner = self.owners[index].id.clone();
                         let Some(identity) = self.owners[index].identity.clone() else {
                             self.owners[index].policy.failed(
@@ -718,11 +996,14 @@ impl<P: Platform> Coordinator<P> {
                             match self.send(Work::Prepare(rule, P::binding(&context), identity)) {
                                 Ok(()) => Phase::Preparing,
                                 Err((error, _)) => {
-                                    self.owners[index].last_error = Some(error);
-                                    self.owners[index].policy.failed(
+                                    self.owners[index].launch_failed(
                                         now,
                                         &ticket,
-                                        FailureKind::Retryable,
+                                        Failure {
+                                            message: error,
+                                            kind: FailureKind::Retryable,
+                                        },
+                                        log,
                                     );
                                     self.owners[index]
                                         .policy
@@ -739,7 +1020,16 @@ impl<P: Platform> Coordinator<P> {
                     }
                 }
             }
-        } else if let Err(error) = context {
+            // An incomplete scan cannot rule out overlapping live members.
+            if known {
+                for &index in evidence.keys() {
+                    let error = &mut self.owners[index].last_error;
+                    if matches!(error, Some(RuleError::AliasConflict)) {
+                        *error = None;
+                    }
+                }
+            }
+        } else if let Some(Err(error)) = context {
             if enabled {
                 self.pause_all(PauseReason::UnsupportedContext);
                 for owner in self
@@ -747,7 +1037,7 @@ impl<P: Platform> Coordinator<P> {
                     .iter_mut()
                     .filter(|owner| owner.active && owner.rule.enabled)
                 {
-                    owner.last_error = Some(error.message.clone());
+                    owner.last_error = Some(RuleError::Pending(error.message.clone()));
                 }
             }
         }
@@ -762,32 +1052,44 @@ impl<P: Platform> Coordinator<P> {
             owner.active || flight_owner.is_some_and(|id| Arc::ptr_eq(id, &owner.id))
         }) {
             let state = owner.policy.state();
+            if state == KeepRunningState::Disabled
+                && !flight_owner.is_some_and(|id| Arc::ptr_eq(id, &owner.id))
+            {
+                owner.last_error = None;
+            }
+            if !matches!(state, KeepRunningState::Retrying { .. }) {
+                owner.retry_error = None;
+            }
             let published = (state, owner.last_error.clone());
             if owner.published.as_ref() != Some(&published) {
-                log.record(
-                    ActionLogFeature::KeepRunning,
-                    None,
-                    &owner.rule.executable_path,
-                    if owner.last_error.is_some() {
-                        ActionLogResult::Failed
-                    } else {
-                        ActionLogResult::Applied
-                    },
-                    owner
-                        .last_error
-                        .clone()
-                        .unwrap_or_else(|| rust_i18n::t!(state.label_key()).to_string()),
-                );
+                if let Some(error) = owner
+                    .last_error
+                    .as_ref()
+                    .filter(|error| !matches!(error, RuleError::Recorded(_)))
+                {
+                    log.record(
+                        ActionLogFeature::KeepRunning,
+                        None,
+                        &owner.rule.executable_path,
+                        ActionLogResult::Failed,
+                        error.message(),
+                    );
+                }
                 owner.published = Some(published);
             }
+            let last_error = owner
+                .last_error
+                .as_ref()
+                .map(RuleError::message)
+                .or(owner.retry_error.as_deref());
             if snapshot.last_error.is_none() {
-                snapshot.last_error = owner.last_error.clone();
+                snapshot.last_error = last_error.map(str::to_owned);
             }
             if !owner.active {
                 continue;
             }
             snapshot.rules.push(KeepRunningRuleSnapshot {
-                executable_path: owner.rule.executable_path.clone(),
+                rule: Arc::clone(&owner.rule),
                 state,
                 attempts: owner.policy.attempts(),
                 next_retry_seconds: if let KeepRunningState::Retrying { next_attempt } = state {
@@ -795,7 +1097,7 @@ impl<P: Platform> Coordinator<P> {
                 } else {
                     None
                 },
-                last_error: owner.last_error.clone(),
+                last_error: last_error.map(str::to_owned),
             });
         }
         snapshot
