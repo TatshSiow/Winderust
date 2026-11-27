@@ -1,13 +1,13 @@
 use super::design;
-use super::widgets::{checkbox, pick_list};
+use super::feature_tabs::{self, FeatureTab};
+use super::widgets::{self, checkbox, pick_list};
 use crate::application::SettingsEditor;
 use crate::config::*;
 use crate::ui::process_rules::{
     can_add_exact_process_candidate, exact_path_input, new_process_exclusion_rule,
     picked_path_input,
 };
-use crate::ui::scrolling::scrollable;
-use iced::widget::column;
+use iced::widget::{column, Column};
 use iced::{Element, Fill};
 use rust_i18n::t;
 use std::rc::Rc;
@@ -15,7 +15,6 @@ use std::rc::Rc;
 #[derive(Default)]
 pub(super) struct Editor {
     path: String,
-    expanded: [[bool; 3]; 6],
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Kind {
@@ -34,14 +33,26 @@ pub(super) enum Tier {
 }
 impl Tier {
     pub(super) const ALL: [Self; 3] = [Self::Focus, Self::VisibleWindow, Self::Background];
-    pub(super) fn label(self) -> String {
+    pub(super) fn label_key(self) -> &'static str {
         match self {
-            Self::Focus => t!("cpu_allocation.focus"),
-            Self::VisibleWindow => t!("common.visible_window"),
-            Self::Background => t!("common.background_process"),
+            Self::Focus => "cpu_allocation.focus",
+            Self::VisibleWindow => "common.visible_window",
+            Self::Background => "common.background_process",
         }
-        .to_string()
     }
+
+    pub(super) fn label(self) -> String {
+        t!(self.label_key()).into_owned()
+    }
+
+    pub(super) fn detection_key(self) -> Option<&'static str> {
+        match self {
+            Self::Focus => Some("common.foreground_detection"),
+            Self::VisibleWindow => Some("common.visible_window_detection"),
+            Self::Background => None,
+        }
+    }
+
     pub(super) fn flags(self) -> (bool, bool) {
         (self == Self::Focus, self == Self::VisibleWindow)
     }
@@ -135,8 +146,6 @@ pub(super) enum Message {
     RuleEnabled(usize, bool),
     RuleValue(usize, Tier, Value),
     Remove(String),
-
-    Collapse(Tier),
 }
 impl Kind {
     pub(super) fn key(self) -> &'static str {
@@ -401,11 +410,6 @@ impl Editor {
                         .retain(|rule| rule.executable_path != path);
                 }
             }
-            Message::Collapse(tier) => {
-                let expanded = &mut self.expanded[kind as usize][tier as usize];
-                *expanded = !*expanded;
-            }
-
             Message::RuleEnabled(index, value) => {
                 if kind
                     .rules(settings)
@@ -597,29 +601,39 @@ impl Editor {
         settings: &'a Settings,
         kind: Kind,
         candidates: &'a [super::app_picker::Candidate],
+        tab: FeatureTab,
+        scroll_clearance: f32,
     ) -> Element<'a, Message> {
-        let key = kind.key();
-        let enabled = kind.enabled(settings);
         let choices: Rc<[_]> = kind
             .choices(settings.advanced.expose_all_priority_values)
             .into();
-        let mut body = column![].spacing(super::widgets::CARD_GAP);
+        let body = if tab == FeatureTab::CustomRules {
+            self.rules_view(settings, kind, candidates, choices)
+        } else {
+            Self::setup(settings, kind, choices)
+        };
+        feature_tabs::scroll_content(body, scroll_clearance)
+    }
+
+    fn setup(settings: &Settings, kind: Kind, choices: Rc<[Value]>) -> Column<'_, Message> {
+        let enable_key = format!("{}.enable", kind.key());
+        let mut body = column![widgets::toggle_card(
+            &enable_key,
+            kind.enabled(settings),
+            Some(Message::Enabled),
+        )]
+        .spacing(widgets::CARD_GAP);
         for tier in [Tier::Background, Tier::Focus, Tier::VisibleWindow] {
-            let detection = kind.detection(settings, tier);
-            let mut group = column![].spacing(design::space::MEDIUM);
-            let label = match tier {
-                Tier::Background => format!("{key}.enable"),
-                Tier::Focus => "common.foreground_detection".to_string(),
-                Tier::VisibleWindow => "common.visible_window_detection".to_string(),
-            };
-            let action: Element<'_, Message> = if tier == Tier::Background {
-                super::widgets::switch(enabled, Some(Message::Enabled))
-            } else {
-                super::widgets::switch(
-                    detection,
-                    Some(move |value| Message::Detection(tier, value)),
+            let detection = tier.detection_key().map(|label| {
+                widgets::setting_row(
+                    label,
+                    widgets::switch(
+                        kind.detection(settings, tier),
+                        Some(move |value| Message::Detection(tier, value)),
+                    ),
                 )
-            };
+                .into()
+            });
             let control: Element<'_, Message> = {
                 pick_list(
                     Rc::clone(&choices),
@@ -630,40 +644,48 @@ impl Editor {
                 .width(design::SELECT_WIDTH)
                 .into()
             };
-            group = group.push(super::widgets::setting_row("common.default", control));
-            if let Some(preserve) = kind.preserve(settings, tier) {
+            let default = widgets::setting_row("common.default", control);
+            let preserve = kind.preserve(settings, tier).map(|preserve| {
                 let label = match tier {
-                    Tier::Focus => t!("common.preserve_foreground_priority"),
-                    Tier::VisibleWindow => t!("common.preserve_visible_window_priority"),
-                    Tier::Background => t!("common.preserve_background_priority"),
+                    Tier::Focus => "common.preserve_foreground_priority",
+                    Tier::VisibleWindow => "common.preserve_visible_window_priority",
+                    Tier::Background => "common.preserve_background_priority",
                 };
-                group = group.push(super::widgets::settings_divider()).push(
-                    checkbox(preserve)
-                        .label(label.to_string())
-                        .on_toggle_maybe(Some(move |value| Message::Preserve(tier, value))),
-                );
-            }
-            if let Some(protection) = tier.child_protection() {
-                group = group.push(super::widgets::settings_divider()).push(
-                    protection.row(kind.child_protection(settings), move |value| {
+                widgets::setting_row(
+                    label,
+                    widgets::switch(preserve, Some(move |value| Message::Preserve(tier, value))),
+                )
+                .into()
+            });
+            let children = tier.child_protection().map(|protection| {
+                protection
+                    .row(kind.child_protection(settings), move |value| {
                         Message::ProtectChildren(protection, value)
-                    }),
-                );
-            }
-            body = body.push(super::widgets::setting_group(
-                label,
-                self.expanded[kind as usize][tier as usize],
-                Message::Collapse(tier),
-                action,
-                group,
+                    })
+                    .into()
+            });
+            let rows = detection
+                .into_iter()
+                .chain([default.into()])
+                .chain(preserve)
+                .chain(children);
+            body = body.push(widgets::settings_section(
+                tier.label_key(),
+                widgets::settings_card(widgets::settings_rows(rows)),
             ));
         }
-        body = body.push(super::widgets::setting_title_with_help(
-            "common.rules",
-            "",
-            "priority_control.custom_rules_help",
-        ));
-        body = body.push(super::widgets::settings_card(
+        body
+    }
+
+    fn rules_view<'a>(
+        &'a self,
+        settings: &'a Settings,
+        kind: Kind,
+        candidates: &'a [super::app_picker::Candidate],
+        choices: Rc<[Value]>,
+    ) -> Column<'a, Message> {
+        let picker = column![
+            widgets::help_text("priority_control.custom_rules_help"),
             super::app_picker::view_with_path_selection(
                 &self.path,
                 candidates,
@@ -673,7 +695,8 @@ impl Editor {
                 (kind.can_add(settings, exact_path_input(&self.path))).then_some(Message::Add),
                 |path| kind.can_add(settings, path).then_some(true),
             ),
-        ));
+        ]
+        .spacing(design::space::SMALL);
         let mut rule_cards = Vec::new();
         for (index, rule) in kind.rules(settings).iter().enumerate() {
             let mut controls = Vec::new();
@@ -703,13 +726,15 @@ impl Editor {
                 ),
             ));
         }
-        body = body.push(super::widgets::process_rules_table(
-            Tier::ALL.map(|tier| tier.label()),
-            rule_cards,
-            false,
-        ));
-
-        scrollable(body).height(Fill).into()
+        column![
+            super::widgets::settings_card(picker),
+            super::widgets::process_rules_table(
+                Tier::ALL.map(|tier| tier.label()),
+                rule_cards,
+                false,
+            ),
+        ]
+        .spacing(super::widgets::CARD_GAP)
     }
 }
 pub(super) fn process_priority_setting_label(priority: ProcessPrioritySetting) -> String {
@@ -1056,12 +1081,11 @@ mod tests {
     }
 
     #[test]
-    fn priority_editor_actions_preserve_battery_inheritance_before_add() {
+    fn editing_rule_path_preserves_battery_inheritance_until_add() {
         let mut settings = SettingsEditor::with_settings(Settings::default());
         settings.select_power_source(PowerSourceProfile::OnBattery);
         let mut editor = Editor::default();
         let kind = Kind::Process;
-        editor.update(&mut settings, kind, Message::Collapse(Tier::Focus));
         editor.update(&mut settings, kind, Message::Path(settings_path()));
         assert!(settings.global().on_battery.is_none());
 

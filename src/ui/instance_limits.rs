@@ -1,10 +1,14 @@
-use super::{app_picker, design, widgets};
+use super::{
+    app_picker, design,
+    feature_tabs::{self, FeatureTab},
+    widgets,
+};
 use crate::{
     config::{InstanceLimitsRule, InstanceLimitsSettings},
     control::instance_limits::{paths_equal, validate_path},
 };
 use iced::{
-    widget::{column, text},
+    widget::{column, text, Column},
     Element, Fill,
 };
 use rust_i18n::t;
@@ -12,14 +16,12 @@ use rust_i18n::t;
 #[derive(Default)]
 pub(super) struct Editor {
     path: String,
-    settings_expanded: bool,
     draft: Option<(Option<usize>, InstanceLimitsRule, String)>,
 }
 
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Enabled(bool),
-    ToggleSettings,
     Notify(bool),
     Path(String),
     Browse,
@@ -54,13 +56,8 @@ impl Editor {
         Some(rule)
     }
 
-    pub(super) fn toggle_settings(&mut self) {
-        self.settings_expanded = !self.settings_expanded;
-    }
-
     pub(super) fn update(&mut self, settings: &mut InstanceLimitsSettings, message: Message) {
         match message {
-            Message::ToggleSettings => self.toggle_settings(),
             Message::Enabled(value) => settings.enabled = value,
             Message::Notify(value) => settings.notify = value,
             Message::Path(path) => self.path = path,
@@ -114,7 +111,40 @@ impl Editor {
         &'a self,
         settings: &'a InstanceLimitsSettings,
         candidates: &'a [app_picker::Candidate],
+        tab: FeatureTab,
+        scroll_clearance: f32,
     ) -> Element<'a, Message> {
+        let body = if tab == FeatureTab::Setup {
+            Self::setup(settings)
+        } else {
+            self.custom_rules(settings, candidates)
+        };
+        feature_tabs::scroll_content(body, scroll_clearance)
+    }
+
+    fn setup(settings: &InstanceLimitsSettings) -> Column<'_, Message> {
+        column![
+            widgets::toggle_card(
+                "instance_limits.enable",
+                settings.enabled,
+                Some(Message::Enabled),
+            ),
+            widgets::settings_section(
+                "nav.settings",
+                widgets::settings_card(widgets::setting_row(
+                    "instance_limits.notify",
+                    widgets::switch(settings.notify, Some(Message::Notify)),
+                )),
+            ),
+        ]
+        .spacing(widgets::CARD_GAP)
+    }
+
+    fn custom_rules<'a>(
+        &'a self,
+        settings: &'a InstanceLimitsSettings,
+        candidates: &'a [app_picker::Candidate],
+    ) -> Column<'a, Message> {
         let rules = settings
             .rules
             .iter()
@@ -147,7 +177,7 @@ impl Editor {
             .collect();
         let can_add = Self::can_add(settings, &self.path);
         let mut picker = column![
-            widgets::setting_title_with_help("common.rules", "", "instance_limits.rules_help"),
+            widgets::help_text("instance_limits.rules_help"),
             app_picker::view(
                 &self.path,
                 candidates,
@@ -170,29 +200,15 @@ impl Editor {
                     .push(text(error).size(design::typography::SECONDARY));
             }
         }
-        super::scrolling::scrollable(
-            column![
-                widgets::setting_group(
-                    "instance_limits.enable".to_string(),
-                    self.settings_expanded,
-                    Message::ToggleSettings,
-                    widgets::switch(settings.enabled, Some(Message::Enabled)),
-                    column![widgets::setting_row(
-                        "instance_limits.notify",
-                        widgets::switch(settings.notify, Some(Message::Notify)),
-                    )],
-                ),
-                widgets::settings_card(picker),
-                widgets::process_rules_table_with_notify(
-                    [t!("instance_limits.maximum").into_owned()],
-                    rules,
-                    false,
-                ),
-            ]
-            .spacing(widgets::CARD_GAP),
-        )
-        .height(Fill)
-        .into()
+        column![
+            widgets::settings_card(picker),
+            widgets::process_rules_table_with_notify(
+                [t!("instance_limits.maximum").into_owned()],
+                rules,
+                false,
+            ),
+        ]
+        .spacing(widgets::CARD_GAP)
     }
 
     pub(super) fn modal<'a>(

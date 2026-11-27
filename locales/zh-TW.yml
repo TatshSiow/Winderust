@@ -180,6 +180,10 @@ common:
   unavailable: "無法使用"
   custom: "自訂"
   status: "狀態"
+  setup: "設定"
+  advanced_settings: "進階設定"
+  exclusions: "排除項目"
+  power_plan: "電源計畫"
   current_power_plan: "目前電源計畫"
   active_plan_name: "%{name}（作用中）"
   running: "執行中"
@@ -483,6 +487,7 @@ settings:
 
 processor_power:
   invalid_percentage: "請輸入 0 到 100 的整數百分比。"
+  invalid_other_source: "%{source}的設定有誤。%{error}"
   invalid_processor_range: "最大處理器效能不得低於 %{minimum}%。"
   scheduling_policy: "長時間執行緒排程原則"
   scheduling_policy_help: "混合架構處理器上長時間執行緒的處理器偏好。「自動」由 Windows 依系統設定與服務品質（QoS）決定。"
@@ -499,6 +504,7 @@ processor_power:
   schedule_prefer_efficiency: "偏好有效率的處理器"
   schedule_automatic: "自動"
   processor_settings: "處理器設定"
+  scheduling_section: "執行緒排程"
   effective_power_mode: "目前生效的 Windows 電源模式：%{mode}"
   mode_unknown: "未知"
   mode_battery_saver: "省電模式"
@@ -721,8 +727,6 @@ adaptive_engine:
   enable: "啟用自適應引擎"
   enable_help: "在應用程式競爭 CPU 時間時調整資源分配。"
   enable_balanced_help: "此電源來源會先採用「平衡」預設。儲存後生效。"
-  setup: "設定"
-  exclusions: "排除項目"
   preset: "CPU 預設"
   preset_help: "為此電源來源選擇預設。儲存後生效。"
   preset_placeholder: "選擇預設"
@@ -745,6 +749,9 @@ adaptive_engine:
   cpu_pressure_help: "CPU 資源競爭時，暫時調整忙碌應用程式的設定。限制結束時會還原原有設定。"
 
 adaptive_processor_power:
+  core_parking_section: "核心停駐"
+  processor_performance_section: "處理器效能"
+  processor_boost_section: "處理器效能提升"
   enable: "啟用自適應處理器電源"
   enable_help: "透過 Winderust Adaptive 調整此電源來源的處理器效能與效能提升。暫時電源計畫作用期間會暫停手動切換與其他切換規則。關閉後釋出計畫。"
   waiting_for_power_source: "正在等待 Windows 回報電源來源。"
@@ -788,7 +795,6 @@ app_suspension:
   enable_help: "延遲一段時間後暫停背景應用程式，以降低 CPU 使用率。"
   background_delay: "背景暫停延遲"
   background_delay_help: "選定的應用程式必須在背景執行多久，才可暫停。"
-  additional_resume_options: "其他恢復執行選項"
   auto_resume_when_focused: "取得焦點時自動恢復執行"
   auto_resume_when_focused_help: "在應用程式取得焦點、使用切換應用程式的快速鍵或操作工作列時，恢復已暫停的應用程式。"
   invalid_delay: "%{setting}必須是 1 到 %{maximum} 秒之間的整數。"
@@ -1023,6 +1029,7 @@ memory_priority:
   priority_normal: "標準"
 
 sleep_prevention:
+  temporary_controls: "暫時計時器"
   temporary_keep_awake: "暫時保持喚醒"
   temporary_keep_display_on: "暫時保持螢幕開啟"
   timer_minutes: "分鐘"

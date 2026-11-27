@@ -87,33 +87,39 @@ pub(super) fn view<'a>(
     inputs: &'a Inputs,
 ) -> Element<'a, Message> {
     let activity = &settings.by_activity;
-    let plan_picker = |guid: &Option<String>, action: fn(Option<String>) -> Message| {
-        super::widgets::plan(guid.as_deref(), plans, action)
+    let plan_row = |key: &str, guid: Option<&str>, action: fn(Option<String>) -> Message| {
+        widgets::setting_row(
+            key,
+            iced::widget::container(widgets::plan(guid, plans, action)).width(design::SELECT_WIDTH),
+        )
     };
     let flag = |key: &str, value: bool, action: fn(bool) -> Message| {
         let available = input_change(&activity.input_detection, &action(!value)).is_some();
         widgets::setting_row(key, widgets::switch(value, available.then_some(action)))
     };
     let power_plans = widgets::settings_rows([
-        widgets::setting_row(
+        plan_row(
             "by_activity.idle_plan",
-            iced::widget::container(plan_picker(
-                &activity.power_plans.power_save_guid,
-                Message::IdlePlan,
-            ))
-            .width(design::SELECT_WIDTH),
+            activity.power_plans.power_save_guid.as_deref(),
+            Message::IdlePlan,
         )
         .into(),
-        widgets::setting_row(
+        plan_row(
             "by_activity.active_plan",
-            iced::widget::container(plan_picker(
-                &activity.power_plans.performance_guid,
-                Message::ActivePlan,
-            ))
-            .width(design::SELECT_WIDTH),
+            activity.power_plans.performance_guid.as_deref(),
+            Message::ActivePlan,
         )
         .into(),
     ]);
+    let idle_timeout = widgets::slider_setting("by_activity.idle_timeout", "s", move || {
+        widgets::slider_stepper(
+            activity.idle_timeout_seconds,
+            inputs.idle.as_deref(),
+            IDLE_TIMEOUT_RANGE,
+            1,
+            Message::IdleTimeout,
+        )
+    });
     scrollable(
         column![
             widgets::toggle_card(
@@ -121,45 +127,34 @@ pub(super) fn view<'a>(
                 activity.enabled,
                 Some(Message::Enabled)
             ),
-            widgets::heading(
-                rust_i18n::t!("by_activity.power_plans").to_string(),
-                design::typography::BODY
+            widgets::settings_section(
+                "by_activity.power_plans",
+                widgets::settings_card(power_plans),
             ),
-            widgets::settings_card(power_plans),
-            widgets::setting_title("by_activity.input_detection"),
-            widgets::settings_card(widgets::settings_rows([
-                flag(
-                    "by_activity.keyboard_input",
-                    activity.input_detection.keyboard,
-                    Message::Keyboard
-                )
-                .into(),
-                flag(
-                    "by_activity.mouse_input",
-                    activity.input_detection.mouse,
-                    Message::Mouse
-                )
-                .into(),
-                flag(
-                    "by_activity.controller_input",
-                    activity.input_detection.controller,
-                    Message::Controller
-                )
-                .into(),
-            ])),
-            widgets::settings_card(widgets::slider_setting(
-                "by_activity.idle_timeout",
-                "s",
-                move || {
-                    widgets::slider_stepper(
-                        activity.idle_timeout_seconds,
-                        inputs.idle.as_deref(),
-                        IDLE_TIMEOUT_RANGE,
-                        1,
-                        Message::IdleTimeout,
+            widgets::settings_section(
+                "by_activity.input_detection",
+                widgets::settings_card(widgets::settings_rows([
+                    flag(
+                        "by_activity.keyboard_input",
+                        activity.input_detection.keyboard,
+                        Message::Keyboard,
                     )
-                },
-            )),
+                    .into(),
+                    flag(
+                        "by_activity.mouse_input",
+                        activity.input_detection.mouse,
+                        Message::Mouse,
+                    )
+                    .into(),
+                    flag(
+                        "by_activity.controller_input",
+                        activity.input_detection.controller,
+                        Message::Controller,
+                    )
+                    .into(),
+                    idle_timeout,
+                ])),
+            ),
         ]
         .spacing(widgets::CARD_GAP),
     )

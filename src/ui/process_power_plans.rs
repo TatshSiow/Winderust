@@ -186,12 +186,6 @@ impl Editor {
                     &feature.rules,
                     status.rule_index,
                 );
-                let mut body = column![super::widgets::toggle_card(
-                    $enable,
-                    feature.enabled,
-                    Some(Message::Enabled)
-                ),]
-                .spacing(super::widgets::CARD_GAP);
                 let input = if self.match_by == MatchBy::ExecutableName {
                     app_picker::executable_name_input(
                         "app.exe",
@@ -301,8 +295,15 @@ impl Editor {
                             (!feature.rules.is_empty()).then_some(Message::Preview(preview)),
                         ),
                 );
-                body = body.push(heading).push(rules_body);
-                scrollable(body).height(Fill).into()
+                scrollable(
+                    column![
+                        widgets::toggle_card($enable, feature.enabled, Some(Message::Enabled)),
+                        column![heading, rules_body].spacing(design::space::SMALL),
+                    ]
+                    .spacing(widgets::CARD_GAP),
+                )
+                .height(Fill)
+                .into()
             }};
         }
         match kind {

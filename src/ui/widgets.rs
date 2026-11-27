@@ -33,8 +33,8 @@ pub(super) fn tooltip_surface(theme: &iced::Theme) -> iced::widget::container::S
 
 pub(super) const CARD_GAP: u32 = design::space::MEDIUM;
 pub(super) const CARD_PADDING: u32 = design::space::LARGE;
-pub(super) const SETTING_ROW_HEIGHT: u32 = 34;
-pub(super) const CARD_HEIGHT: u32 = SETTING_ROW_HEIGHT + 2 * CARD_PADDING;
+const CARD_ROW_MIN_HEIGHT: u32 = 40;
+const CARD_HEIGHT: u32 = CARD_ROW_MIN_HEIGHT + 2 * CARD_PADDING;
 pub(super) const RULE_ENABLE_WIDTH: u32 = 48;
 pub(super) const RULE_STATUS_WIDTH: u32 = 140;
 pub(super) const RULE_ACTIONS_WIDTH: u32 = 80;
@@ -429,6 +429,17 @@ pub(super) fn panel_tab<'a, M: Clone + 'a>(
     .padding([0, design::space::MEDIUM as u16])
     .style(move |theme, status| tab_style(theme, status, selected))
     .on_press(message)
+}
+
+pub(super) fn segmented_tabs<'a, M: Clone + 'a>(
+    tabs: impl IntoIterator<Item = (String, bool, M)>,
+) -> Element<'a, M> {
+    let tabs = tabs
+        .into_iter()
+        .fold(iced::widget::row![], |row, (label, selected, message)| {
+            row.push(panel_tab(label, selected, message))
+        });
+    iced::widget::container(tabs.wrap()).style(tab_bar).into()
 }
 
 pub(super) fn tab_bar(theme: &iced::Theme) -> iced::widget::container::Style {
@@ -845,12 +856,7 @@ pub(super) fn preset_picker_card<'a, M: 'a>(
     label: &str,
     control: impl Into<Element<'a, M>>,
 ) -> Element<'a, M> {
-    settings_card(
-        row![setting_title(label), control.into()]
-            .spacing(design::space::SMALL)
-            .align_y(iced::Center),
-    )
-    .into()
+    settings_card(setting_row(label, control)).into()
 }
 
 pub(super) fn select_field(
@@ -1030,7 +1036,7 @@ pub(super) fn setting_group<'a, M: Clone + 'a>(
     super::scrolling::repaint_group(
         iced::widget::container(
             iced::widget::column![
-                setting_disclosure_header(&label, expanded, message, action, CARD_PADDING as u16),
+                setting_disclosure_header(&label, expanded, message, action),
                 super::motion::wrap(
                     iced::widget::column![
                         iced::widget::container(settings_divider())
@@ -1048,40 +1054,17 @@ pub(super) fn setting_group<'a, M: Clone + 'a>(
     )
 }
 
-pub(super) fn setting_disclosure_row<'a, M: Clone + 'a>(
-    key: &str,
-    expanded: bool,
-    message: M,
-    action: impl Into<Element<'a, M>>,
-    content: iced::widget::Column<'a, M>,
-) -> Element<'a, M> {
-    iced::widget::column![
-        setting_disclosure_header(key, expanded, message, action, 0),
-        super::motion::wrap(
-            container(content).padding(
-                iced::Padding::ZERO
-                    .top(design::space::MEDIUM)
-                    .left(design::space::MEDIUM)
-            ),
-            expanded,
-            super::motion::Effect::Visible
-        )
-    ]
-    .into()
-}
-
 fn setting_disclosure_header<'a, M: Clone + 'a>(
     key: &str,
     expanded: bool,
     message: M,
     action: impl Into<Element<'a, M>>,
-    inset: u16,
 ) -> iced::widget::Stack<'a, M> {
     iced::widget::Stack::new()
         .push(
-            container(
+            container(setting_row(
+                key,
                 row![
-                    container(setting_title(key)).width(Fill),
                     action.into(),
                     super::motion::wrap(
                         super::navigation::glyph("icons/chevron-down.svg"),
@@ -1091,8 +1074,8 @@ fn setting_disclosure_header<'a, M: Clone + 'a>(
                 ]
                 .spacing(design::space::SMALL)
                 .align_y(iced::Center),
-            )
-            .padding(inset)
+            ))
+            .padding(CARD_PADDING as u16)
             .width(Fill),
         )
         .push_under(
@@ -1117,14 +1100,20 @@ pub(super) fn setting_row_with_unit<'a, M: 'a>(
     unit: &str,
     action: impl Into<Element<'a, M>>,
 ) -> iced::widget::Row<'a, M> {
-    setting_row_with_title(setting_title_with_unit(key, unit), action.into())
+    setting_row_with_title(setting_title_with_unit(key, unit), action)
 }
 
-fn setting_row_with_title<'a, M: 'a>(
+pub(super) fn setting_row_with_title<'a, M: 'a>(
     title: iced::widget::Column<'a, M>,
-    action: Element<'a, M>,
+    action: impl Into<Element<'a, M>>,
 ) -> Row<'a, M> {
-    row![container(title).width(Fill), action]
+    let label = row![
+        title,
+        iced::widget::Space::new().height(CARD_ROW_MIN_HEIGHT)
+    ]
+    .width(Fill)
+    .align_y(iced::Center);
+    row![label, action.into()]
         .spacing(design::space::MEDIUM)
         .align_y(iced::Center)
 }
@@ -1192,6 +1181,23 @@ pub(super) fn trailing_slider<'a, M: 'a>(control: Row<'a, M>) -> Container<'a, M
 
 pub(super) fn setting_title<'a, M: 'a>(key: &str) -> Element<'a, M> {
     setting_title_with_unit(key, "").into()
+}
+
+pub(super) fn settings_section<'a, M: 'a>(
+    key: &str,
+    body: impl Into<Element<'a, M>>,
+) -> Element<'a, M> {
+    column![setting_title(key), body.into()]
+        .spacing(design::space::SMALL)
+        .into()
+}
+
+pub(super) fn help_text<'a>(key: &str) -> iced::widget::Text<'a> {
+    text(rust_i18n::t!(key).into_owned())
+        .size(design::typography::SECONDARY)
+        .style(text::secondary)
+        .wrapping(text::Wrapping::WordOrGlyph)
+        .width(Fill)
 }
 
 pub(super) fn setting_title_with_unit<'a, M: 'a>(
@@ -1776,6 +1782,52 @@ mod card_hitbox_tests {
     }
 
     #[test]
+    fn standard_cards_share_a_height_across_controls() {
+        let cards = [
+            toggle_card("instance_limits.enable", true, Some(Message::Toggle)),
+            settings_card(setting_row(
+                "memory_trim.manual_trim",
+                action_button("Trim now").on_press(Message::Body),
+            ))
+            .into(),
+            settings_card(setting_row(
+                "common.default",
+                pick_list(["Default", "Normal"], Some("Default"), |_| Message::Body)
+                    .width(design::SELECT_WIDTH),
+            ))
+            .into(),
+            settings_card(numeric_setting("common.default", "s", || {
+                stepper("5", 1..=10, 1, Some(Message::Input))
+            }))
+            .into(),
+            settings_card(slider_setting("common.default", "%", || {
+                slider_stepper(5, None, 1..=10, 1, Message::Input)
+            }))
+            .into(),
+            setting_group(
+                "instance_limits.enable".into(),
+                false,
+                Message::Card,
+                action_button("Header").on_press(Message::Header),
+                iced::widget::Column::new(),
+            ),
+            card_button(row![text("Open")])
+                .on_press(Message::Body)
+                .into(),
+        ];
+        for card in cards {
+            interact(
+                card,
+                |node| {
+                    assert_eq!(node.bounds().height, CARD_HEIGHT as f32);
+                    Point::new(-1.0, -1.0)
+                },
+                false,
+            );
+        }
+    }
+
+    #[test]
     fn expandable_card_labels_and_body_share_the_standard_inset() {
         fn first_leaf(layout: Layout<'_>) -> Rectangle {
             layout
@@ -1792,7 +1844,10 @@ mod card_hitbox_tests {
                     let foreground = header_layout(node).children().last().unwrap();
                     let label = first_leaf(foreground);
                     assert_eq!(label.x, CARD_PADDING as f32);
-                    assert_eq!(label.y, CARD_PADDING as f32);
+                    assert!(label.y >= CARD_PADDING as f32);
+                    assert!(
+                        label.y + label.height <= foreground.bounds().height - CARD_PADDING as f32
+                    );
                     if expanded {
                         let body = control_bounds(layout, 140.0).unwrap();
                         assert_eq!(body.x, label.x);
@@ -1990,7 +2045,7 @@ mod step_tests {
                 2,
                 "description must be visible without hover"
             );
-            assert!(label.bounds().height > super::SETTING_ROW_HEIGHT as f32);
+            assert!(label.children()[1].bounds().height > 0.0);
             let control = node.children()[1].bounds();
             assert_eq!(control.width, 120.0);
             assert_eq!(control.height, super::design::BUTTON_HEIGHT as f32);

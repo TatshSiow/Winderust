@@ -118,6 +118,40 @@ impl Editor {
         candidates: &'a [app_picker::Candidate],
         settings_are_pending: bool,
     ) -> Element<'a, Message> {
+        let mut body = column![widgets::toggle_card(
+            "keep_running.enable",
+            settings.enabled,
+            Some(Message::Enabled)
+        )]
+        .spacing(widgets::CARD_GAP);
+        if settings.enabled && !status.observation_known {
+            body = body.push(
+                text(t!("keep_running.observation_unavailable").to_string()).style(text::secondary),
+            );
+        }
+        if let Some(error) = &status.last_error {
+            body = body.push(text(error).style(text::danger));
+        }
+        let body = body.push(widgets::settings_section(
+            "common.rules",
+            iced::widget::Column::with_children(self.custom_rules(
+                settings,
+                status,
+                candidates,
+                settings_are_pending,
+            ))
+            .spacing(widgets::CARD_GAP),
+        ));
+        super::scrolling::scrollable(body).height(Fill).into()
+    }
+
+    fn custom_rules<'a>(
+        &'a self,
+        settings: &'a KeepRunningSettings,
+        status: &'a KeepRunningSnapshot,
+        candidates: &'a [app_picker::Candidate],
+        settings_are_pending: bool,
+    ) -> [Element<'a, Message>; 2] {
         let rules = settings
             .rules
             .iter()
@@ -194,41 +228,21 @@ impl Editor {
                 )
             })
             .collect();
-        let mut body = column![
-            widgets::toggle_card(
-                "keep_running.enable",
-                settings.enabled,
-                Some(Message::Enabled)
-            ),
-            widgets::settings_card(
-                column![
-                    widgets::setting_title("common.rules"),
-                    app_picker::view_with_path_selection(
-                        &self.path,
-                        candidates,
-                        true,
-                        (Message::Path, |path| Message::Path(picked_path_input(path))),
-                        Message::Browse,
-                        Self::addable_rule(settings, exact_path_input(&self.path))
-                            .is_some()
-                            .then_some(Message::Add),
-                        |path| Self::addable_rule(settings, path).is_some().then_some(true),
-                    ),
-                ]
-                .spacing(design::space::SMALL),
-            ),
+        [
+            widgets::settings_card(app_picker::view_with_path_selection(
+                &self.path,
+                candidates,
+                true,
+                (Message::Path, |path| Message::Path(picked_path_input(path))),
+                Message::Browse,
+                Self::addable_rule(settings, exact_path_input(&self.path))
+                    .is_some()
+                    .then_some(Message::Add),
+                |path| Self::addable_rule(settings, path).is_some().then_some(true),
+            ))
+            .into(),
             widgets::process_rules_table_with_notify([], rules, true),
         ]
-        .spacing(widgets::CARD_GAP);
-        if settings.enabled && !status.observation_known {
-            body = body.push(
-                text(t!("keep_running.observation_unavailable").to_string()).style(text::secondary),
-            );
-        }
-        if let Some(error) = &status.last_error {
-            body = body.push(text(error).style(text::danger));
-        }
-        super::scrolling::scrollable(body).height(Fill).into()
     }
 
     pub(super) fn modal<'a>(

@@ -80,7 +80,7 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
   edits. Process List hides the card while its context menu or dialog is open
   and keeps the draft.
 - Constrain long process names, labels, and status values so they do not resize adjacent columns.
-- Group related settings beneath each section heading in one card, with shared internal dividers between complete rows. Every grouped card needs a concise, localized category heading outside its outline. Apply this to pages, preset editors, rule dialogs, and process details; independent collapsible groups use their own headers. Keep each label, description, and control together; avoid a separate card for every setting. Preserve independent collapsible feature groups.
+- Group related settings in one card with shared internal dividers between complete rows. The main toggle card uses its own title. Use Settings for basic behavior and task-specific headings for distinct controls. Keep a heading visually attached to its own group. A tab may serve as the heading for its rule editor. Independent collapsible groups use their own headers. Keep each label, description, and control together.
 - Avoid nested cards. Cards are for repeated rows, setting groups, status blocks, popovers, and tool surfaces.
 - Centered dialogs, Search, and picker popups are modal: shield background hover,
   pointer/touch actions, scrolling, typing, focus operations, and existing background
@@ -104,7 +104,9 @@ Prefer visible state, compact controls, and predictable rows. Use restrained acc
   disclosure for optional detail and settings subordinate to a visible toggle.
   Destination cards share a height and use a right chevron to open a page.
   Expandable groups use a down chevron when closed and an up chevron when open.
-  Settings cards grow to fit their rows and localized help.
+  Settings rows and collapsed group headers use a 40px minimum content height.
+  With 16px insets, standard one-row cards and destination cards are 72px tall.
+  Rows grow when localized text wraps or controls need to stack.
 - Place the rule picker and its validation feedback in a shared settings card
   below the rules heading. Keep dense rule lists in their own table surface.
 - Action and toggle cards use their full surface, including padding and blank space, as the hit target. Expandable cards toggle only from the full header, including its padding; expanded content never toggles the group. Keep one 16px inset for headers and bodies. Nested controls retain their own actions, cursor, and input handling, and disabled controls stay inactive.
@@ -217,6 +219,17 @@ hover/press; background shading supplies feedback.
 - The Settings Files card explains each file action before its picker opens. Export includes
   unsaved settings edits. A valid import replaces the active settings immediately and requires
   a clean settings draft.
+- Open feature editors on Setup when they have distinct tasks. Use Custom Rules for per-app
+  policies in Priority Control, Efficiency Mode, CPU Limiter, Resource Thresholds, Sleep
+  Prevention, Instance Limits, and App Suspension. Memory Trim uses Exclusions. Keep manual
+  trim and temporary sleep prevention controls in Setup.
+  Keep a feature's last selected tab for the session. Opening a feature page or switching
+  tabs starts at the top of the selected content and preserves the settings draft, power
+  profile, and side panel.
+- Power Plan Control puts the current plan and shared switching settings in Setup, ordered
+  switching rules in Automation, and the tuning editors in Advanced. Advanced Power Plan
+  Tuning uses Plugged In and On Battery tabs for the selected plan. Its target, Apply actions,
+  and validation of both drafts span the source tabs.
 - Adaptive Engine opens on Setup. Group the enable switch, CPU preset, and the
   selected preset's practical effect in one card. First enable stages Balanced
   when the selected source has factory tuning. Show a message if the engine is
@@ -232,19 +245,25 @@ hover/press; background shading supplies feedback.
   service hosts visible in the preset editor because presets capture it. Preset
   selection and enablement stage changes for the selected source through the
   shared Save and Discard flow.
-- Priority Control uses Focus / Visible Window / Background dropdown columns and expandable detail cards. Turning a row off does not lock its configuration. Runtime precedence and protection rules live in [Runtime contracts](runtime-contracts.md).
+- Priority Control Setup shows the Background, Focus, and Visible Window settings
+  in open cards. Use the same switch rows for detection, priority preservation,
+  and child protection. Turning a row off does not lock its configuration. Runtime
+  precedence and protection rules live in [Runtime contracts](runtime-contracts.md).
 - Place a Protect child processes switch inside each Priority Control feature's
   Foreground Detection and Visible Window Detection cards. Both switches
   default on and use the selected power profile and the standard Save flow.
 - Adaptive Processor Power lives under Power Plan Control. Its Plugged In and On Battery editors each have an enable switch, off by default, with a Preset dropdown below it. Both editors share the preset library. The dropdown stages tuning for the selected source. The Presets tab opens a read-only preview of the base policy and demand values for that source. Use preset stages the preview, and closing it preserves existing edits. Add preset names a copy of the selected source's tuning. List edits and tuning use the shared Save and Discard flow. Configuration remains editable while the feature is off.
-- The Base Processor Policy tab shows the Idle settings and the baseline inherited by higher-demand profiles. The Demand Profiles tab explains automatic profile selection and shows one boost policy and one boost mode each for Background Pressure and Focus and Launch.
+- The Base Processor Policy tab groups Idle settings into Core parking, Processor performance, and Processor boost. These values are the baseline inherited by higher-demand profiles. The Demand Profiles tab explains automatic profile selection and shows one boost policy and one boost mode each for Background Pressure and Focus and Launch.
 - The Adaptive Processor Power Status rail reports live ownership, errors, and restoration. The source profile selected for editing can differ from the live power source.
 - The minimum unparked controls for CPU restraint follow the normal core parking control
   in Base Processor Policy. Use separate rows for Windows processor efficiency classes 0
   and 1. Preset previews name the normal policy at 0% and show the configured percentage
   otherwise.
 - Prefer one setting per row when possible.
-- Use collapsible setting groups for advanced or multi-row settings.
+- Give basic behavior its own section when it forms a distinct group. Keep a
+  feature switch with its immediate control when they belong together, as with
+  Adaptive Engine's preset. Use collapsible groups for longer and
+  advanced settings where they help keep frequent controls in view.
 - Multi-setting cards use subtle 1px neutral, theme-aware dividers between complete settings, with even inset spacing. Keep labels, descriptions, and associated controls together. Expanded groups separate their header and body with the same divider; single-setting cards have no extra leading/trailing rules. Use shared widgets helpers and preserve dense table styling.
 - Put concise feature explanations and essential consequences in the relevant card. Show setting descriptions directly beneath their labels in readable 13px secondary text, with controls aligned on the right. Let rows and group headers grow when labels or descriptions wrap; never clip help with a fixed height. Use the shared setting-title layout for live pages and preset dialogs. Preserve icon-action and truncated-data tooltips, localization, units, and dense process/log table geometry.
 - Settings that affect Windows behavior should show conservative defaults and explicit enable controls.
@@ -284,10 +303,10 @@ hover/press; background shading supplies feedback.
   precedence and external plan changes are kept. Overlapping rules share the
   plan captured before automatic switching began.
 - By Focus, By Running App, and By Time keep their rule editors without separate
-  restoration controls. By CPU Load retains Target plan and optional Else plan;
-  By Activity retains Idle plan and Active plan plus its profile-specific Idle
-  timeout. These plan selections remain visible independently of the shared
-  restoration switch.
+  restoration controls. By CPU Load retains Target plan and optional Else plan.
+  By Activity places its enable switch above both selectors under Power plans. The
+  Input detection card holds the input switches and the profile-specific Idle
+  timeout. Plan selections remain visible independently of the shared restoration switch.
 - Explain rule priority under the Automation heading above the five switching
   modes, which appear in priority order. Show the current switching status in
   the current-plan card, including the reason when switching is paused.
@@ -339,8 +358,8 @@ hover/press; background shading supplies feedback.
 ### Efficiency Mode
 
 - Place Efficiency Mode after Process Priority under Priority Control.
-- The master group owns the Background tier default. Foreground Detection and Visible
-  Window Detection use the same collapsible toggle-plus-value pattern as Priority Control.
+- Keep the Background default visible in the master card. Show each detection
+  switch, tier default, and child protection together in its card.
 - Custom rules match an exact executable path. The compact rule table has Active, App Name,
   Executable Path, Focus, Visible Window, Background, and Actions columns. Each policy column
   selects Default, Enabled, or Disabled. Default inherits the matching page-wide value.
@@ -354,8 +373,8 @@ hover/press; background shading supplies feedback.
   CPU time rules use Profile Limit, Custom, and No Time Cap in the Focus,
   Visible Window, and Background columns. Profile Limit uses Winderust's configured
   limit for the selected power profile and app state. No Time Cap turns off the cap for
-  that state. The Enable CPU Limiter card starts collapsed and expands directly to
-  the selected profile's three default limit controls. Custom tiers show a 1% to 100%
+  that state. Setup shows the Enable CPU Limiter card followed by the selected
+  profile's three default limit cards under CPU time. Custom tiers show a 1% to 100%
   Allowed CPU Time slider. At 100%, Winderust applies no CPU time cap. Inactive rules
   retain their selections.
   Explain both methods beside the selector. The Load-triggered affinity form
@@ -406,32 +425,35 @@ hover/press; background shading supplies feedback.
   page and each Watchdog editor. Keep feature actions and help on their pages.
 - Each Watchdog feature uses shared settings across power sources and omits the
   Plugged In and On Battery selector.
-- Keep shared options for Resource Thresholds, Memory Trim, and Instance Limits
-  in each feature's expandable toggle card. Let users configure these while the
-  feature is off. Keep rule tables separate.
-- Put Background Suspension Delay and Auto resume when focused in the expandable
-  Enable App Suspension card. Let users configure both while the feature is off.
-  Group TCP activity detection, Audio playback detection, and Temporary resume
-  fallback under Additional resume options. Keep each switch independent and
-  expand timing controls inline.
-- Memory Trim uses a single row for the Manual trim title and Trim now button.
-  The button uses saved settings and displays the running state while a request
+- Resource Thresholds and Instance Limits keep shared options under Settings
+  below their enable switches. Settings remain editable while the feature is off.
+- App Suspension Setup puts Background Suspension Delay and Auto resume when focused
+  under Settings. Advanced settings follows on Setup with separate TCP activity,
+  Audio playback, and Temporary resume cards. Show each timer with its corresponding
+  switch and keep it editable while the switch is off. Setup can scroll the last
+  timer above the floating Save card. Per-app policies live in Custom Rules.
+- Memory Trim starts with a Manual trim card above Enable Memory Trim. Trim now
+  sits on the right, uses saved settings, and shows the running state while a request
   is pending. Show the last completed trim in the same card, with the observed
   working-set reduction and measurement coverage.
-- Put Exclude focused apps and Exclude apps with visible windows in the
-  expandable Memory Trim toggle card. Both apply to automatic trimming and
-  Trim now.
+- Put each Memory Trim exclusion switch and threshold in its own card under
+  Settings. Exclude focused apps and Exclude apps with visible windows apply
+  to automatic trimming and Trim now.
 - Place Notify beside Enable in the Resource Thresholds, Instance Limits, and
   Keep Running rule tables. Enable controls whether the rule runs. Notify
   controls Windows alert delivery. Resource Thresholds and Instance Limits
   also retain their feature-wide notification switches. For Keep Running,
   Notify opts the rule into a single alert when retries run out and Resume is needed.
-- The Keep Running rule editor shows the selected application and one optional
-  arguments field. Show Custom Rules with a title and the app picker.
-- Give Temporary keep awake and Temporary keep display on their own action rows.
-  Show an editable duration and Start when idle, then the end time and Stop when active.
-- Keep the Instance Limits rule table focused on the configured maximum and rule
+- Put the Keep Running enable switch and Custom Rules on one page. Show the
+  app picker above the table. The rule editor shows the selected application and
+  one optional arguments field.
+- Put Temporary keep awake and Temporary keep display on under one Temporary timers
+  heading with separate action rows. Show an editable duration and Start when idle, then the end time
+  and Stop when active.
+- Put the Instance Limits enable and notification switches in Setup and the app
+  picker and rule table in Custom Rules. Keep the table focused on the configured maximum and rule
   controls. Report detected incidents and notification outcomes in the Action Log.
+- Use shared inline help for the rule picker when its tab already names the task.
 - Keep Instance Balancing under CPU Control. Advanced Controls contains Timer
   Resolution and Win32 Priority Separation.
 
@@ -490,8 +512,8 @@ hover/press; background shading supplies feedback.
   with an opaque preview. Picker changes apply only on
   submit; Cancel, Escape, focus loss, and navigation discard them. Saved-color
   menus retain Escape/outside-click/focus-loss dismissal and reset with their item.
-- Priority Control keeps each control's advanced options in its own
-  expandable row under Focus, Visible Window, and Background. Process and Memory
+- Priority Control keeps options visible in their Focus, Visible Window, and
+  Background section cards. Process and Memory
   Priority include detection/preservation controls. Detection falls through to the
   next tier without changing CPU restraint's focus protection. Process Priority
   protects existing High/Realtime classes; same-or-higher/lower preservation defaults

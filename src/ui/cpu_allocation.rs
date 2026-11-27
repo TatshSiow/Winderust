@@ -380,31 +380,15 @@ impl Editor {
         candidates: &'a [super::app_picker::Candidate],
     ) -> Element<'a, Message> {
         let feature = settings(s, k);
-        let mut body = column![
-            super::widgets::toggle_card(
-                match k {
-                    Kind::Soft => "cpu_sets_soft.enable",
-                    Kind::Hard => "processor_affinity_hard.enable",
-                },
-                feature.enabled,
-                Some(Message::Enabled),
-            ),
-            super::widgets::setting_title_with_help(
-                "common.rules",
-                "",
-                "cpu_allocation.rules_help"
-            ),
-            super::widgets::settings_card(super::app_picker::view_with_path_selection(
-                &self.path,
-                candidates,
-                true,
-                (Message::Path, |path| Message::Path(picked_path_input(path))),
-                Message::Browse,
-                (can_add(s, exact_path_input(&self.path))).then_some(Message::Add),
-                |path| can_add(s, path).then_some(true)
-            ))
-        ]
-        .spacing(super::widgets::CARD_GAP);
+        let picker = super::app_picker::view_with_path_selection(
+            &self.path,
+            candidates,
+            true,
+            (Message::Path, |path| Message::Path(picked_path_input(path))),
+            Message::Browse,
+            can_add(s, exact_path_input(&self.path)).then_some(Message::Add),
+            |path| can_add(s, path).then_some(true),
+        );
         let mut rules = Vec::new();
         let mut rule_options: Option<(SelectionCatalog, Rc<[_]>)> = None;
         for (i, r) in feature.rules.iter().enumerate() {
@@ -483,11 +467,36 @@ impl Editor {
                 ),
             ));
         }
-        body = body.push(super::widgets::process_rules_table(
+        let table = super::widgets::process_rules_table(
             [Tier::Focus, Tier::Visible, Tier::Background].map(|tier| tier.label()),
             rules,
             false,
-        ));
+        );
+        let mut body = column![
+            super::widgets::toggle_card(
+                match k {
+                    Kind::Soft => "cpu_sets_soft.enable",
+                    Kind::Hard => "processor_affinity_hard.enable",
+                },
+                feature.enabled,
+                Some(Message::Enabled),
+            ),
+            super::widgets::settings_section(
+                "common.rules",
+                column![
+                    super::widgets::settings_card(
+                        column![
+                            super::widgets::help_text("cpu_allocation.rules_help"),
+                            picker
+                        ]
+                        .spacing(design::space::SMALL),
+                    ),
+                    table,
+                ]
+                .spacing(super::widgets::CARD_GAP),
+            ),
+        ]
+        .spacing(super::widgets::CARD_GAP);
         if !self.error.is_empty() {
             body = body.push(text(self.error.clone()).style(text::danger));
         }

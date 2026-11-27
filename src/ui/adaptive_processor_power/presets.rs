@@ -1,10 +1,11 @@
 use super::{
-    design, edit_settings, scrollable, widgets, Editor, Message, PRESET_NAME_INPUT_ID,
+    edit_settings, scrollable, widgets, Editor, Message, PRESET_NAME_INPUT_ID,
     RESTRAINT_CORE_PARKING_MIN_CLASS1_LABEL, RESTRAINT_CORE_PARKING_MIN_LABEL,
 };
 use crate::application::SettingsEditor;
 use crate::config::{AdaptiveEngineSettings, AdaptiveProcessorPowerPreset, PowerSourceProfile};
 use crate::power::{AdaptivePowerBoostValues, ProcessorBoostMode, ProcessorPowerValues};
+use crate::ui::design;
 use iced::widget::{column, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;

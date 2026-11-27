@@ -1,6 +1,7 @@
 use super::design;
+use super::feature_tabs::{FeatureTab, CONTENT_ID};
 use super::priority_control::{ChildProtection, Tier};
-use super::widgets::{checkbox, pick_list};
+use super::widgets::{self, checkbox, pick_list};
 use crate::application::SettingsEditor;
 use crate::config::{EfficiencyModeRule, EfficiencyModeSettings, ProcessRuleMode, Settings};
 use crate::foreground::process_list::normalize_path_slashes;
@@ -15,7 +16,6 @@ use rust_i18n::t;
 #[derive(Default)]
 pub(super) struct Editor {
     path: String,
-    expanded: [bool; 3],
 }
 #[derive(Debug, Clone)]
 pub(super) enum Message {
@@ -29,8 +29,6 @@ pub(super) enum Message {
     RuleEnabled(usize, bool),
     RuleMode(usize, Tier, ProcessRuleMode),
     Remove(String),
-
-    Collapse(Tier),
 }
 impl Editor {
     pub(super) fn update(&mut self, settings: &mut SettingsEditor, message: Message) {
@@ -120,10 +118,6 @@ impl Editor {
                         .retain(|rule| rule.executable_path != path);
                 }
             }
-            Message::Collapse(tier) => {
-                let expanded = &mut self.expanded[tier as usize];
-                *expanded = !*expanded;
-            }
             Message::Enabled(_) | Message::Detection(..) | Message::Default(..) => {}
         }
     }
@@ -131,10 +125,18 @@ impl Editor {
         &'a self,
         settings: &'a Settings,
         candidates: &'a [super::app_picker::Candidate],
+        tab: FeatureTab,
     ) -> Element<'a, Message> {
         let settings = &settings.efficiency_mode;
-        let enabled = settings.enabled;
-        let mut body = column![].spacing(super::widgets::CARD_GAP);
+        if tab == FeatureTab::CustomRules {
+            return self.rules_view(settings, candidates);
+        }
+        let mut body = column![widgets::toggle_card(
+            "efficiency_mode.enable",
+            settings.enabled,
+            Some(Message::Enabled),
+        )]
+        .spacing(widgets::CARD_GAP);
         for (tier, detection, value) in [
             (Tier::Background, true, settings.background_efficiency_mode),
             (
@@ -148,54 +150,54 @@ impl Editor {
                 settings.visible_window_efficiency_mode,
             ),
         ] {
-            let label = match tier {
-                Tier::Background => "efficiency_mode.enable",
-                Tier::Focus => "common.foreground_detection",
-                Tier::VisibleWindow => "common.visible_window_detection",
-            }
-            .to_string();
-            let action: Element<'_, Message> = if tier == Tier::Background {
-                super::widgets::switch(enabled, Some(Message::Enabled))
-            } else {
-                super::widgets::switch(
-                    detection,
-                    Some(move |value| Message::Detection(tier, value)),
+            let detection_row = tier.detection_key().map(|label| {
+                widgets::setting_row(
+                    label,
+                    widgets::switch(
+                        detection,
+                        Some(move |value| Message::Detection(tier, value)),
+                    ),
                 )
-            };
+                .into()
+            });
             let choices = [
-                super::widgets::Choice(false, t!("common.disabled").to_string()),
-                super::widgets::Choice(true, t!("common.enabled").to_string()),
+                widgets::Choice(false, t!("common.disabled").to_string()),
+                widgets::Choice(true, t!("common.enabled").to_string()),
             ];
             let selected = choices[usize::from(value)].clone();
-            let mut group = column![super::widgets::setting_row(
+            let default = widgets::setting_row(
                 "common.default",
                 pick_list(choices, Some(selected), move |v| {
                     Message::Default(tier, v.0)
                 })
                 .width(design::SELECT_WIDTH),
-            )]
-            .spacing(design::space::MEDIUM);
-            if let Some(protection) = tier.child_protection() {
-                group = group.push(super::widgets::settings_divider()).push(
-                    protection.row(settings.child_protection, move |value| {
+            );
+            let protection = tier.child_protection().map(|protection| {
+                protection
+                    .row(settings.child_protection, move |value| {
                         Message::ProtectChildren(protection, value)
-                    }),
-                );
-            }
-            body = body.push(super::widgets::setting_group(
-                label,
-                self.expanded[tier as usize],
-                Message::Collapse(tier),
-                action,
-                group,
+                    })
+                    .into()
+            });
+            let rows = detection_row
+                .into_iter()
+                .chain([default.into()])
+                .chain(protection);
+            body = body.push(widgets::settings_section(
+                tier.label_key(),
+                widgets::settings_card(widgets::settings_rows(rows)),
             ));
         }
-        body = body.push(super::widgets::setting_title_with_help(
-            "common.rules",
-            "",
-            "efficiency_mode.custom_rules_help",
-        ));
-        body = body.push(super::widgets::settings_card(
+        scrollable(body).id(CONTENT_ID).height(Fill).into()
+    }
+
+    fn rules_view<'a>(
+        &'a self,
+        settings: &'a EfficiencyModeSettings,
+        candidates: &'a [super::app_picker::Candidate],
+    ) -> Element<'a, Message> {
+        let picker = column![
+            widgets::help_text("efficiency_mode.custom_rules_help"),
             super::app_picker::view_with_path_selection(
                 &self.path,
                 candidates,
@@ -205,7 +207,8 @@ impl Editor {
                 (can_add(settings, exact_path_input(&self.path))).then_some(Message::Add),
                 |path| can_add(settings, path).then_some(true),
             ),
-        ));
+        ]
+        .spacing(design::space::SMALL);
         let mut rule_cards = Vec::new();
         for (index, rule) in settings.custom_rules.iter().enumerate() {
             let mut controls = Vec::new();
@@ -234,12 +237,20 @@ impl Editor {
                 ),
             ));
         }
-        body = body.push(super::widgets::process_rules_table(
-            Tier::ALL.map(|tier| tier.label()),
-            rule_cards,
-            false,
-        ));
-        scrollable(body).height(Fill).into()
+        scrollable(
+            column![
+                super::widgets::settings_card(picker),
+                super::widgets::process_rules_table(
+                    Tier::ALL.map(|tier| tier.label()),
+                    rule_cards,
+                    false,
+                ),
+            ]
+            .spacing(super::widgets::CARD_GAP),
+        )
+        .id(CONTENT_ID)
+        .height(Fill)
+        .into()
     }
 }
 fn rule_mode(rule: &EfficiencyModeRule, tier: Tier) -> ProcessRuleMode {
@@ -276,8 +287,6 @@ mod tests {
         settings.select_power_source(crate::config::PowerSourceProfile::OnBattery);
         let mut editor = Editor::default();
         editor.update(&mut settings, Message::Enabled(false));
-        assert_eq!(editor.expanded, [false; 3]);
-        editor.update(&mut settings, Message::Collapse(Tier::Focus));
         editor.update(&mut settings, Message::Path(r"C:\Apps\editor.exe".into()));
         assert!(settings.global().on_battery.is_none());
         editor.update(&mut settings, Message::Add);

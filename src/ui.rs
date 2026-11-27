@@ -12,6 +12,7 @@ mod cpu_allocation;
 mod cpu_limiter;
 mod design;
 mod efficiency_mode;
+mod feature_tabs;
 mod home;
 mod hotkeys;
 mod instance_balancing;

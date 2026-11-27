@@ -201,12 +201,14 @@ cargo run --locked --features render-smoke -- --render-smoke
 
 Append `--adaptive-restraint-only` to run the Adaptive Engine child-affinity
 and executable-name pattern scenarios in English and Traditional Chinese.
+Append `--feature-tabs-only` to check the tabbed editors, compact Watchdog pages,
+and power-plan layouts, including mixed temporary timer states.
 Append `--resource-thresholds-only` to check Resource Thresholds settings,
 action selectors, and Preview matches at wide and compact sizes.
 Append `--memory-trim-only` to check Memory Trim settings in both languages and
 at wide and compact sizes.
-Append `--priority-control-only` to check the expanded Priority Control
-detection cards and child-protection drafts in both languages.
+Append `--priority-control-only` to check the Priority Control detection cards,
+preservation switches, and child-protection drafts in both languages.
 Append `--watchdog-only` to capture the configured Watchdog pages and rule
 editors in both languages.
 

@@ -381,44 +381,38 @@ fn manual_switch(
         });
         disabled_plan_selector(message)
     };
-    let label = column![widgets::setting_title("common.current_power_plan")]
-        .extend(help.map(|key| {
-            text(t!(key).to_string())
-                .size(design::typography::SECONDARY)
-                .style(text::secondary)
-                .into()
-        }))
-        .spacing(design::space::TINY)
-        .width(Fill);
-    row![label, selector]
-        .spacing(design::space::MEDIUM)
-        .align_y(iced::Center)
-        .into()
+    match help {
+        Some(key) => widgets::setting_row_with_title(
+            widgets::setting_title_with_help("common.current_power_plan", "", key),
+            selector,
+        ),
+        None => widgets::setting_row("common.current_power_plan", selector),
+    }
+    .into()
 }
 
 fn managed_switch() -> Element<'static, Message> {
     const SINGLE_ROW_MIN_WIDTH: f32 = 560.0;
 
     responsive(|size| {
-        let label = container(widgets::setting_title("common.current_power_plan")).width(Fill);
         let selector = disabled_plan_selector(ADAPTIVE_PLAN_NAME.to_owned());
         let shortcut = widgets::action_button(t!("nav.adaptive_processor_power").to_string())
             .style(widgets::tertiary_button)
             .on_press(Message::AdaptiveProcessorPower);
         if size.width < SINGLE_ROW_MIN_WIDTH {
             column![
-                row![label, selector]
-                    .spacing(design::space::MEDIUM)
-                    .align_y(iced::Center),
+                widgets::setting_row("common.current_power_plan", selector),
                 shortcut,
             ]
-            .spacing(design::space::TINY)
             .into()
         } else {
-            row![label, shortcut, selector]
-                .spacing(design::space::MEDIUM)
-                .align_y(iced::Center)
-                .into()
+            widgets::setting_row(
+                "common.current_power_plan",
+                row![shortcut, selector]
+                    .spacing(design::space::MEDIUM)
+                    .align_y(iced::Center),
+            )
+            .into()
         }
     })
     .height(iced::Shrink)

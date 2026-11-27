@@ -112,29 +112,16 @@ impl Editor {
         status: &TimerResolutionSnapshot,
         candidates: &'a [super::app_picker::Candidate],
     ) -> Element<'a, Message> {
-        let mut body = column![
-            super::widgets::toggle_card(
-                "timer_resolution.enable",
-                s.enabled,
-                Some(Message::Enabled)
-            ),
-            super::widgets::setting_title_with_help(
-                "common.rules",
-                "",
-                "timer_resolution.rules_help"
-            ),
-            super::widgets::settings_card(super::app_picker::view_with_path_selection(
-                &self.path,
-                candidates,
-                true,
-                (Message::Path, |path| Message::Path(picked_path_input(path))),
-                Message::Browse,
-                can_add_timer_resolution_process(s, exact_path_input(&self.path))
-                    .then_some(Message::Add),
-                |path| can_add_timer_resolution_process(s, path).then_some(true)
-            ))
-        ]
-        .spacing(super::widgets::CARD_GAP);
+        let picker = super::app_picker::view_with_path_selection(
+            &self.path,
+            candidates,
+            true,
+            (Message::Path, |path| Message::Path(picked_path_input(path))),
+            Message::Browse,
+            can_add_timer_resolution_process(s, exact_path_input(&self.path))
+                .then_some(Message::Add),
+            |path| can_add_timer_resolution_process(s, path).then_some(true),
+        );
         let mut cards = Vec::new();
         for (i, r) in s.rules.iter().enumerate() {
             let formatted;
@@ -171,14 +158,36 @@ impl Editor {
                 ),
             ));
         }
-        body = body.push(super::widgets::process_rules_table(
+        let table = super::widgets::process_rules_table(
             [super::widgets::label_with_unit(
                 &t!("timer_resolution.requested"),
                 "ms",
             )],
             cards,
             false,
-        ));
+        );
+        let mut body = column![
+            super::widgets::toggle_card(
+                "timer_resolution.enable",
+                s.enabled,
+                Some(Message::Enabled),
+            ),
+            super::widgets::settings_section(
+                "common.rules",
+                column![
+                    super::widgets::settings_card(
+                        column![
+                            super::widgets::help_text("timer_resolution.rules_help"),
+                            picker,
+                        ]
+                        .spacing(design::space::SMALL),
+                    ),
+                    table,
+                ]
+                .spacing(super::widgets::CARD_GAP),
+            ),
+        ]
+        .spacing(super::widgets::CARD_GAP);
 
         if let Some(error) = &status.last_error {
             body = body.push(text(error.clone()));

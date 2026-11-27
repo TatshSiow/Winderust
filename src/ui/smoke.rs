@@ -37,7 +37,26 @@ const RESOURCE_NAME_INPUT: usize = 120;
 const APP_SUSPENSION_FOCUS_OFF: usize = 121;
 const ADAPTIVE_RESTRAINT_RECOVERY: usize = 122;
 const ADAPTIVE_SETUP_ENABLED: usize = 123;
-const EXTRA_STATES: usize = 124;
+const KEEP_AWAKE_MIXED: usize = 124;
+const APP_SUSPENSION_SETUP_COMPACT: usize = 125;
+const FEATURE_TAB_STATES_START: usize = 126;
+const FEATURE_TAB_STATES: &[(Page, FeatureTab)] = &[
+    (Page::PowerPlanControl, FeatureTab::Automation),
+    (Page::PowerPlanControl, FeatureTab::Advanced),
+    (Page::MemoryTrim, FeatureTab::Exclusions),
+    (Page::AppSuspension, FeatureTab::CustomRules),
+    (Page::CpuLimiter, FeatureTab::CustomRules),
+    (Page::DynamicPriorityBoost, FeatureTab::CustomRules),
+    (Page::EfficiencyMode, FeatureTab::CustomRules),
+    (Page::GpuPriority, FeatureTab::CustomRules),
+    (Page::IoPriority, FeatureTab::CustomRules),
+    (Page::MemoryPriority, FeatureTab::CustomRules),
+    (Page::ProcessPriority, FeatureTab::CustomRules),
+    (Page::ResourceThresholds, FeatureTab::CustomRules),
+    (Page::SleepPrevention, FeatureTab::CustomRules),
+    (Page::ThreadPriority, FeatureTab::CustomRules),
+];
+const EXTRA_STATES: usize = FEATURE_TAB_STATES_START + FEATURE_TAB_STATES.len();
 pub(super) struct Run {
     pages: Vec<Page>,
     remaining: VecDeque<usize>,
@@ -76,7 +95,57 @@ impl Run {
 
     fn scenarios(pages: &[Page]) -> VecDeque<usize> {
         let extra_start = pages.len() * 2;
-        if std::env::args().any(|arg| arg == "--priority-control-only") {
+        if std::env::args().any(|arg| arg == "--feature-tabs-only") {
+            std::iter::once(0)
+                .chain((0..extra_start).filter(|index| {
+                    let page = pages[index % pages.len()];
+                    !FeatureTab::for_page(page).is_empty()
+                        || matches!(
+                            page,
+                            Page::AdvancedPowerPlanTuning
+                                | Page::AdaptiveProcessorPower
+                                | Page::ByActivity
+                                | Page::ByFocus
+                                | Page::ByRunningApp
+                                | Page::ByCpuLoad
+                                | Page::ByTime
+                                | Page::CpuSetsSoft
+                                | Page::ProcessorAffinityHard
+                                | Page::InstanceBalancing
+                                | Page::TimerResolution
+                        )
+                }))
+                .chain(
+                    [
+                        11,
+                        19,
+                        20,
+                        21,
+                        51,
+                        58,
+                        60,
+                        61,
+                        62,
+                        63,
+                        64,
+                        65,
+                        71,
+                        72,
+                        MEMORY_TRIM_PARTIAL,
+                        MEMORY_TRIM_UNKNOWN,
+                        KEEP_AWAKE_READY,
+                        KEEP_AWAKE_ACTIVE,
+                        KEEP_AWAKE_MIXED,
+                        APP_SUSPENSION_FOCUS_OFF,
+                        APP_SUSPENSION_SETUP_COMPACT,
+                        CPU_LIMITER_AFFINITY_COMPACT,
+                    ]
+                    .into_iter()
+                    .chain(FEATURE_TAB_STATES_START..EXTRA_STATES)
+                    .map(|extra| extra_start + extra),
+                )
+                .collect()
+        } else if std::env::args().any(|arg| arg == "--priority-control-only") {
             // Start on Home so the initial frame is captured before navigating.
             std::iter::once(0)
                 .chain((0..extra_start).filter(|index| {
@@ -136,8 +205,10 @@ impl Run {
                     MEMORY_TRIM_UNKNOWN,
                     KEEP_AWAKE_READY,
                     KEEP_AWAKE_ACTIVE,
+                    KEEP_AWAKE_MIXED,
                     RESOURCE_NAME_INPUT,
                     APP_SUSPENSION_FOCUS_OFF,
+                    APP_SUSPENSION_SETUP_COMPACT,
                 ])
                 .map(|extra| extra_start + extra)
                 .collect()
@@ -160,57 +231,60 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
     }
     if run.ticks == 0 {
         let chinese = extra.map_or(run.index >= run.pages.len(), |index| {
-            matches!(
-                index,
-                1 | 5
-                    | 7
-                    | 9
-                    | 11
-                    | 36
-                    | 40
-                    | 42
-                    | 45
-                    | 46
-                    | 49
-                    | 52
-                    | 55
-                    | 56
-                    | 59
-                    | 61
-                    | 63
-                    | 65
-                    | 67
-                    | 69
-                    | 71
-                    | 72
-                    | 74
-                    | 76
-                    | 78
-                    | 80
-                    | 82
-                    | 83
-                    | 85
-                    | 86
-                    | 88
-                    | 90
-                    | 91
-                    | 93
-                    | PROCESS_LIST_COMMIT_COMPACT
-                    | HOME_ENABLED_FEATURES_COMPACT
-                    | CONTRAST_LIGHT_PROCESS_LIST
-                    | HOME_HISTORY_COMPACT
-                    | RESOURCE_PREVIEW_COMPACT
-                    | SHOW_SHORTCUT_READY
-                    | DOCK_FOCUS_COMPACT
-                    | MEMORY_TRIM_UNKNOWN
-                    | KEEP_AWAKE_ACTIVE
-                    | APP_SUSPENSION_FOCUS_OFF
-                    | ADAPTIVE_RESTRAINT_RECOVERY
-                    | ADAPTIVE_SETUP_ENABLED
-                    | GPU_MEMORY_COMPACT
-                    | CPU_LIMITER_AFFINITY_COMPACT
-                    | CPU_LIMITER_PROCESSORS_COMPACT
-            )
+            index >= FEATURE_TAB_STATES_START && index % 2 == 1
+                || matches!(
+                    index,
+                    1 | 5
+                        | 7
+                        | 9
+                        | 11
+                        | 36
+                        | 40
+                        | 42
+                        | 45
+                        | 46
+                        | 49
+                        | 52
+                        | 55
+                        | 56
+                        | 59
+                        | 61
+                        | 63
+                        | 65
+                        | 67
+                        | 69
+                        | 71
+                        | 72
+                        | 74
+                        | 76
+                        | 78
+                        | 80
+                        | 82
+                        | 83
+                        | 85
+                        | 86
+                        | 88
+                        | 90
+                        | 91
+                        | 93
+                        | PROCESS_LIST_COMMIT_COMPACT
+                        | HOME_ENABLED_FEATURES_COMPACT
+                        | CONTRAST_LIGHT_PROCESS_LIST
+                        | HOME_HISTORY_COMPACT
+                        | RESOURCE_PREVIEW_COMPACT
+                        | SHOW_SHORTCUT_READY
+                        | DOCK_FOCUS_COMPACT
+                        | MEMORY_TRIM_UNKNOWN
+                        | KEEP_AWAKE_ACTIVE
+                        | KEEP_AWAKE_MIXED
+                        | APP_SUSPENSION_FOCUS_OFF
+                        | APP_SUSPENSION_SETUP_COMPACT
+                        | ADAPTIVE_RESTRAINT_RECOVERY
+                        | ADAPTIVE_SETUP_ENABLED
+                        | GPU_MEMORY_COMPACT
+                        | CPU_LIMITER_AFFINITY_COMPACT
+                        | CPU_LIMITER_PROCESSORS_COMPACT
+                )
         });
         let page = match extra {
             Some(0) => Page::EfficiencyMode,
@@ -233,7 +307,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(5 | 70 | 71) => Page::AdaptiveProcessorPower,
             Some(11 | MEMORY_TRIM_PARTIAL | MEMORY_TRIM_UNKNOWN) => Page::MemoryTrim,
             Some(RAIL_RESIZE_TALL) => Page::AdvancedControls,
-            Some(KEEP_AWAKE_READY | KEEP_AWAKE_ACTIVE) => Page::SleepPrevention,
+            Some(KEEP_AWAKE_READY | KEEP_AWAKE_ACTIVE | KEEP_AWAKE_MIXED) => Page::SleepPrevention,
             Some(12 | 82) => Page::ByFocus,
             Some(13) => Page::Home,
             Some(14) => Page::ProcessList,
@@ -243,7 +317,9 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(18) => Page::EfficiencyMode,
             Some(19) => Page::ByActivity,
             Some(20) => Page::AdvancedPowerPlanTuning,
-            Some(21 | 72 | APP_SUSPENSION_FOCUS_OFF) => Page::AppSuspension,
+            Some(21 | 72 | APP_SUSPENSION_FOCUS_OFF | APP_SUSPENSION_SETUP_COMPACT) => {
+                Page::AppSuspension
+            }
             Some(22) => Page::LanguageAndAppearance,
             Some(23) => Page::About,
             Some(25 | 87..=88) => Page::ProcessPriority,
@@ -280,6 +356,9 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(62..=65) => Page::InstanceLimits,
             Some(66..=69) => Page::InstanceBalancing,
             Some(83) => Page::ByTime,
+            Some(index @ FEATURE_TAB_STATES_START..) => {
+                FEATURE_TAB_STATES[index - FEATURE_TAB_STATES_START].0
+            }
             _ => run.pages[run.index % run.pages.len()],
         };
         run.ticks = 1;
@@ -308,7 +387,10 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             app.settings
                 .edit_global(|settings| settings.advanced.show_advanced_controls = true);
         }
-        if matches!(extra, Some(KEEP_AWAKE_READY | KEEP_AWAKE_ACTIVE)) {
+        if matches!(
+            extra,
+            Some(KEEP_AWAKE_READY | KEEP_AWAKE_ACTIVE | KEEP_AWAKE_MIXED)
+        ) {
             use crate::sleep_prevention::TemporarySleepPrevention;
 
             let status = &mut Arc::make_mut(&mut app.status.feature_status).sleep_prevention;
@@ -316,7 +398,8 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             let active = extra == Some(KEEP_AWAKE_ACTIVE);
             status.temporary.set(
                 TemporarySleepPrevention::KeepAwake,
-                active.then(|| now + Duration::from_secs(15 * 60)),
+                (active || extra == Some(KEEP_AWAKE_MIXED))
+                    .then(|| now + Duration::from_secs(15 * 60)),
             );
             status.temporary.set(
                 TemporarySleepPrevention::KeepDisplayOn,
@@ -354,6 +437,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             assert_eq!(app.appearance.palette().background, iced::Color::BLACK);
         }
         if extra.is_none() && page == Page::ResourceThresholds {
+            app.resource_thresholds = Default::default();
             let mut expected = app.settings.global().resource_thresholds.clone();
             expected.rules[1].notify = false;
             let _ = app.update(Message::ResourceThresholds(
@@ -361,7 +445,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             ));
             assert_eq!(app.settings.global().resource_thresholds, expected);
         }
-        // Exercise disclosure messages and long/compact navigation without enabling automation.
+        // Exercise the rule table and editor without enabling automation.
         if matches!(extra, Some(62..=65)) {
             let paths = [
                 r"C:\Apps\Long Application Name\renderer.exe",
@@ -387,13 +471,6 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             assert_eq!(app.settings.global().instance_limits, expected);
             if matches!(extra, Some(64..=65)) {
                 let _ = app.update(Message::InstanceLimits(instance_limits::Message::Edit(0)));
-            }
-            if extra == Some(63) {
-                let before = app.settings.global().instance_limits.clone();
-                let _ = app.update(Message::InstanceLimits(
-                    instance_limits::Message::ToggleSettings,
-                ));
-                assert_eq!(app.settings.global().instance_limits, before);
             }
         }
         if matches!(extra, Some(60..=61)) {
@@ -568,6 +645,30 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         }
         let was_open = app.side_panel_open;
         let navigate = app.update(Message::Page(page));
+        let feature_tab = match extra {
+            Some(index @ FEATURE_TAB_STATES_START..) => {
+                FEATURE_TAB_STATES[index - FEATURE_TAB_STATES_START].1
+            }
+            Some(
+                51..=53
+                | 58..=59
+                | 62..=65
+                | 72
+                | 89..=91
+                | RESOURCE_NAME_INPUT
+                | RESOURCE_PREVIEW_WIDE
+                | RESOURCE_PREVIEW_COMPACT
+                | CPU_LIMITER_AFFINITY_WIDE
+                | CPU_LIMITER_AFFINITY_COMPACT
+                | CPU_LIMITER_PROCESSORS_COMPACT,
+            ) => FeatureTab::CustomRules,
+            _ => FeatureTab::Setup,
+        };
+        let before = app.settings.runtime_settings_snapshot().value;
+        let switch_tab = app.update(Message::FeatureTab(feature_tab));
+        assert_eq!(app.feature_tab(), feature_tab);
+        assert_eq!(app.settings.runtime_settings_snapshot().value, before);
+        assert_eq!(app.side_panel_open, was_open);
         if matches!(extra, Some(66..=69)) {
             use crate::action_log::ActionLogResult;
             use crate::automation::InstanceBalancingDetail;
@@ -692,9 +793,6 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     resource_thresholds::Message::CancelRule,
                 ));
                 let _ = app.update(Message::ResourceThresholds(
-                    resource_thresholds::Message::ToggleSettings,
-                ));
-                let _ = app.update(Message::ResourceThresholds(
                     resource_thresholds::Message::Path(r"C:\Apps\worker.exe".into()),
                 ));
                 assert_eq!(app.settings.global().resource_thresholds, before);
@@ -715,9 +813,6 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         }
         if extra == Some(RESOURCE_NAME_INPUT) {
             app.resource_thresholds = resource_thresholds::Editor::default();
-            let _ = app.update(Message::ResourceThresholds(
-                resource_thresholds::Message::ToggleSettings,
-            ));
             let _ = app.update(Message::ResourceThresholds(
                 resource_thresholds::Message::MatchBy(
                     super::super::process_rules::MatchBy::ExecutableName,
@@ -788,26 +883,6 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         }
         if page == Page::EfficiencyMode && (extra.is_none() || matches!(extra, Some(0 | 18))) {
             app.efficiency_mode = Default::default();
-            for tier in [
-                priority_control::Tier::Focus,
-                priority_control::Tier::VisibleWindow,
-            ] {
-                let _ = app.update(Message::EfficiencyMode(efficiency_mode::Message::Collapse(
-                    tier,
-                )));
-            }
-        }
-        if let Some(kind) = priority_kind(page).filter(|_| extra.is_none()) {
-            app.priority = Default::default();
-            for tier in [
-                priority_control::Tier::Focus,
-                priority_control::Tier::VisibleWindow,
-            ] {
-                let _ = app.update(Message::Priority(
-                    kind,
-                    priority_control::Message::Collapse(tier),
-                ));
-            }
         }
         if let Some(index @ 4..=11) = extra {
             if index <= 10 {
@@ -912,7 +987,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     let _ = app.update(open());
                 }
             } else {
-                let before = app.settings.edit_global(|settings| {
+                app.settings.edit_global(|settings| {
                     settings
                         .memory_trim
                         .exclusions
@@ -921,10 +996,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                             enabled: false,
                             ..Default::default()
                         });
-                    settings.memory_trim.clone()
                 });
-                let _ = app.update(Message::Trim(memory_trim::Message::ToggleSettings));
-                assert_eq!(app.settings.global().memory_trim, before);
             }
         }
         if matches!(extra, Some(7 | ADAPTIVE_NAME_PATTERN)) {
@@ -954,14 +1026,11 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             assert_eq!(app.side_panel_open, !before);
         }
         if extra == Some(20) {
-            for source in [
-                advanced_power_plan_tuning::Source::Ac,
-                advanced_power_plan_tuning::Source::Battery,
-            ] {
-                let _ = app.update(Message::PowerTuning(
-                    advanced_power_plan_tuning::Message::Group(source),
-                ));
-            }
+            let _ = app.update(Message::PowerTuning(
+                advanced_power_plan_tuning::Message::SourceTab(
+                    advanced_power_plan_tuning::Source::Battery,
+                ),
+            ));
         }
         if extra == Some(18) {
             check_child_protection_drafts(app);
@@ -986,14 +1055,6 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         if matches!(extra, Some(21 | APP_SUSPENSION_FOCUS_OFF)) {
             app.suspension = Default::default();
             app.settings.app_suspension.enabled = true;
-            let before = app.settings.app_suspension.clone();
-            let _ = app.update(Message::Suspension(app_suspension::Message::ToggleSettings));
-            if extra == Some(21) {
-                for group in [1, 2] {
-                    let _ = app.update(Message::Suspension(app_suspension::Message::Group(group)));
-                }
-            }
-            assert_eq!(app.settings.app_suspension, before);
         }
         if matches!(extra, Some(21 | 72 | APP_SUSPENSION_FOCUS_OFF)) {
             assert_eq!(app.page, Page::AppSuspension);
@@ -1002,6 +1063,38 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     r"C:\Apps\Example\example.exe",
                 )];
             app.settings = SettingsEditor::with_settings((*app.settings).clone());
+        }
+        if matches!(extra, Some(21 | APP_SUSPENSION_SETUP_COMPACT)) {
+            use app_suspension::{Delay, Message as SuspensionMessage};
+
+            let saved = app.settings.persisted().app_suspension.clone();
+            let duration = if saved.network_wake_duration_seconds == 45 {
+                60
+            } else {
+                45
+            };
+            let _ = app.update(Message::Suspension(SuspensionMessage::Delay(
+                Delay::Network,
+                duration.to_string(),
+            )));
+            assert_eq!(
+                app.settings.app_suspension.network_wake_duration_seconds,
+                duration
+            );
+            assert!(!app.settings.app_suspension.network_wake_enabled);
+            let draft = app.settings.app_suspension.clone();
+            for tab in [FeatureTab::CustomRules, FeatureTab::Setup] {
+                let _ = app.update(Message::FeatureTab(tab));
+                assert_eq!(app.feature_tab(), tab);
+                assert_eq!(app.settings.app_suspension, draft);
+                assert_eq!(
+                    app.settings
+                        .runtime_settings_snapshot()
+                        .value
+                        .app_suspension,
+                    saved
+                );
+            }
         }
         if extra == Some(APP_SUSPENSION_FOCUS_OFF) {
             let _ = app.update(Message::Suspension(
@@ -1610,7 +1703,6 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             use crate::memory_trim::{MemoryTrimReadback, MemoryTrimSnapshot, MemoryTrimStatus};
 
             app.trim = memory_trim::Editor::default();
-            let _ = app.update(Message::Trim(memory_trim::Message::ToggleSettings));
             if extra == Some(MEMORY_TRIM_UNKNOWN) {
                 let _ = app.update(Message::Trim(memory_trim::Message::ExcludeForeground(
                     false,
@@ -1640,7 +1732,9 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 | MEMORY_TRIM_PARTIAL
                 | MEMORY_TRIM_UNKNOWN
                 | KEEP_AWAKE_ACTIVE
+                | KEEP_AWAKE_MIXED
                 | APP_SUSPENSION_FOCUS_OFF
+                | APP_SUSPENSION_SETUP_COMPACT
                 | GPU_MEMORY_COMPACT
                 | CPU_LIMITER_AFFINITY_COMPACT
                 | CPU_LIMITER_PROCESSORS_COMPACT
@@ -1663,6 +1757,8 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(33 | RAIL_RESIZE_TALL) => iced::Size::new(900.0, 1000.0),
             Some(34) => iced::Size::new(1536.0, 960.0),
             Some(4 | 70 | ADAPTIVE_RESTRAINT_RECOVERY) => iced::Size::new(1120.0, 920.0),
+            Some(FEATURE_TAB_STATES_START..) if chinese => iced::Size::new(900.0, 620.0),
+            Some(FEATURE_TAB_STATES_START..) => iced::Size::new(1120.0, 760.0),
             _ => iced::Size::new(
                 if extra.is_some_and(|i| i >= 13) {
                     1920.0
@@ -1683,6 +1779,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         return Some(Task::batch([
             iced::window::resize(window, size),
             navigate,
+            switch_tab,
             search,
             navigation,
         ]));
@@ -1761,9 +1858,13 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
         ));
     }
-    if extra == Some(72) && run.ticks == 3 {
+    if matches!(
+        extra,
+        Some(62..=63 | 72 | MEMORY_TRIM_UNKNOWN | APP_SUSPENSION_SETUP_COMPACT)
+    ) && run.ticks == 3
+    {
         return Some(iced::widget::operation::snap_to(
-            "app-suspension-settings",
+            feature_tabs::CONTENT_ID,
             iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
         ));
     }

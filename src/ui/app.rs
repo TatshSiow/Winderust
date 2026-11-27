@@ -1,14 +1,16 @@
 use super::{
     action_log, adaptive_engine, adaptive_processor_power, advanced_power_plan_tuning,
-    app_suspension, by_activity, cpu_allocation, cpu_limiter, design, efficiency_mode, home,
-    instance_balancing, instance_limits, interrupt_timing, keep_running, memory_trim, navigation,
-    power_plan_control, power_rules, priority_control, process_list, process_power_plans,
-    resource_thresholds, settings_pages, sleep_prevention, status_rail, tasks, timer_resolution,
-    widgets, win32_priority_separation, window_frame,
+    app_suspension, by_activity, cpu_allocation, cpu_limiter, design, efficiency_mode,
+    feature_tabs, home, instance_balancing, instance_limits, interrupt_timing, keep_running,
+    memory_trim, navigation, power_plan_control, power_rules, priority_control, process_list,
+    process_power_plans, resource_thresholds, settings_pages, sleep_prevention, status_rail, tasks,
+    timer_resolution, widgets, win32_priority_separation, window_frame,
 };
 use crate::ui::scrolling::{repaint_popup, scrollable, SCROLLBAR_GUTTER};
+use feature_tabs::FeatureTab;
 use std::{
     cell::RefCell,
+    collections::HashMap,
     path::PathBuf,
     sync::{Arc, Mutex},
     time::Duration,
@@ -93,6 +95,10 @@ impl SidePanelTab {
     }
 }
 
+fn reset_scroll(id: &'static str) -> Task<Message> {
+    iced::widget::operation::snap_to(id, iced::widget::scrollable::RelativeOffset::START)
+}
+
 fn page_header<'a>(
     breadcrumb: Element<'a, Message>,
     profiles: Option<Element<'a, Message>>,
@@ -116,6 +122,12 @@ fn page_header<'a>(
 
 const FLOATING_CARD_BOTTOM_INSET: u32 = design::space::CONTROL;
 const PAGE_BOTTOM_INSET: f32 = 38.0;
+const SAVE_CARD_SCROLL_CLEARANCE: f32 = (FLOATING_CARD_BOTTOM_INSET
+    + 2 * widgets::CARD_PADDING
+    + design::space::SECTION
+    + 2 * design::space::SMALL
+    + design::BUTTON_HEIGHT) as f32
+    - PAGE_BOTTOM_INSET;
 // Share the same vertical margin between the two edges so the editor keeps its height.
 const PAGE_TOP_INSET: f32 = 2.0 * design::space::SECTION as f32 - PAGE_BOTTOM_INSET;
 
@@ -387,6 +399,7 @@ pub(crate) fn run(
                 navigation_search_scope: SearchScope(None),
                 navigation_search_selected: 0,
                 navigation: navigation::Flyout::default(),
+                feature_tabs: HashMap::new(),
                 side_panel_open: false,
                 side_panel_tab: SidePanelTab::initial_for_page(Page::Home),
                 preferences: settings_pages::Editor::default(),
@@ -707,6 +720,7 @@ struct WinderustApp {
     navigation_search_scope: SearchScope,
     navigation_search_selected: usize,
     navigation: navigation::Flyout,
+    feature_tabs: HashMap<Page, FeatureTab>,
     side_panel_open: bool,
     side_panel_tab: SidePanelTab,
     preferences: settings_pages::Editor,
@@ -792,6 +806,7 @@ enum Message {
     DismissError,
     NavigateHistory(bool),
     Navigation(navigation::Event),
+    FeatureTab(FeatureTab),
     SidePanelTab(SidePanelTab),
     ToggleSidePanel,
     CloseSidePanel,
@@ -881,6 +896,13 @@ impl Message {
 }
 
 impl WinderustApp {
+    fn feature_tab(&self) -> FeatureTab {
+        self.feature_tabs
+            .get(&self.page)
+            .copied()
+            .unwrap_or_default()
+    }
+
     fn search_choices(&self) -> Vec<Page> {
         navigation_search_choices(
             &self.navigation_search,
@@ -1362,6 +1384,12 @@ impl WinderustApp {
                 self.navigation_search.clear();
             }
             Message::Navigation(event) => return self.update_navigation(event),
+            Message::FeatureTab(tab) => {
+                if self.feature_tab() != tab && FeatureTab::for_page(self.page).contains(&tab) {
+                    self.feature_tabs.insert(self.page, tab);
+                    return reset_scroll(feature_tabs::CONTENT_ID);
+                }
+            }
             Message::SidePanelTab(tab) => {
                 if SidePanelTab::for_page(self.page).contains(&tab) {
                     self.side_panel_tab = tab;
@@ -1675,9 +1703,6 @@ impl WinderustApp {
             Message::InstanceLimits(instance_limits::Message::Browse) => {
                 return self.browse(Page::InstanceLimits);
             }
-            Message::InstanceLimits(instance_limits::Message::ToggleSettings) => {
-                self.instance_limits.toggle_settings();
-            }
             Message::InstanceLimits(message) => {
                 self.settings.edit_global(|settings| {
                     self.instance_limits
@@ -1702,9 +1727,6 @@ impl WinderustApp {
             }
             Message::ResourceThresholds(resource_thresholds::Message::Tab(resource)) => {
                 self.resource_thresholds.select_tab(resource);
-            }
-            Message::ResourceThresholds(resource_thresholds::Message::ToggleSettings) => {
-                self.resource_thresholds.toggle_settings();
             }
             Message::ResourceThresholds(resource_thresholds::Message::ToggleMonitorSettings(
                 resource,
@@ -1807,6 +1829,11 @@ impl WinderustApp {
             {
                 return self.save_settings();
             }
+            Message::PowerTuning(advanced_power_plan_tuning::Message::SourceTab(source)) => {
+                if self.power_tuning.select_source_tab(source) {
+                    return reset_scroll(advanced_power_plan_tuning::CONTENT_ID);
+                }
+            }
             Message::PowerTuning(message) => {
                 self.power_tuning
                     .update(&mut self.settings, &self.power_plans, message)
@@ -1870,10 +1897,7 @@ impl WinderustApp {
             Message::PollInterruptTiming => self.interrupt_timing.poll(),
             Message::Adaptive(adaptive_engine::Message::TuningTab(tab)) => {
                 if self.adaptive.select_tab(tab) {
-                    return iced::widget::operation::snap_to(
-                        adaptive_engine::CONTENT_ID,
-                        iced::widget::scrollable::RelativeOffset::START,
-                    );
+                    return reset_scroll(adaptive_engine::CONTENT_ID);
                 }
             }
             Message::Adaptive(message) => {
@@ -1886,6 +1910,11 @@ impl WinderustApp {
                     self.side_panel_tab = SidePanelTab::Presets;
                 }
                 self.adaptive.update(&mut self.settings, message);
+            }
+            Message::AdaptiveProcessorPower(adaptive_processor_power::Message::Tab(tab)) => {
+                if self.adaptive_processor_power.select_tab(tab) {
+                    return reset_scroll(adaptive_processor_power::CONTENT_ID);
+                }
             }
             Message::AdaptiveProcessorPower(message) => {
                 let focus_name = matches!(
@@ -3574,13 +3603,14 @@ impl WinderustApp {
                 .show_update
                 .then(|| floating_update_card(&self.preferences))
         };
+        let content = self.page_view(settings_are_pending, read_power_source, size.height);
+        let content = match feature_tabs::view(self.page, self.feature_tab(), Message::FeatureTab) {
+            Some(tabs) => column![tabs, content].spacing(widgets::CARD_GAP).into(),
+            None => content,
+        };
         let content = container(super::motion::wrap(
             super::motion::wrap(
-                super::scrolling::repaint_group(self.page_view(
-                    settings_are_pending,
-                    read_power_source,
-                    size.height,
-                )),
+                super::scrolling::repaint_group(content),
                 true,
                 super::motion::Effect::Content(self.power_source as u64),
             ),
@@ -3804,6 +3834,12 @@ impl WinderustApp {
         shell_height: f32,
     ) -> Element<'_, Message> {
         let general = &self.settings.global().general;
+        let tab = self.feature_tab();
+        let scroll_clearance = if settings_are_pending {
+            SAVE_CARD_SCROLL_CLEARANCE
+        } else {
+            0.0
+        };
         let runtime_power_rules = || {
             let context = self.status.power_plan_rule_context.as_ref()?;
             (context.source == self.power_source).then(|| match context.source {
@@ -3818,6 +3854,7 @@ impl WinderustApp {
                     &self.settings.global().sleep_prevention,
                     &self.candidates,
                     self.status.feature_status.sleep_prevention.temporary,
+                    tab,
                 )
                 .map(Message::SleepPrevention),
             Page::AppSuspension => self
@@ -3827,6 +3864,8 @@ impl WinderustApp {
                     &self.status.feature_status.app_suspension,
                     &self.unavailable_candidates,
                     &self.candidates,
+                    tab,
+                    scroll_clearance,
                 )
                 .map(Message::Suspension),
             Page::ResourceThresholds => self
@@ -3834,11 +3873,17 @@ impl WinderustApp {
                 .view(
                     &self.settings.global().resource_thresholds,
                     &self.candidates,
+                    tab,
                 )
                 .map(Message::ResourceThresholds),
             Page::InstanceLimits => self
                 .instance_limits
-                .view(&self.settings.global().instance_limits, &self.candidates)
+                .view(
+                    &self.settings.global().instance_limits,
+                    &self.candidates,
+                    tab,
+                    scroll_clearance,
+                )
                 .map(Message::InstanceLimits),
             Page::InstanceBalancing => self
                 .instance_balancing
@@ -3867,6 +3912,8 @@ impl WinderustApp {
                         &self.candidates,
                         trim_available,
                         self.manual_trim_pending,
+                        tab,
+                        scroll_clearance,
                     )
                     .map(Message::Trim)
             }
@@ -3920,7 +3967,7 @@ impl WinderustApp {
                 .map(|m| Message::PowerRules(power_rules::Kind::CpuLoad, m)),
             Page::EfficiencyMode => self
                 .efficiency_mode
-                .view(&self.settings, &self.candidates)
+                .view(&self.settings, &self.candidates, tab)
                 .map(Message::EfficiencyMode),
             Page::CpuSetsSoft => self
                 .soft_allocation
@@ -3945,6 +3992,8 @@ impl WinderustApp {
                     &self.settings,
                     priority_control::Kind::Process,
                     &self.candidates,
+                    tab,
+                    scroll_clearance,
                 )
                 .map(|m| Message::Priority(priority_control::Kind::Process, m)),
             Page::ThreadPriority => self
@@ -3953,11 +4002,19 @@ impl WinderustApp {
                     &self.settings,
                     priority_control::Kind::Thread,
                     &self.candidates,
+                    tab,
+                    scroll_clearance,
                 )
                 .map(|m| Message::Priority(priority_control::Kind::Thread, m)),
             Page::IoPriority => self
                 .priority
-                .view(&self.settings, priority_control::Kind::Io, &self.candidates)
+                .view(
+                    &self.settings,
+                    priority_control::Kind::Io,
+                    &self.candidates,
+                    tab,
+                    scroll_clearance,
+                )
                 .map(|m| Message::Priority(priority_control::Kind::Io, m)),
             Page::GpuPriority => self
                 .priority
@@ -3965,6 +4022,8 @@ impl WinderustApp {
                     &self.settings,
                     priority_control::Kind::Gpu,
                     &self.candidates,
+                    tab,
+                    scroll_clearance,
                 )
                 .map(|m| Message::Priority(priority_control::Kind::Gpu, m)),
             Page::MemoryPriority => self
@@ -3973,6 +4032,8 @@ impl WinderustApp {
                     &self.settings,
                     priority_control::Kind::Memory,
                     &self.candidates,
+                    tab,
+                    scroll_clearance,
                 )
                 .map(|m| Message::Priority(priority_control::Kind::Memory, m)),
             Page::DynamicPriorityBoost => self
@@ -3981,6 +4042,8 @@ impl WinderustApp {
                     &self.settings,
                     priority_control::Kind::DynamicBoost,
                     &self.candidates,
+                    tab,
+                    scroll_clearance,
                 )
                 .map(|m| Message::Priority(priority_control::Kind::DynamicBoost, m)),
 
@@ -4021,6 +4084,8 @@ impl WinderustApp {
                     &self.candidates,
                     self.settings.global().general.enabled,
                     self.cpu_limiter_rule_status(read_power_source),
+                    tab,
+                    scroll_clearance,
                 )
                 .map(Message::CpuLimiter),
             Page::ProcessList => self
@@ -4053,45 +4118,51 @@ impl WinderustApp {
                 )
                 .map(Message::Preferences),
             Page::PowerPlanControl => scrollable(
-                column![
-                    power_plan_control::view(
-                        &self.status.power_plan_status,
-                        &self.power_plans,
-                        self.power_plans_loaded,
-                        self.power_plans_loading,
-                        self.settings.persisted().general.enabled,
-                        &self.power_plan_control,
-                    )
-                    .map(Message::PowerPlanControl),
-                    widgets::heading(
-                        t!("power_plan_control.switching_settings").to_string(),
-                        design::typography::BODY,
-                    ),
-                    widgets::settings_card(widgets::settings_rows([
-                        widgets::setting_row(
-                            "power_plan_control.pause_plugged",
-                            widgets::switch(
-                                general.pause_power_plan_switching_while_plugged_in,
-                                Some(Message::PausePowerPlans),
-                            ),
-                        )
-                        .into(),
-                        widgets::setting_row(
-                            "power_plan_control.restore_previous_plan",
-                            widgets::switch(
-                                general.restore_previous_power_plan,
-                                Some(Message::RestorePreviousPowerPlan),
-                            ),
-                        )
-                        .into(),
-                        self.power_plan_control
-                            .fallback_polling_interval_field(general.check_interval_ms)
+                if matches!(tab, FeatureTab::Automation | FeatureTab::Advanced) {
+                    self.child_pages()
+                } else {
+                    column![
+                        widgets::settings_section(
+                            "common.power_plan",
+                            power_plan_control::view(
+                                &self.status.power_plan_status,
+                                &self.power_plans,
+                                self.power_plans_loaded,
+                                self.power_plans_loading,
+                                self.settings.persisted().general.enabled,
+                                &self.power_plan_control,
+                            )
                             .map(Message::PowerPlanControl),
-                    ])),
-                    self.child_pages(),
-                ]
-                .spacing(widgets::CARD_GAP),
+                        ),
+                        widgets::settings_section(
+                            "power_plan_control.switching_settings",
+                            widgets::settings_card(widgets::settings_rows([
+                                widgets::setting_row(
+                                    "power_plan_control.pause_plugged",
+                                    widgets::switch(
+                                        general.pause_power_plan_switching_while_plugged_in,
+                                        Some(Message::PausePowerPlans),
+                                    ),
+                                )
+                                .into(),
+                                widgets::setting_row(
+                                    "power_plan_control.restore_previous_plan",
+                                    widgets::switch(
+                                        general.restore_previous_power_plan,
+                                        Some(Message::RestorePreviousPowerPlan),
+                                    ),
+                                )
+                                .into(),
+                                self.power_plan_control
+                                    .fallback_polling_interval_field(general.check_interval_ms)
+                                    .map(Message::PowerPlanControl),
+                            ])),
+                        ),
+                    ]
+                    .spacing(widgets::CARD_GAP)
+                },
             )
+            .id(feature_tabs::CONTENT_ID)
             .height(Fill)
             .into(),
             Page::ActionLog => self
@@ -4108,28 +4179,30 @@ impl WinderustApp {
 
     fn child_pages(&self) -> iced::widget::Column<'_, Message> {
         let mut pages = column![].spacing(widgets::CARD_GAP);
-        if self.page == Page::PowerPlanControl {
-            pages = pages.push(widgets::setting_title_with_help(
-                "power_plan_control.automation",
-                "",
-                "power_plan_control.rule_priority",
-            ));
+        let power_tab = (self.page == Page::PowerPlanControl).then(|| self.feature_tab());
+        if power_tab == Some(FeatureTab::Automation) {
+            pages = pages.push(
+                text(t!("power_plan_control.rule_priority").into_owned())
+                    .size(design::typography::SECONDARY)
+                    .style(text::secondary),
+            );
         }
         if let Some(children) = self.page.child_pages() {
-            for page in children.iter().filter(|page| **page != self.page) {
-                if self.page == Page::PowerPlanControl && *page == Page::AdvancedPowerPlanTuning {
-                    pages = pages.push(widgets::heading(
-                        t!("settings.advanced").to_string(),
-                        design::typography::BODY,
-                    ));
+            for &page in children.iter().filter(|page| **page != self.page) {
+                let advanced = matches!(
+                    page,
+                    Page::AdvancedPowerPlanTuning | Page::AdaptiveProcessorPower
+                );
+                if power_tab.is_some_and(|tab| (tab == FeatureTab::Advanced) != advanced) {
+                    continue;
                 }
                 let mut heading = row![
-                    navigation::icon(*page, self.page == *page),
+                    navigation::icon(page, false),
                     widgets::heading(page.label(), design::typography::BODY).width(Fill)
                 ]
                 .align_y(iced::Center);
                 if self.settings.global().general.show_feature_status_on_cards {
-                    if let Some(enabled) = navigation::feature_page_enabled(&self.settings, *page) {
+                    if let Some(enabled) = navigation::feature_page_enabled(&self.settings, page) {
                         heading = heading.push(
                             text(
                                 if enabled {
@@ -4145,7 +4218,7 @@ impl WinderustApp {
                     }
                 }
                 heading = heading.push(navigation::glyph("icons/chevron-right.svg"));
-                pages = pages.push(widgets::card_button(heading).on_press(Message::Page(*page)));
+                pages = pages.push(widgets::card_button(heading).on_press(Message::Page(page)));
             }
         }
         pages

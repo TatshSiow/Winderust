@@ -9,7 +9,7 @@ use crate::foreground::process_list::{normalize_path_slashes, same_executable_na
 use crate::ui::process_rules::{
     can_add_exact_process_candidate, can_add_executable_name, exact_path_input, picked_path_input,
 };
-use crate::ui::scrolling::{scrollable, vertical_gutter};
+use crate::ui::scrolling::{repaint_group, scrollable, scrollable_pane, vertical_gutter};
 use iced::widget::{column, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
@@ -56,8 +56,8 @@ impl TuningTab {
     const ALL: [Self; 3] = [Self::Setup, Self::Exclusions, Self::InterruptTiming];
     fn key(self) -> &'static str {
         match self {
-            Self::Setup => "adaptive_engine.setup",
-            Self::Exclusions => "adaptive_engine.exclusions",
+            Self::Setup => "common.setup",
+            Self::Exclusions => "common.exclusions",
             Self::InterruptTiming => "interrupt_timing.title",
         }
     }
@@ -657,12 +657,10 @@ impl Editor {
         } else {
             "adaptive_engine.enable_help"
         };
-        let master = row![
-            widgets::setting_title_with_help("adaptive_engine.enable", "", master_help).width(Fill),
-            widgets::switch(enabled, Some(Message::SetEnabled))
-        ]
-        .spacing(design::space::MEDIUM)
-        .align_y(iced::Center);
+        let master = widgets::setting_row_with_title(
+            widgets::setting_title_with_help("adaptive_engine.enable", "", master_help),
+            widgets::switch(enabled, Some(Message::SetEnabled)),
+        );
         let master = iced::widget::mouse_area(master)
             .on_press(Message::SetEnabled(!enabled))
             .interaction(iced::mouse::Interaction::Pointer);
@@ -689,8 +687,8 @@ impl Editor {
         } else {
             "adaptive_engine.preset_placeholder"
         };
-        let picker = row![
-            widgets::setting_title_with_help("adaptive_engine.preset", "", help_key).width(Fill),
+        let picker = widgets::setting_row_with_title(
+            widgets::setting_title_with_help("adaptive_engine.preset", "", help_key),
             preset_select(options, selected, move |choice| {
                 if let Some(&preset) = BuiltInAdaptiveEnginePreset::ALL.get(choice.0) {
                     Message::BuiltIn(preset)
@@ -698,10 +696,8 @@ impl Editor {
                     Message::Apply(choice.0 - built_ins)
                 }
             })
-            .placeholder(t!(placeholder).into_owned())
-        ]
-        .spacing(design::space::MEDIUM)
-        .align_y(iced::Center);
+            .placeholder(t!(placeholder).into_owned()),
+        );
         let notice = (enabled && !cpu.has_enabled_policies()).then(|| {
             text(t!("adaptive_engine.no_cpu_policies").into_owned())
                 .size(design::typography::SECONDARY)
@@ -881,30 +877,33 @@ impl Editor {
             }};
         }
         macro_rules! selector {($s:ident,$key:expr,$ty:ty,$options:expr,$label:expr,$($field:ident).+) => {{let values:&[$ty]=$options;let selected=s.$($field).+;let control:Element<'_,Message>=if editable{pick_list(values.iter().copied().map(|v|Choice(v,$label(v))).collect::<Vec<_>>(),Some(Choice(selected,$label(selected))),move |v|Message::Choice(|$s,i|{let options:&[$ty]=$options;if let Some(v)=options.get(i){$s.$($field).+ = *v;}},values.iter().position(|x|*x==v.0).unwrap_or(0))).width(Fill).into()}else{text($label(selected)).into()};control}};}
-        macro_rules! choice {($s:ident,$key:expr,$ty:ty,$options:expr,$label:expr,$($field:ident).+) => {row![setting_label($key).width(Fill),iced::widget::container(selector!($s,$key,$ty,$options,$label,$($field).+)).width(280)].spacing(design::space::SMALL).padding([design::space::CONTROL as u16, 0]).align_y(iced::Center)};}
+        macro_rules! choice {
+            ($s:ident, $key:expr, $ty:ty, $options:expr, $label:expr, $($field:ident).+) => {
+                super::widgets::setting_row(
+                    $key,
+                    iced::widget::container(selector!($s, $key, $ty, $options, $label, $($field).+))
+                        .width(280),
+                )
+            };
+        }
         let tab = interrupt_timing.map_or(TuningTab::Setup, |_| self.tuning_tab);
         if !preset {
-            let mut tabs = row![];
-            for next in TuningTab::ALL {
-                tabs = tabs.push(super::widgets::panel_tab(
+            body = body.push(super::widgets::segmented_tabs(TuningTab::ALL.map(|next| {
+                (
                     t!(next.key()).to_string(),
                     next == tab,
                     Message::TuningTab(next),
-                ));
-            }
-            body = body.push(iced::widget::container(tabs.wrap()).style(super::widgets::tab_bar));
+                )
+            })));
         }
         let header = body;
-        let body = column![].spacing(super::widgets::CARD_GAP);
         let setup = (!preset && tab == TuningTab::Setup).then(|| self.setup_view(live));
-        let (header, mut body) = if scroll_live_header {
-            (header, body.extend(setup))
+        let header = if scroll_live_header {
+            header.extend(setup)
         } else {
-            (
-                header.extend(setup.map(|card| vertical_gutter(card).into())),
-                body,
-            )
+            header.extend(setup.map(|card| vertical_gutter(card).into()))
         };
+        let mut body = column![].spacing(super::widgets::CARD_GAP);
         match interrupt_timing.map(|state| (tab, state)) {
             None | Some((TuningTab::Setup, _)) => {
                 use TuningGroup::{
@@ -1620,6 +1619,16 @@ impl Editor {
             }
         }
 
+        if !preset && tab == TuningTab::Setup {
+            let advanced = super::widgets::settings_section("common.advanced_settings", body);
+            body = column![if scroll_live_header {
+                // Keep the compact section's scroll damage together beside the scrollbar.
+                repaint_group(advanced)
+            } else {
+                advanced
+            }]
+            .spacing(super::widgets::CARD_GAP);
+        }
         if !preset {
             if let Some(error) = numbers.validation_error() {
                 body = body.push(text(error));
@@ -1630,11 +1639,13 @@ impl Editor {
         }
         let body = super::motion::wrap(body, true, super::motion::Effect::Content(tab as u64));
         if scroll_live_header {
-            scrollable(header.push(body))
-                .id(CONTENT_ID)
-                .width(Fill)
-                .height(Fill)
-                .into()
+            let content = header.push(body);
+            let scroll = if tab == TuningTab::Setup {
+                scrollable_pane(content)
+            } else {
+                scrollable(content)
+            };
+            scroll.id(CONTENT_ID).width(Fill).height(Fill).into()
         } else {
             header
                 .push(
@@ -1723,9 +1734,6 @@ fn edit_selected_profile(settings: &mut SettingsEditor) -> &mut Settings {
     settings
 }
 
-fn setting_label(key: &str) -> iced::widget::Column<'static, Message> {
-    super::widgets::setting_title_with_unit(key, "")
-}
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct Choice<T>(pub(super) T, pub(super) String);
 impl<T> std::fmt::Display for Choice<T> {

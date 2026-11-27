@@ -148,7 +148,7 @@ impl Editor {
             .then(|| path_error(settings, &self.path, None))
             .flatten();
         let mut picker = column![
-            widgets::setting_title_with_help("common.rules", "", "instance_balancing.rules_help"),
+            widgets::help_text("instance_balancing.rules_help"),
             app_picker::view(
                 &self.path,
                 candidates,
@@ -170,8 +170,14 @@ impl Editor {
                     settings.enabled,
                     Some(Message::Enabled),
                 ),
-                widgets::settings_card(picker),
-                widgets::process_rules_table([], rules, true),
+                widgets::settings_section(
+                    "common.rules",
+                    column![
+                        widgets::settings_card(picker),
+                        widgets::process_rules_table([], rules, true),
+                    ]
+                    .spacing(widgets::CARD_GAP),
+                ),
             ]
             .spacing(widgets::CARD_GAP),
         )

@@ -20,6 +20,9 @@ use iced::widget::{column, container, row, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 use std::rc::Rc;
+
+const PRIORITY_RULE_ROW_HEIGHT: u32 = 34;
+
 #[derive(Debug, Clone)]
 pub(in crate::ui) enum Message {
     ReloadPlans,
@@ -477,7 +480,7 @@ pub(super) fn view<'a>(
         let mut controls = row![text(t!(&key).to_string()).width(Fill)]
             .spacing(design::space::SMALL)
             .align_y(iced::Center)
-            .height(widgets::SETTING_ROW_HEIGHT);
+            .height(PRIORITY_RULE_ROW_HEIGHT);
         for tier in Tier::ALL {
             controls = controls.push(
                 pick_list(

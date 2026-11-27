@@ -2,6 +2,7 @@ use std::{path::Path, sync::Arc};
 
 use super::{
     app_picker, design,
+    feature_tabs::{FeatureTab, CONTENT_ID},
     process_rules::{exact_path_input, picked_path_input, MatchBy},
     widgets,
 };
@@ -43,7 +44,6 @@ impl std::fmt::Display for ResourceThresholdsMemoryUnit {
 #[derive(Default)]
 pub(super) struct Editor {
     match_by: MatchBy,
-    settings_expanded: bool,
     path: String,
     name: String,
     duration: Option<String>,
@@ -162,7 +162,6 @@ impl Draft {
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Enabled(bool),
-    ToggleSettings,
     MatchBy(MatchBy),
     Path(String),
     Name(String),
@@ -341,13 +340,8 @@ impl Editor {
         .collect()));
     }
 
-    pub(super) fn toggle_settings(&mut self) {
-        self.settings_expanded = !self.settings_expanded;
-    }
-
     pub(super) fn update(&mut self, settings: &mut ResourceThresholdsSettings, message: Message) {
         match message {
-            Message::ToggleSettings => self.toggle_settings(),
             Message::Enabled(value) => settings.enabled = value,
             Message::MatchBy(value) => self.match_by = value,
             Message::Path(value) => self.path = value,
@@ -450,7 +444,61 @@ impl Editor {
         &'a self,
         settings: &'a ResourceThresholdsSettings,
         candidates: &'a [app_picker::Candidate],
+        tab: FeatureTab,
     ) -> Element<'a, Message> {
+        let mut body = column![].spacing(widgets::CARD_GAP);
+        if self.has_invalid_inputs() {
+            body = body.push(
+                text(t!("resource_thresholds.invalid_duration").to_string()).style(text::danger),
+            );
+        }
+        body = if tab == FeatureTab::Setup {
+            body.extend(self.setup(settings))
+        } else {
+            body.extend(self.custom_rules(settings, candidates))
+        };
+        super::scrolling::scrollable(body)
+            .id(CONTENT_ID)
+            .height(Fill)
+            .into()
+    }
+
+    fn setup<'a>(&'a self, settings: &'a ResourceThresholdsSettings) -> [Element<'a, Message>; 2] {
+        let duration = widgets::numeric_setting("resource_thresholds.duration", "s", move || {
+            widgets::stepper(
+                self.duration
+                    .as_deref()
+                    .unwrap_or(&settings.sustained_seconds.to_string()),
+                RESOURCE_THRESHOLDS_DURATION_RANGE,
+                1,
+                Some(Message::Duration),
+            )
+        });
+        [
+            widgets::toggle_card(
+                "resource_thresholds.enable",
+                settings.enabled,
+                Some(Message::Enabled),
+            ),
+            widgets::settings_section(
+                "nav.settings",
+                widgets::settings_card(widgets::settings_rows([
+                    duration,
+                    widgets::setting_row(
+                        "resource_thresholds.notify",
+                        widgets::switch(settings.notify, Some(Message::Notify)),
+                    )
+                    .into(),
+                ])),
+            ),
+        ]
+    }
+
+    fn custom_rules<'a>(
+        &'a self,
+        settings: &'a ResourceThresholdsSettings,
+        candidates: &'a [app_picker::Candidate],
+    ) -> [Element<'a, Message>; 2] {
         let rules = settings
             .rules
             .iter()
@@ -514,58 +562,18 @@ impl Editor {
                 )
             })
             .collect();
-        let mut duration = column![widgets::numeric_setting(
-            "resource_thresholds.duration",
-            "s",
-            move || {
-                widgets::stepper(
-                    self.duration
-                        .as_deref()
-                        .unwrap_or(&settings.sustained_seconds.to_string()),
-                    RESOURCE_THRESHOLDS_DURATION_RANGE,
-                    1,
-                    Some(Message::Duration),
-                )
-            }
-        )]
-        .spacing(design::space::SMALL);
-        if self.has_invalid_inputs() {
-            duration = duration.push(
-                text(t!("resource_thresholds.invalid_duration").to_string()).style(text::danger),
-            );
-        }
-        super::scrolling::scrollable(
-            column![
-                widgets::setting_group(
-                    "resource_thresholds.enable".to_string(),
-                    self.settings_expanded,
-                    Message::ToggleSettings,
-                    widgets::switch(settings.enabled, Some(Message::Enabled)),
-                    widgets::settings_rows([
-                        duration.into(),
-                        widgets::setting_row(
-                            "resource_thresholds.notify",
-                            widgets::switch(settings.notify, Some(Message::Notify)),
-                        )
-                        .into(),
-                    ]),
-                ),
-                widgets::setting_title("common.rules"),
-                self.add_rule_card(settings, candidates),
-                widgets::process_rules_table_with_notify(
-                    [
-                        "resource_thresholds.cpu_tab",
-                        "resource_thresholds.memory_tab"
-                    ]
-                    .map(|key| t!(key).to_string()),
-                    rules,
-                    false,
-                ),
-            ]
-            .spacing(widgets::CARD_GAP),
-        )
-        .height(Fill)
-        .into()
+        [
+            self.add_rule_card(settings, candidates),
+            widgets::process_rules_table_with_notify(
+                [
+                    "resource_thresholds.cpu_tab",
+                    "resource_thresholds.memory_tab",
+                ]
+                .map(|key| t!(key).to_string()),
+                rules,
+                false,
+            ),
+        ]
     }
 
     fn add_rule_card<'a>(
@@ -1144,7 +1152,7 @@ mod tests {
                 Message::Tab(ResourceThresholdsResource::ALL[frame % 2]),
             );
             let mut view: Element<'_, Message> = iced::widget::stack![
-                editor.view(&settings, &[]),
+                editor.view(&settings, &[], FeatureTab::CustomRules),
                 super::super::scrolling::modal_backdrop(),
                 iced::widget::container(editor.modal(&[]).unwrap())
                     .padding(16)

@@ -1,4 +1,5 @@
 use super::design;
+use super::feature_tabs::{self, FeatureTab};
 use super::widgets::{self, action_button, checkbox, pick_list, text_input};
 use crate::app_suspension::{self, AppSuspensionSnapshot};
 use crate::application::SettingsEditor;
@@ -6,17 +7,14 @@ use crate::config::{AppSuspensionRule, AppSuspensionSettings, NetworkThresholdUn
 use crate::ui::process_rules::{
     can_add_app_suspension_process, exact_path_input, new_app_suspension_rule, picked_path_input,
 };
-use crate::ui::scrolling::scrollable;
 use iced::widget::{column, text};
-use iced::{Element, Fill};
+use iced::Element;
 use rust_i18n::t;
 use std::{collections::BTreeMap, path::Path};
 
 #[derive(Default)]
 pub(super) struct Editor {
     pub(super) path: String,
-    settings_expanded: bool,
-    expanded: [bool; 3],
     delay_drafts: BTreeMap<Delay, String>,
     threshold_drafts: Vec<[Option<ThresholdDraft>; 2]>,
 }
@@ -81,8 +79,6 @@ impl Delay {
 pub(super) enum Message {
     Enabled(bool),
     AutoResumeWhenFocused(bool),
-    ToggleSettings,
-    Group(usize),
     Path(String),
     Add,
     Browse,
@@ -121,12 +117,6 @@ impl Editor {
         m: Message,
     ) -> Option<(String, bool)> {
         match m {
-            Message::ToggleSettings => self.settings_expanded = !self.settings_expanded,
-            Message::Group(i) => {
-                if let Some(v) = self.expanded.get_mut(i) {
-                    *v = !*v;
-                }
-            }
             Message::Path(v) => self.path = v,
             Message::Toggle(i) => {
                 let rule = settings.global().app_suspension.suspendable_apps.get(i)?;
@@ -250,11 +240,9 @@ impl Editor {
                 }
             }
 
-            Message::ToggleSettings
-            | Message::Group(_)
-            | Message::Path(_)
-            | Message::Toggle(_)
-            | Message::Browse => unreachable!("UI-only messages are handled before settings edits"),
+            Message::Path(_) | Message::Toggle(_) | Message::Browse => {
+                unreachable!("UI-only messages are handled before settings edits")
+            }
         }
     }
     fn can_add(s: &AppSuspensionSettings, path: &str, unavailable: &[String]) -> bool {
@@ -267,69 +255,89 @@ impl Editor {
         status: &AppSuspensionSnapshot,
         unavailable: &[String],
         candidates: &'a [super::app_picker::Candidate],
+        tab: FeatureTab,
+        scroll_clearance: f32,
     ) -> Element<'a, Message> {
         let s = &settings.global().app_suspension;
-        let live = live_suspension_settings(settings);
-        let enable = widgets::setting_group(
-            "app_suspension.enable".to_string(),
-            self.settings_expanded,
-            Message::ToggleSettings,
-            widgets::switch(s.enabled, Some(Message::Enabled)),
-            widgets::settings_rows([
-                self.delay_row(Delay::Background, s),
+        let mut body = match tab {
+            FeatureTab::Setup => self.setup(s),
+            FeatureTab::CustomRules => self.custom_rules(
+                s,
+                status,
+                unavailable,
+                candidates,
+                live_suspension_settings(settings),
+            ),
+            FeatureTab::Advanced | FeatureTab::Exclusions | FeatureTab::Automation => {
+                unreachable!("App Suspension only supports Setup and Custom Rules")
+            }
+        };
+        if let Some(error) = &status.last_error {
+            body = body.push(text(error.clone()));
+        }
+        feature_tabs::scroll_content(body.spacing(widgets::CARD_GAP), scroll_clearance)
+    }
+
+    fn setup<'a>(&'a self, s: &'a AppSuspensionSettings) -> iced::widget::Column<'a, Message> {
+        column![
+            widgets::toggle_card("app_suspension.enable", s.enabled, Some(Message::Enabled)),
+            widgets::settings_section(
+                "nav.settings",
+                widgets::settings_card(widgets::settings_rows([
+                    self.delay_row(Delay::Background, s),
+                    widgets::setting_row(
+                        "app_suspension.auto_resume_when_focused",
+                        widgets::switch(
+                            s.auto_resume_when_focused,
+                            Some(Message::AutoResumeWhenFocused),
+                        ),
+                    )
+                    .into(),
+                ])),
+            ),
+            widgets::settings_section("common.advanced_settings", self.advanced(s)),
+        ]
+    }
+
+    fn advanced<'a>(&'a self, s: &'a AppSuspensionSettings) -> iced::widget::Column<'a, Message> {
+        column![
+            widgets::settings_card(widgets::settings_rows([
                 widgets::setting_row(
-                    "app_suspension.auto_resume_when_focused",
-                    widgets::switch(
-                        s.auto_resume_when_focused,
-                        Some(Message::AutoResumeWhenFocused),
-                    ),
+                    "app_suspension.network_detection",
+                    widgets::switch(s.network_wake_enabled, Some(Message::Network)),
                 )
                 .into(),
-            ]),
-        );
-        let mut resume_rows = Vec::new();
-        for (i, key, enabled, toggle, rows) in [
-            (
-                2,
-                "app_suspension.network_detection",
-                s.network_wake_enabled,
-                Message::Network as fn(bool) -> Message,
-                &[Delay::Network][..],
-            ),
-            (
-                1,
-                "app_suspension.audio_detection",
-                s.audio_wake_enabled,
-                Message::Audio,
-                &[Delay::Audio],
-            ),
-            (
-                0,
-                "app_suspension.temporary_resume",
-                s.temporary_thaw_enabled,
-                Message::Thaw,
-                &[Delay::ThawInterval, Delay::ThawDuration],
-            ),
-        ] {
-            let controls =
-                widgets::settings_rows(rows.iter().map(|&field| self.delay_row(field, s)));
-            resume_rows.push(widgets::setting_disclosure_row(
-                key,
-                self.expanded[i],
-                Message::Group(i),
-                widgets::switch(enabled, Some(toggle)),
-                controls,
-            ));
-        }
-        let resume = column![
-            widgets::heading(
-                t!("app_suspension.additional_resume_options").into_owned(),
-                design::typography::BODY,
-            ),
-            widgets::settings_card(widgets::settings_rows(resume_rows)),
+                self.delay_row(Delay::Network, s),
+            ])),
+            widgets::settings_card(widgets::settings_rows([
+                widgets::setting_row(
+                    "app_suspension.audio_detection",
+                    widgets::switch(s.audio_wake_enabled, Some(Message::Audio)),
+                )
+                .into(),
+                self.delay_row(Delay::Audio, s),
+            ])),
+            widgets::settings_card(widgets::settings_rows([
+                widgets::setting_row(
+                    "app_suspension.temporary_resume",
+                    widgets::switch(s.temporary_thaw_enabled, Some(Message::Thaw)),
+                )
+                .into(),
+                self.delay_row(Delay::ThawInterval, s),
+                self.delay_row(Delay::ThawDuration, s),
+            ])),
         ]
-        .spacing(design::space::SMALL);
-        let mut body = column![enable, resume].spacing(widgets::CARD_GAP);
+        .spacing(widgets::CARD_GAP)
+    }
+
+    fn custom_rules<'a>(
+        &'a self,
+        s: &'a AppSuspensionSettings,
+        status: &AppSuspensionSnapshot,
+        unavailable: &[String],
+        candidates: &'a [super::app_picker::Candidate],
+        live: Option<&AppSuspensionSettings>,
+    ) -> iced::widget::Column<'a, Message> {
         let picker = super::app_picker::view_with_path_selection(
             &self.path,
             candidates,
@@ -339,21 +347,14 @@ impl Editor {
             Self::can_add(s, exact_path_input(&self.path), unavailable).then_some(Message::Add),
             |path| Some(!app_suspension::contains_process(unavailable, path)),
         );
-        body = body.push(super::widgets::settings_card(
+        let picker_card = widgets::settings_card(
             column![
-                super::widgets::setting_title_with_help(
-                    "common.rules",
-                    "",
-                    "app_suspension.suspendable_help",
-                ),
+                widgets::help_text("app_suspension.suspendable_help"),
                 picker,
-                text(t!("app_suspension.tcp_thresholds_help").to_string())
-                    .size(design::typography::SECONDARY)
-                    .style(text::secondary)
-                    .wrapping(text::Wrapping::WordOrGlyph),
+                widgets::help_text("app_suspension.tcp_thresholds_help"),
             ]
             .spacing(design::space::SMALL),
-        ));
+        );
         let mut cards = Vec::new();
         for (i, r) in s.suspendable_apps.iter().enumerate() {
             let path = r.executable_path.trim_start();
@@ -440,25 +441,20 @@ impl Editor {
                 .into(),
             ));
         }
-        body = body.push(super::widgets::process_rules_table(
-            [
-                "app_suspension.audio",
-                "app_suspension.network",
-                "app_suspension.download",
-                "app_suspension.upload",
-            ]
-            .map(|key| t!(key).to_string()),
-            cards,
-            true,
-        ));
-
-        if let Some(error) = &status.last_error {
-            body = body.push(text(error.clone()));
-        }
-        scrollable(body)
-            .id("app-suspension-settings")
-            .height(Fill)
-            .into()
+        column![
+            picker_card,
+            super::widgets::process_rules_table(
+                [
+                    "app_suspension.audio",
+                    "app_suspension.network",
+                    "app_suspension.download",
+                    "app_suspension.upload",
+                ]
+                .map(|key| t!(key).to_string()),
+                cards,
+                true,
+            ),
+        ]
     }
 
     fn delay_row<'a>(

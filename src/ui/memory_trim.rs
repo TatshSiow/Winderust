@@ -1,4 +1,5 @@
 use super::design;
+use super::feature_tabs::{self, FeatureTab};
 use super::widgets::{checkbox, heading, numeric_setting, stepper};
 use crate::application::SettingsEditor;
 use crate::config::MemoryTrimSettings;
@@ -6,9 +7,8 @@ use crate::memory_trim::{size_label, MemoryTrimReadback, MemoryTrimSnapshot, Mem
 use crate::ui::process_rules::{
     can_add_memory_trim_exclusion, exact_path_input, new_process_exclusion_rule, picked_path_input,
 };
-use crate::ui::scrolling::scrollable;
 use iced::widget::{column, text};
-use iced::{Element, Fill};
+use iced::Element;
 use rust_i18n::t;
 
 #[derive(Clone, Copy)]
@@ -45,7 +45,6 @@ impl ManualTrimResult {
 #[derive(Default)]
 pub(super) struct Editor {
     pub(super) path: String,
-    settings_expanded: bool,
     thresholds: [Option<String>; 3],
     last_result: Option<ManualTrimResult>,
 }
@@ -93,7 +92,6 @@ impl Threshold {
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Enabled(bool),
-    ToggleSettings,
     Path(String),
     Add,
     Threshold(Threshold, String),
@@ -182,7 +180,6 @@ impl Editor {
 
     fn update_settings(&mut self, settings: &mut MemoryTrimSettings, message: Message) {
         match message {
-            Message::ToggleSettings => self.settings_expanded = !self.settings_expanded,
             Message::Enabled(v) => settings.enabled = v,
             Message::Path(v) => self.path = v,
             Message::Add => {
@@ -223,10 +220,26 @@ impl Editor {
         candidates: &'a [super::app_picker::Candidate],
         trim_available: bool,
         trim_pending: bool,
+        tab: FeatureTab,
+        scroll_clearance: f32,
     ) -> Element<'a, Message> {
+        let body = if tab == FeatureTab::Setup {
+            self.setup(settings, trim_available, trim_pending)
+        } else {
+            self.exclusions(settings, candidates)
+        };
+        feature_tabs::scroll_content(body, scroll_clearance)
+    }
+
+    fn setup<'a>(
+        &'a self,
+        settings: &'a MemoryTrimSettings,
+        trim_available: bool,
+        trim_pending: bool,
+    ) -> iced::widget::Column<'a, Message> {
         let field = |field: Threshold, unit: &'static str| {
             let (label, maximum) = field.label_and_maximum();
-            numeric_setting(label, unit, move || {
+            super::widgets::settings_card(numeric_setting(label, unit, move || {
                 let raw = self.thresholds[field as usize].as_deref();
                 stepper(
                     raw.unwrap_or(&field.value(settings).to_string()),
@@ -234,51 +247,61 @@ impl Editor {
                     1,
                     Some(move |raw| Message::Threshold(field, raw)),
                 )
-            })
+            }))
         };
         let trim_label = if trim_pending {
             t!("memory_trim.manual_trim_running")
         } else {
             t!("memory_trim.trim_now")
         };
-        let manual_trim = column![super::widgets::setting_row(
+        let manual_trim = super::widgets::setting_row(
             "memory_trim.manual_trim",
             super::widgets::action_button(trim_label.into_owned())
                 .on_press_maybe((trim_available && !trim_pending).then_some(Message::TrimNow)),
-        )]
-        .extend(self.last_result_view())
-        .spacing(design::space::MEDIUM);
-        let mut body = column![
-            super::widgets::setting_group(
-                "memory_trim.enable".to_string(),
-                self.settings_expanded,
-                Message::ToggleSettings,
-                super::widgets::switch(settings.enabled, Some(Message::Enabled)),
-                super::widgets::settings_rows([
-                    super::widgets::setting_row(
+        );
+        column![
+            super::widgets::settings_card(
+                column![manual_trim]
+                    .extend(self.last_result_view())
+                    .spacing(design::space::SMALL),
+            ),
+            super::widgets::toggle_card(
+                "memory_trim.enable",
+                settings.enabled,
+                Some(Message::Enabled),
+            ),
+            super::widgets::settings_section(
+                "nav.settings",
+                column![
+                    super::widgets::settings_card(super::widgets::setting_row(
                         "memory_trim.exclude_foreground",
                         super::widgets::switch(
                             settings.exclude_foreground,
                             Some(Message::ExcludeForeground),
                         ),
-                    )
-                    .into(),
-                    super::widgets::setting_row(
+                    )),
+                    super::widgets::settings_card(super::widgets::setting_row(
                         "memory_trim.exclude_visible_windows",
                         super::widgets::switch(
                             settings.exclude_visible_windows,
                             Some(Message::ExcludeVisibleWindows),
                         ),
-                    )
-                    .into(),
+                    )),
                     field(Threshold::Load, "%"),
                     field(Threshold::WorkingSet, "MB"),
                     field(Threshold::Idle, "s"),
-                ]),
+                ]
+                .spacing(super::widgets::CARD_GAP),
             ),
-            super::widgets::settings_card(manual_trim),
         ]
-        .spacing(super::widgets::CARD_GAP);
+        .spacing(super::widgets::CARD_GAP)
+    }
+
+    fn exclusions<'a>(
+        &'a self,
+        settings: &'a MemoryTrimSettings,
+        candidates: &'a [super::app_picker::Candidate],
+    ) -> iced::widget::Column<'a, Message> {
         let picker = super::app_picker::view_with_path_selection(
             &self.path,
             candidates,
@@ -308,20 +331,14 @@ impl Editor {
                 )
             })
             .collect();
-        body = body
-            .push(super::widgets::settings_card(
-                column![
-                    super::widgets::setting_title_with_help(
-                        "common.rules",
-                        "",
-                        "memory_trim.rules_help",
-                    ),
-                    picker,
-                ]
-                .spacing(design::space::SMALL),
-            ))
-            .push(super::widgets::process_rules_table([], cards, false));
-        scrollable(body).height(Fill).into()
+        column![
+            super::widgets::settings_card(
+                column![super::widgets::help_text("memory_trim.rules_help"), picker,]
+                    .spacing(design::space::SMALL),
+            ),
+            super::widgets::process_rules_table([], cards, false),
+        ]
+        .spacing(super::widgets::CARD_GAP)
     }
 }
 #[cfg(test)]

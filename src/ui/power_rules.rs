@@ -525,12 +525,6 @@ impl Editor {
                 status.rule_index,
             ),
         };
-        let mut body = column![super::widgets::toggle_card(
-            label,
-            enabled,
-            Some(Message::Enabled)
-        )]
-        .spacing(super::widgets::CARD_GAP);
         let rules = match kind {
             Kind::Time => s
                 .by_time
@@ -609,11 +603,22 @@ impl Editor {
             })
             .collect();
         let add_rule = widgets::rule_add_button(Some(Message::Add));
-        body = body
-            .push(widgets::setting_title("common.rules"))
-            .push(widgets::settings_card(add_rule))
-            .push(widgets::rules_table(header, rows, 600.0));
-        scrollable(body).height(Fill).into()
+        scrollable(
+            column![
+                widgets::toggle_card(label, enabled, Some(Message::Enabled)),
+                widgets::settings_section(
+                    "common.rules",
+                    column![
+                        widgets::settings_card(add_rule),
+                        widgets::rules_table(header, rows, 600.0),
+                    ]
+                    .spacing(widgets::CARD_GAP),
+                ),
+            ]
+            .spacing(widgets::CARD_GAP),
+        )
+        .height(Fill)
+        .into()
     }
     pub(super) fn modal<'a>(
         &'a self,

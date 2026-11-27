@@ -1,4 +1,8 @@
-use super::{app_picker, design, widgets};
+use super::{
+    app_picker, design,
+    feature_tabs::{FeatureTab, CONTENT_ID},
+    widgets,
+};
 use crate::application::SettingsEditor;
 use crate::config::{SleepPreventionRule, SleepPreventionSettings};
 use crate::control::instance_limits::validate_path;
@@ -112,7 +116,37 @@ impl Editor {
         settings: &'a SleepPreventionSettings,
         candidates: &'a [app_picker::Candidate],
         temporary: TemporarySleepPreventionTimers,
+        tab: FeatureTab,
     ) -> Element<'a, Message> {
+        let body = if tab == FeatureTab::Setup {
+            column![
+                widgets::toggle_card(
+                    "sleep_prevention.enable",
+                    settings.enabled,
+                    Some(Message::Enabled)
+                ),
+                widgets::settings_section(
+                    "sleep_prevention.temporary_controls",
+                    widgets::settings_card(widgets::settings_rows([
+                        self.temporary_row(TemporarySleepPrevention::KeepAwake, temporary),
+                        self.temporary_row(TemporarySleepPrevention::KeepDisplayOn, temporary),
+                    ])),
+                ),
+            ]
+        } else {
+            self.custom_rules(settings, candidates)
+        };
+        super::scrolling::scrollable(body.spacing(widgets::CARD_GAP))
+            .id(CONTENT_ID)
+            .height(Fill)
+            .into()
+    }
+
+    fn custom_rules<'a>(
+        &'a self,
+        settings: &'a SleepPreventionSettings,
+        candidates: &'a [app_picker::Candidate],
+    ) -> iced::widget::Column<'a, Message> {
         let rules = settings
             .rules
             .iter()
@@ -142,12 +176,8 @@ impl Editor {
             .collect();
         let path = exact_path_input(&self.path);
         let can_add = Self::can_add(settings, path);
-        let mut picker = column![widgets::setting_title_with_help(
-            "common.rules",
-            "",
-            "sleep_prevention.rules_help"
-        )]
-        .spacing(design::space::SMALL);
+        let mut picker = column![widgets::help_text("sleep_prevention.rules_help")]
+            .spacing(design::space::SMALL);
         picker = picker.push(app_picker::view_with_path_selection(
             &self.path,
             candidates,
@@ -160,29 +190,17 @@ impl Editor {
         if !can_add && app_picker::is_path_query(&self.path) && validate_path(path).is_err() {
             picker = picker.push(app_picker::path_format_hint());
         }
-        super::scrolling::scrollable(
-            column![
-                widgets::toggle_card(
-                    "sleep_prevention.enable",
-                    settings.enabled,
-                    Some(Message::Enabled)
-                ),
-                self.temporary_card(TemporarySleepPrevention::KeepAwake, temporary),
-                self.temporary_card(TemporarySleepPrevention::KeepDisplayOn, temporary),
-                widgets::settings_card(picker),
-                widgets::process_rules_table(
-                    [t!("sleep_prevention.keep_display_on").to_string()],
-                    rules,
-                    false,
-                ),
-            ]
-            .spacing(widgets::CARD_GAP),
-        )
-        .height(Fill)
-        .into()
+        column![
+            widgets::settings_card(picker),
+            widgets::process_rules_table(
+                [t!("sleep_prevention.keep_display_on").to_string()],
+                rules,
+                false,
+            ),
+        ]
     }
 
-    fn temporary_card(
+    fn temporary_row(
         &self,
         kind: TemporarySleepPrevention,
         timers: TemporarySleepPreventionTimers,
@@ -202,7 +220,7 @@ impl Editor {
                 .on_press_maybe(
                     (!self.temporary_pending).then_some(Message::Temporary(kind, None)),
                 );
-            return widgets::settings_card(widgets::setting_row(
+            return widgets::setting_row(
                 title,
                 row![
                     text(status.into_owned()).size(design::typography::SECONDARY),
@@ -210,7 +228,7 @@ impl Editor {
                 ]
                 .spacing(design::space::SMALL)
                 .align_y(iced::Center),
-            ))
+            )
             .into();
         }
         let duration = self.durations[kind as usize].as_deref().unwrap_or("15");
@@ -238,7 +256,7 @@ impl Editor {
         ]
         .align_y(iced::Center)
         .spacing(design::space::SMALL);
-        widgets::settings_card(widgets::setting_row(title, actions)).into()
+        widgets::setting_row(title, actions).into()
     }
 }
 

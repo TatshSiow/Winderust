@@ -1,11 +1,11 @@
 use super::adaptive_engine::{parse_number, Choice, NumberDraft, NumberInputs};
+use super::widgets;
 use super::widgets::pick_list;
-use super::{design, widgets};
 use crate::application::SettingsEditor;
 use crate::config::{AdaptiveEngineSettings, PowerSourceProfile};
 use crate::power::{ProcessorBoostMode, ProcessorPowerValues};
 use crate::ui::scrolling::scrollable;
-use iced::widget::{column, container, row, text};
+use iced::widget::{column, text};
 use iced::{Element, Fill};
 use rust_i18n::t;
 
@@ -28,6 +28,7 @@ const RESTRAINT_CORE_PARKING_MIN_CLASS1_FIELD: &str =
 const RESTRAINT_CORE_PARKING_MIN_CLASS1_LABEL: &str =
     "adaptive_processor_power.restraint_core_parking_min_class1";
 pub(super) const PRESET_NAME_INPUT_ID: &str = "adaptive-processor-power-preset-name";
+pub(super) const CONTENT_ID: &str = "adaptive-processor-power-settings";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum Tab {
@@ -74,10 +75,16 @@ pub(super) enum Message {
 }
 
 impl Editor {
+    pub(super) fn select_tab(&mut self, tab: Tab) -> bool {
+        std::mem::replace(&mut self.tab, tab) != tab
+    }
+
     pub(super) fn update(&mut self, settings: &mut SettingsEditor, message: Message) {
         let numbers = &mut self.numbers;
         match message {
-            Message::Tab(tab) => self.tab = tab,
+            Message::Tab(tab) => {
+                self.select_tab(tab);
+            }
             Message::StagePreset(choice) => self.stage_preset(settings, choice),
             Message::PreviewBuiltIn(preset) => {
                 self.preview_preset(settings, PresetChoice::BuiltIn(preset));
@@ -215,18 +222,19 @@ impl Editor {
             };
         }
         let source = s.selected_power_source();
-        let tabs = row![
-            widgets::panel_tab(
-                t!("adaptive_processor_power.base_processor_policy").to_string(),
-                self.tab == Tab::BasePolicy,
-                Message::Tab(Tab::BasePolicy),
-            ),
-            widgets::panel_tab(
-                t!("adaptive_processor_power.demand_profiles").to_string(),
-                self.tab == Tab::DemandProfiles,
-                Message::Tab(Tab::DemandProfiles),
-            ),
-        ];
+        let tabs = widgets::segmented_tabs(
+            [
+                (
+                    Tab::BasePolicy,
+                    "adaptive_processor_power.base_processor_policy",
+                ),
+                (
+                    Tab::DemandProfiles,
+                    "adaptive_processor_power.demand_profiles",
+                ),
+            ]
+            .map(|(tab, key)| (t!(key).to_string(), self.tab == tab, Message::Tab(tab))),
+        );
         let help_key = match self.tab {
             Tab::BasePolicy => "adaptive_processor_power.base_processor_policy_help",
             Tab::DemandProfiles => "adaptive_processor_power.demand_profiles_help",
@@ -237,25 +245,13 @@ impl Editor {
                 s.adaptive_engine.adaptive_processor_power_enabled,
                 Some(Message::Enabled),
             ),
-            self.preset_picker(s),
-            container(
-                column![
-                    tabs.wrap(),
-                    text(t!(help_key).to_string())
-                        .size(design::typography::SECONDARY)
-                        .style(text::secondary)
-                        .width(Fill),
-                ]
-                .spacing(design::space::SMALL),
-            )
-            .padding(widgets::CARD_PADDING as u16)
-            .width(Fill)
-            .style(widgets::tab_bar),
+            widgets::settings_section("common.presets", self.preset_picker(s)),
+            widgets::help_text(help_key),
         ]
         .spacing(widgets::CARD_GAP);
         match self.tab {
             Tab::BasePolicy => {
-                let processor_range = column![
+                let processor_range = widgets::settings_rows([
                     number!(
                         "processor_power.processor_min",
                         "adaptive_processor_power.processor_min_help",
@@ -273,8 +269,7 @@ impl Editor {
                         ),
                         adaptive_engine.base_processor_policy.performance_max
                     ),
-                ]
-                .spacing(design::space::SMALL)
+                ])
                 .extend(
                     [PROCESSOR_MIN_FIELD, PROCESSOR_MAX_FIELD]
                         .into_iter()
@@ -299,7 +294,7 @@ impl Editor {
                             )
                         })
                     };
-                body = body.push(widgets::settings_card(widgets::settings_rows([
+                let core_parking = widgets::settings_card(widgets::settings_rows([
                     number!(
                         "processor_power.core_parking_min",
                         "adaptive_processor_power.core_parking_min_help",
@@ -320,7 +315,8 @@ impl Editor {
                             settings.restraint_core_parking_min_class1 = number as u8
                         },
                     ),
-                    processor_range.into(),
+                ]));
+                let processor_boost = widgets::settings_card(widgets::settings_rows([
                     number!(
                         "processor_power.boost_policy",
                         "adaptive_processor_power.base_boost_policy_help",
@@ -331,7 +327,20 @@ impl Editor {
                         "adaptive_processor_power.base_boost_mode_help",
                         adaptive_engine.base_processor_policy.boost_mode
                     ),
-                ])));
+                ]));
+                body = body
+                    .push(widgets::settings_section(
+                        "adaptive_processor_power.core_parking_section",
+                        core_parking,
+                    ))
+                    .push(widgets::settings_section(
+                        "adaptive_processor_power.processor_performance_section",
+                        widgets::settings_card(processor_range),
+                    ))
+                    .push(widgets::settings_section(
+                        "adaptive_processor_power.processor_boost_section",
+                        processor_boost,
+                    ));
             }
 
             Tab::DemandProfiles => {
@@ -346,14 +355,14 @@ impl Editor {
                     ),
                 };
                 body = body
-                    .push(widgets::setting_title(
+                    .push(widgets::settings_section(
                         "adaptive_processor_power.background_pressure_profile",
+                        background,
                     ))
-                    .push(background)
-                    .push(widgets::setting_title(
+                    .push(widgets::settings_section(
                         "adaptive_processor_power.focus_and_launch_profile",
-                    ))
-                    .push(focus_and_launch);
+                        focus_and_launch,
+                    ));
             }
         }
         let range_is_visible = self.tab == Tab::BasePolicy;
@@ -365,11 +374,12 @@ impl Editor {
         }) {
             body = body.push(text(error).style(text::danger));
         }
-        scrollable(body)
-            .id("adaptive-processor-power-settings")
-            .width(Fill)
-            .height(Fill)
-            .into()
+        column![
+            tabs,
+            scrollable(body).id(CONTENT_ID).width(Fill).height(Fill)
+        ]
+        .spacing(widgets::CARD_GAP)
+        .into()
     }
 }
 
@@ -454,16 +464,13 @@ fn boost_mode_row(
         .map(|mode| Choice(mode, label_mode(mode)))
         .collect();
     let selected = Some(Choice(selected, label_mode(selected)));
-    row![
-        widgets::setting_title_with_help("processor_power.boost_mode", "", help).width(Fill),
-        pick_list(choices, selected, move |choice| Message::BoostMode(
-            update, choice.0
-        ))
+    widgets::setting_row_with_title(
+        widgets::setting_title_with_help("processor_power.boost_mode", "", help),
+        pick_list(choices, selected, move |choice| {
+            Message::BoostMode(update, choice.0)
+        })
         .width(280),
-    ]
-    .spacing(design::space::SMALL)
-    .padding([design::space::CONTROL as u16, 0])
-    .align_y(iced::Center)
+    )
     .into()
 }
 
@@ -510,10 +517,10 @@ mod tests {
                     &layout::Limits::new(Size::ZERO, size),
                 );
                 let layout = layout::Layout::new(&node);
-                let body = unwrap_single_child(layout);
+                let body = unwrap_single_child(layout.children().nth(1).unwrap());
                 let mut messages = Vec::new();
-                for card in body.children().skip(4).step_by(2) {
-                    let rows = unwrap_single_child(card);
+                for section in body.children().skip(3) {
+                    let rows = unwrap_single_child(section.children().last().unwrap());
                     assert_eq!(rows.children().len(), 3, "one policy, divider and mode");
                     let policy = unwrap_single_child(rows.children().next().unwrap());
                     let stepper = unwrap_single_child(policy.children().last().unwrap());

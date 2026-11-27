@@ -1,8 +1,9 @@
 use super::cpu_allocation::{self, Kind, SelectionCatalog};
 use super::design;
+use super::feature_tabs::{self, FeatureTab};
 use super::widgets::{self, checkbox, numeric_input, pick_list, slider};
 use crate::ui::scrolling::scrollable;
-use iced::widget::{column, row, text, Row};
+use iced::widget::{column, row, text, Column, Row};
 use iced::{Element, Fill};
 use rust_i18n::t;
 use std::collections::HashMap;
@@ -39,7 +40,6 @@ pub(super) fn limit_slider<'a, M: Clone + 'a>(
 #[derive(Default)]
 pub(super) struct CpuLimiter {
     path: String,
-    defaults_expanded: bool,
     draft: Option<(usize, CpuLimiterSettings)>,
     numbers: HashMap<(String, Tier), String>,
     affinity: Option<AffinityEditor>,
@@ -172,7 +172,6 @@ impl Tier {
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Enabled(bool),
-    ToggleDefaults,
     Path(String),
     Browse,
     Number(Option<usize>, Tier, String),
@@ -362,7 +361,6 @@ impl CpuLimiter {
                     self.numbers.clear();
                 }
             }
-            Message::ToggleDefaults => self.defaults_expanded = !self.defaults_expanded,
             Message::Path(path) => self.path = path,
             Message::Browse => {}
             Message::Edit(_)
@@ -497,26 +495,20 @@ impl CpuLimiter {
         candidates: &'a [super::app_picker::Candidate],
         master_enabled: bool,
         status: Option<&CpuLimiterSnapshot>,
+        tab: FeatureTab,
+        scroll_clearance: f32,
     ) -> Element<'a, Message> {
-        let defaults = Tier::ALL.map(|tier| {
-            widgets::slider_setting(tier.key(), "%", move || {
-                self.limit_control(None, tier, "", tier.default_limit(settings))
-            })
-        });
-        let mut body = column![widgets::setting_group(
-            "cpu_limiter.enable".to_owned(),
-            self.defaults_expanded,
-            Message::ToggleDefaults,
-            widgets::switch(settings.enabled, Some(Message::Enabled)),
-            column![
-                text(t!("cpu_limiter.cpu_time_defaults_help").into_owned())
-                    .size(design::typography::SECONDARY)
-                    .style(text::secondary),
-                widgets::settings_rows(defaults),
-            ]
-            .spacing(design::space::MEDIUM),
-        )]
-        .spacing(widgets::CARD_GAP);
+        let show_rules = tab == FeatureTab::CustomRules;
+        let mut body = column![].spacing(widgets::CARD_GAP);
+        if !show_rules {
+            body = body
+                .push(widgets::toggle_card(
+                    "cpu_limiter.enable",
+                    settings.enabled,
+                    Some(Message::Enabled),
+                ))
+                .push(self.defaults_view(settings));
+        }
         if self.has_invalid_inputs() {
             body = body.push(
                 text(t!("cpu_limiter.invalid_limit").to_string())
@@ -524,24 +516,45 @@ impl CpuLimiter {
                     .style(text::danger),
             );
         }
-        body = body
-            .push(super::widgets::setting_title_with_help(
-                "common.rules",
-                "",
-                "cpu_limiter.rules_help",
-            ))
-            .push(super::widgets::settings_card(
-                super::app_picker::view_with_path_selection(
-                    &self.path,
-                    candidates,
-                    true,
-                    (Message::Path, |path| Message::Path(picked_path_input(path))),
-                    Message::Browse,
-                    (can_add_cpu_limiter_process(settings, exact_path_input(&self.path)))
-                        .then_some(Message::Add),
-                    |path| can_add_cpu_limiter_process(settings, path).then_some(true),
-                ),
-            ));
+        if show_rules {
+            body = body.push(self.rules_view(settings, candidates, master_enabled, status));
+        }
+        feature_tabs::scroll_content(body, scroll_clearance)
+    }
+    fn defaults_view<'a>(&'a self, settings: &'a CpuLimiterSettings) -> Element<'a, Message> {
+        let defaults = Tier::ALL.map(|tier| {
+            widgets::settings_card(widgets::slider_setting(tier.key(), "%", move || {
+                self.limit_control(None, tier, "", tier.default_limit(settings))
+            }))
+        });
+        widgets::settings_section(
+            "cpu_limiter.cpu_time",
+            column![widgets::help_text("cpu_limiter.cpu_time_defaults_help")]
+                .extend(defaults.map(Element::from))
+                .spacing(widgets::CARD_GAP),
+        )
+    }
+    fn rules_view<'a>(
+        &'a self,
+        settings: &'a CpuLimiterSettings,
+        candidates: &'a [super::app_picker::Candidate],
+        master_enabled: bool,
+        status: Option<&CpuLimiterSnapshot>,
+    ) -> Column<'a, Message> {
+        let picker = column![
+            widgets::help_text("cpu_limiter.rules_help"),
+            super::app_picker::view_with_path_selection(
+                &self.path,
+                candidates,
+                true,
+                (Message::Path, |path| Message::Path(picked_path_input(path))),
+                Message::Browse,
+                (can_add_cpu_limiter_process(settings, exact_path_input(&self.path)))
+                    .then_some(Message::Add),
+                |path| can_add_cpu_limiter_process(settings, path).then_some(true),
+            ),
+        ]
+        .spacing(design::space::SMALL);
         let mut cards = Vec::new();
         for (index, rule) in settings.rules.iter().enumerate() {
             let method = Method::of(rule);
@@ -588,17 +601,20 @@ impl CpuLimiter {
                 column![header, super::widgets::settings_divider()].into(),
             ));
         }
-        body = body.push(super::widgets::process_rules_table(
-            [
-                t!("cpu_limiter.limit_method").to_string(),
-                t!("cpu_allocation.focus").to_string(),
-                t!("common.visible_window").to_string(),
-                t!("common.background_process").to_string(),
-            ],
-            cards,
-            true,
-        ));
-        scrollable(body).height(Fill).into()
+        column![
+            super::widgets::settings_card(picker),
+            super::widgets::process_rules_table(
+                [
+                    t!("cpu_limiter.limit_method").to_string(),
+                    t!("cpu_allocation.focus").to_string(),
+                    t!("common.visible_window").to_string(),
+                    t!("common.background_process").to_string(),
+                ],
+                cards,
+                true,
+            ),
+        ]
+        .spacing(widgets::CARD_GAP)
     }
     pub(super) fn modal<'a>(
         &'a self,
@@ -1223,19 +1239,13 @@ mod tests {
         assert!(editor.has_invalid_inputs());
     }
     #[test]
-    fn expanding_defaults_preserves_the_switch_and_default_limit_edits() {
+    fn default_limit_can_be_configured_before_enabling_the_limiter() {
         let mut editor = CpuLimiter::default();
         let mut settings = crate::config::Settings::default().cpu_limiter;
 
-        assert!(!editor.defaults_expanded);
-        editor.update(&mut settings, Message::ToggleDefaults);
-        assert!(editor.defaults_expanded);
-        assert!(!settings.enabled);
-
         editor.update(&mut settings, Message::Default(Tier::Focus, 34));
-        editor.update(&mut settings, Message::ToggleDefaults);
+        assert!(!settings.enabled);
         editor.update(&mut settings, Message::Enabled(true));
-        assert!(!editor.defaults_expanded);
         assert!(settings.enabled);
         assert_eq!(settings.focus_allowed_cpu_time_percent, 34);
     }

@@ -180,6 +180,10 @@ common:
   unavailable: "Unavailable"
   custom: "Custom"
   status: "Status"
+  setup: "Setup"
+  advanced_settings: "Advanced settings"
+  exclusions: "Exclusions"
+  power_plan: "Power plan"
   current_power_plan: "Current power plan"
   active_plan_name: "%{name} (active)"
   running: "Running"
@@ -481,6 +485,7 @@ settings:
 
 processor_power:
   invalid_percentage: "Enter a whole percentage from 0 to 100."
+  invalid_other_source: "%{source} has invalid settings. %{error}"
   invalid_processor_range: "Processor max must be at least %{minimum}%."
   scheduling_policy: "Long-running thread policy"
   scheduling_policy_help: "Processor preference for long-running threads on hybrid CPUs. Automatic lets Windows choose based on system configuration and QoS."
@@ -497,6 +502,7 @@ processor_power:
   schedule_prefer_efficiency: "Prefer efficiency processors"
   schedule_automatic: "Automatic"
   processor_settings: "Processor settings"
+  scheduling_section: "Thread scheduling"
   effective_power_mode: "Windows power mode: %{mode}"
   mode_unknown: "Unknown"
   mode_battery_saver: "Battery saver"
@@ -719,8 +725,6 @@ adaptive_engine:
   enable: "Enable Adaptive Engine"
   enable_help: "Manage busy apps when they compete for CPU time."
   enable_balanced_help: "Starts with Balanced for this power source. Save to apply."
-  setup: "Setup"
-  exclusions: "Exclusions"
   preset: "CPU preset"
   preset_help: "Choose a preset for this power source. Save to apply."
   preset_placeholder: "Choose a preset"
@@ -743,6 +747,9 @@ adaptive_engine:
   cpu_pressure_help: "Temporarily adjust busy apps during CPU contention. Restore their previous settings when restraint ends."
 
 adaptive_processor_power:
+  core_parking_section: "Core parking"
+  processor_performance_section: "Processor performance"
+  processor_boost_section: "Processor boost"
   enable: "Enable Adaptive Processor Power"
   enable_help: "Adjust processor performance and boost through Winderust Adaptive for this power source. While this temporary plan is active, manual switching and other rules wait. Disabling the feature releases the plan."
   waiting_for_power_source: "Waiting for Windows to report the power source."
@@ -786,7 +793,6 @@ app_suspension:
   enable_help: "Suspend background apps after a delay to reduce CPU usage."
   background_delay: "Background Suspension Delay"
   background_delay_help: "How long a selected app must stay in the background before it can be suspended."
-  additional_resume_options: "Additional resume options"
   auto_resume_when_focused: "Auto resume when focused"
   auto_resume_when_focused_help: "Resume suspended apps on focus and when using app-switch shortcuts or the taskbar."
   invalid_delay: "%{setting} must be a whole number from 1 to %{maximum} seconds."
@@ -1020,6 +1026,7 @@ memory_priority:
   priority_normal: "Normal"
 
 sleep_prevention:
+  temporary_controls: "Temporary timers"
   temporary_keep_awake: "Temporary keep awake"
   temporary_keep_display_on: "Temporary keep display on"
   timer_minutes: "min"
