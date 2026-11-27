@@ -287,7 +287,7 @@ impl Editor {
                 Flag::Minimized => s.general.start_minimized = value,
                 Flag::Tray => s.general.hide_to_tray = value,
                 Flag::CrossSession => s.general.allow_cross_session_process_control = value,
-                Flag::FeatureCounts => s.general.show_enabled_feature_counts_in_sidebar = value,
+                Flag::FeatureCounts => s.general.show_enabled_feature_counts = value,
                 Flag::CardStatus => s.general.show_feature_status_on_cards = value,
                 Flag::AdvancedControls => s.advanced.show_advanced_controls = value,
                 Flag::AdvancedValues => {
@@ -784,8 +784,8 @@ impl Editor {
                     ),
                     widgets::settings_card(widgets::settings_rows([
                         flag_row(
-                            "settings.show_enabled_feature_counts_in_sidebar",
-                            s.general.show_enabled_feature_counts_in_sidebar,
+                            "settings.show_enabled_feature_counts",
+                            s.general.show_enabled_feature_counts,
                             Flag::FeatureCounts
                         )
                         .into(),

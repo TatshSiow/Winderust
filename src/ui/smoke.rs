@@ -66,6 +66,7 @@ pub(super) struct Run {
     remaining: VecDeque<usize>,
     index: usize,
     ticks: u8,
+    navigation_settings: Option<SettingsEditor>,
 }
 impl Run {
     fn pages() -> Vec<Page> {
@@ -93,6 +94,7 @@ impl Run {
                 remaining,
                 index,
                 ticks: 0,
+                navigation_settings: None,
             }
         })
     }
@@ -1740,6 +1742,38 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 ..Default::default()
             })));
         }
+        if compact_navigation {
+            let mut fixture = SettingsEditor::with_settings(app.settings.global().clone());
+            fixture.edit_global(|settings| {
+                settings.general.show_enabled_feature_counts =
+                    extra != Some(NAVIGATION_CPU_COMPACT_ZH_TW);
+            });
+            fixture.select_power_source(app.settings.selected_power_source());
+            for section in [
+                Page::Watchdog,
+                Page::PowerPlanControl,
+                Page::PriorityControl,
+                Page::CpuControl,
+            ] {
+                let mut enabled = 0;
+                for toggle in navigation::children(section)
+                    .into_iter()
+                    .filter_map(navigation::feature_toggle)
+                {
+                    *toggle(&mut fixture) = true;
+                    enabled += 1;
+                }
+                assert!(enabled > 0);
+                assert_eq!(
+                    navigation::section_enabled_feature_count(&fixture, section),
+                    Some(enabled)
+                );
+            }
+            app.smoke
+                .as_mut()
+                .expect("navigation smoke run")
+                .navigation_settings = Some(std::mem::replace(&mut app.settings, fixture));
+        }
         let size = match extra {
             Some(
                 PROCESS_LIST_COMMIT_COMPACT
@@ -1829,7 +1863,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 return Some(iced::advanced::widget::operate(NavigationLayout::new(
                     app.page,
                     app.window_settings.size.width,
-                    app.settings.global().advanced.show_advanced_controls,
+                    &app.settings,
                 )));
             }
             _ => {}
@@ -1838,7 +1872,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
         return Some(iced::advanced::widget::operate(NavigationLayout::new(
             app.page,
             app.window_settings.size.width,
-            app.settings.global().advanced.show_advanced_controls,
+            &app.settings,
         )));
     }
     if run.ticks == 3 {
@@ -1846,11 +1880,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             Some(26..=28 | 43) => {
                 return Some(iced::advanced::widget::operate(NavigationLayout {
                     search_open: true,
-                    ..NavigationLayout::new(
-                        app.page,
-                        app.window_settings.size.width,
-                        app.settings.global().advanced.show_advanced_controls,
-                    )
+                    ..NavigationLayout::new(app.page, app.window_settings.size.width, &app.settings)
                 }));
             }
             Some(CPU_LIMITER_AFFINITY_COMPACT) => {
@@ -1972,7 +2002,8 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
 
 struct NavigationLayout {
     window_width: f32,
-    workspaces: Vec<(Id, Option<Rectangle>)>,
+    workspaces: Vec<(Id, Option<Rectangle>, Option<usize>)>,
+    count_labels: Vec<(Rectangle, usize)>,
     search: Option<Rectangle>,
     search_open: bool,
     selected: Option<(Id, Option<Rectangle>)>,
@@ -1981,18 +2012,21 @@ struct NavigationLayout {
 }
 
 impl NavigationLayout {
-    fn new(page: Page, window_width: f32, show_advanced: bool) -> Self {
-        let workspaces = Page::sections()
-            .iter()
-            .map(|section| section.landing_page)
-            .filter(|&section| show_advanced || section != Page::AdvancedControls)
-            .map(|section| (navigation::workspace_id(section), None))
-            .collect();
+    fn new(page: Page, window_width: f32, settings: &SettingsEditor) -> Self {
+        let workspaces =
+            navigation::workspace_pages(settings.global().advanced.show_advanced_controls)
+                .map(|section| {
+                    let count = navigation::section_enabled_feature_count(settings, section)
+                        .filter(|&count| settings.general.show_enabled_feature_counts && count > 0);
+                    (navigation::workspace_id(section), None, count)
+                })
+                .collect();
         let selected = (!navigation::children(page.section_landing_page()).is_empty())
             .then(|| (navigation::page_id(page), None));
         Self {
             window_width,
             workspaces,
+            count_labels: Vec::new(),
             search: None,
             search_open: false,
             selected,
@@ -2026,13 +2060,23 @@ impl Operation<Message> for NavigationLayout {
         }
     }
 
+    fn text(&mut self, _: Option<&Id>, bounds: Rectangle, label: &str) {
+        if let Ok(count) = label.parse() {
+            self.count_labels.push((bounds, count));
+        }
+    }
+
     fn focusable(
         &mut self,
         id: Option<&Id>,
         bounds: Rectangle,
         state: &mut dyn operation::Focusable,
     ) {
-        if let Some((_, workspace)) = self.workspaces.iter_mut().find(|(key, _)| id == Some(key)) {
+        if let Some((_, workspace, _)) = self
+            .workspaces
+            .iter_mut()
+            .find(|(key, _, _)| id == Some(key))
+        {
             *workspace = Some(bounds);
         }
         if let Some((key, selected)) = &mut self.selected {
@@ -2059,20 +2103,27 @@ impl Operation<Message> for NavigationLayout {
         if self.search_open {
             return operation::Outcome::None;
         }
-        for bounds in self
-            .workspaces
-            .iter()
-            .map(|(id, rect)| rect.unwrap_or_else(|| panic!("workspace is focusable: {id:?}")))
-        {
+        for (id, bounds, count) in &self.workspaces {
+            let bounds = bounds.unwrap_or_else(|| panic!("workspace is focusable: {id:?}"));
             assert!(bounds.width > 0.0 && bounds.x >= 0.0);
             assert!(bounds.x + bounds.width <= self.window_width + 1.0);
             assert!(search.y + search.height <= bounds.y);
+            let mut counts = self
+                .count_labels
+                .iter()
+                .filter_map(|(label, count)| label.is_within(&bounds).then_some(*count));
+            assert_eq!(counts.next(), *count, "workspace badge: {id:?}");
+            assert_eq!(counts.next(), None, "one workspace badge: {id:?}");
         }
         if let Some((_, selected)) = self.selected {
             let (left, translation) = self.left.expect("selected workspace has a page list");
             let active = selected.expect("active page is focusable");
             assert!((active - translation).is_within(&left));
             assert!(left.y >= search.y + search.height);
+            assert!(!self
+                .count_labels
+                .iter()
+                .any(|(label, _)| label.is_within(&left)));
             let close = self.right_close.expect("right Side panel is open");
             assert!(left.x + left.width < close.x);
             assert!(close.x + close.width <= self.window_width + 1.0);
@@ -2352,6 +2403,9 @@ pub(super) fn captured(app: &mut WinderustApp, shot: iced::window::Screenshot) -
         .pop_front()
         .unwrap_or(run.pages.len() * 2 + EXTRA_STATES);
     run.ticks = 0;
+    if let Some(settings) = run.navigation_settings.take() {
+        app.settings = settings;
+    }
     if app.navigation_search_open {
         return app.update(Message::CloseNavigationSearch);
     }

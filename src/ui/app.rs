@@ -3307,11 +3307,7 @@ impl WinderustApp {
         let page_list = navigation::page_list(self.page, &self.settings);
         let (navigation_width, side_panel_width, page_padding) =
             shell_widths(size.width, page_list.is_some());
-        let top_bar = navigation::top_bar(
-            self.page,
-            self.settings.global().advanced.show_advanced_controls,
-        )
-        .map(Message::Navigation);
+        let top_bar = navigation::top_bar(self.page, &self.settings).map(Message::Navigation);
         let top_bar = container(top_bar)
             .width(Fill)
             .style(widgets::navigation_surface);

@@ -238,8 +238,12 @@ pub struct GeneralSettings {
     pub accent: AccentSettings,
     #[serde(default)]
     pub language: AppLanguage,
-    #[serde(default = "default_true")]
-    pub show_enabled_feature_counts_in_sidebar: bool,
+    // Keep the portable TOML key so a saved opt-out survives the move to the workspace row.
+    #[serde(
+        default = "default_true",
+        rename = "show_enabled_feature_counts_in_sidebar"
+    )]
+    pub show_enabled_feature_counts: bool,
     #[serde(default = "default_true")]
     pub show_feature_status_on_cards: bool,
     #[serde(default)]
@@ -2207,7 +2211,7 @@ impl Default for Settings {
                 theme_mode: AppThemeMode::System,
                 accent: AccentSettings::default(),
                 language: AppLanguage::English,
-                show_enabled_feature_counts_in_sidebar: true,
+                show_enabled_feature_counts: true,
                 show_feature_status_on_cards: true,
                 animation_mode: AnimationMode::System,
                 pause_power_plan_switching_while_plugged_in: false,

@@ -406,7 +406,7 @@ fn cross_session_process_control_is_enabled_by_default() {
 fn appearance_indicators_are_enabled_by_default() {
     let general = Settings::default().general;
 
-    assert!(general.show_enabled_feature_counts_in_sidebar);
+    assert!(general.show_enabled_feature_counts);
     assert!(general.show_feature_status_on_cards);
 }
 

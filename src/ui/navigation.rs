@@ -89,18 +89,36 @@ pub(super) fn has_children(page: Page) -> bool {
         .is_some_and(|pages| pages.iter().any(|child| *child != page))
 }
 
-pub(super) fn top_bar(current: Page, show_advanced: bool) -> Element<'static, Event> {
-    use iced::widget::{container, row, text};
+pub(super) fn top_bar(current: Page, settings: &Settings) -> Element<'static, Event> {
+    use iced::widget::{container, row, text, tooltip};
 
     let active = current.section_landing_page();
     let inset = design::space::CONTROL as u16;
     let mut workspaces = row![].spacing(design::space::TINY).align_y(iced::Center);
-    for page in workspace_pages(show_advanced) {
+    for page in workspace_pages(settings.advanced.show_advanced_controls) {
         let label = text(page.label())
             .size(design::typography::SECONDARY)
             .wrapping(text::Wrapping::None);
+        let mut entry = row![label]
+            .spacing(design::space::TIGHT)
+            .align_y(iced::Center);
+        let count = settings
+            .general
+            .show_enabled_feature_counts
+            .then(|| section_enabled_feature_count(settings, page))
+            .flatten()
+            .filter(|count| *count > 0);
+        if let Some(count) = count {
+            entry = entry.push(widgets::tooltip(
+                container(text(count.to_string()).size(design::typography::BADGE))
+                    .padding([2, 6])
+                    .style(|theme| widgets::indicator_chip(theme, true)),
+                text(t!("home.enabled_features").into_owned()),
+                tooltip::Position::Bottom,
+            ));
+        }
         workspaces = workspaces.push(
-            widgets::button(container(label).center_y(Fill))
+            widgets::button(container(entry).center_y(Fill))
                 .height(design::BUTTON_HEIGHT)
                 .padding([0, inset])
                 .focus_id(workspace_id(page))
@@ -124,12 +142,6 @@ pub(super) fn page_list(current: Page, settings: &Settings) -> Option<Element<'s
         return None;
     }
 
-    let count = settings
-        .general
-        .show_enabled_feature_counts_in_sidebar
-        .then(|| section_enabled_feature_count(settings, section))
-        .flatten();
-
     let mut entries = column![].spacing(design::space::TINY).width(Fill);
     for page in std::iter::once(section).chain(children(section)) {
         let active = current == page;
@@ -143,13 +155,7 @@ pub(super) fn page_list(current: Page, settings: &Settings) -> Option<Element<'s
         .spacing(design::space::SMALL)
         .align_y(iced::Center);
 
-        if let Some(count) = count.filter(|_| page == section) {
-            entry = entry.push(
-                container(text(count.to_string()).size(design::typography::BADGE))
-                    .padding([2, 6])
-                    .style(move |theme| widgets::indicator_chip(theme, count > 0)),
-            );
-        } else if let Some(enabled) = feature_page_enabled(settings, page) {
+        if let Some(enabled) = feature_page_enabled(settings, page) {
             entry = entry.push(container(Space::new()).width(6).height(6).style(
                 move |theme: &iced::Theme| container::Style {
                     background: enabled.then(|| theme.palette().success.into()),

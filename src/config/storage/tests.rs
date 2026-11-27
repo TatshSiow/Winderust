@@ -1398,7 +1398,7 @@ fn toml_round_trip_preserves_settings() {
             theme_mode: AppThemeMode::Dark,
             accent: AccentSettings::default(),
             language: AppLanguage::ZhTw,
-            show_enabled_feature_counts_in_sidebar: false,
+            show_enabled_feature_counts: false,
             show_feature_status_on_cards: false,
             animation_mode: crate::config::AnimationMode::Off,
             pause_power_plan_switching_while_plugged_in: true,
@@ -1854,6 +1854,7 @@ fn toml_round_trip_preserves_settings() {
     for mode in AppThemeMode::ALL {
         settings.general.theme_mode = mode;
         let raw = toml::to_string_pretty(&settings).expect("settings should serialize");
+        assert!(raw.contains("show_enabled_feature_counts_in_sidebar = false"));
         let parsed: Settings = toml::from_str(&raw).expect("TOML should parse");
 
         assert_eq!(parsed, settings);
