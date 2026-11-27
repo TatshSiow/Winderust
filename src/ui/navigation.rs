@@ -5,13 +5,11 @@ use iced::{advanced::widget::Id, Element, Fill};
 use rust_i18n::t;
 use std::collections::HashSet;
 
-pub(super) const SEARCH_ID: &str = "navigation-search-trigger";
 pub(super) const PAGE_LIST_ID: &str = "navigation-page-list";
 
 #[derive(Debug, Clone)]
 pub(super) enum Event {
     Select(Page),
-    Search,
 }
 
 pub(super) fn workspace_id(page: Page) -> Id {
@@ -103,66 +101,31 @@ pub(super) fn has_children(page: Page) -> bool {
         .is_some_and(|pages| pages.iter().any(|child| *child != page))
 }
 
-pub(super) fn top_bar(
-    current: Page,
-    show_advanced: bool,
-    search_open: bool,
-) -> Element<'static, Event> {
-    use iced::widget::{container, row, text, Space};
+pub(super) fn top_bar(current: Page, show_advanced: bool) -> Element<'static, Event> {
+    use iced::widget::{container, row, text};
 
     let active = current.section_landing_page();
     let inset = design::space::CONTROL as u16;
-    let style_button = |content: Element<'static, Event>| {
-        widgets::button(container(content).center_y(Fill))
-            .height(design::BUTTON_HEIGHT)
-            .padding([0, inset])
-    };
     let mut workspaces = row![].spacing(design::space::TINY).align_y(iced::Center);
     for page in workspace_pages(show_advanced) {
+        let label = text(page.label())
+            .size(design::typography::SECONDARY)
+            .wrapping(text::Wrapping::None);
         workspaces = workspaces.push(
-            style_button(
-                text(page.label())
-                    .size(design::typography::SECONDARY)
-                    .wrapping(text::Wrapping::None)
-                    .into(),
-            )
-            .focus_id(workspace_id(page))
-            .selected(active == page, widgets::selected)
-            .on_press(Event::Select(page)),
+            widgets::button(container(label).center_y(Fill))
+                .height(design::BUTTON_HEIGHT)
+                .padding([0, inset])
+                .focus_id(workspace_id(page))
+                .selected(active == page, widgets::selected)
+                .on_press(Event::Select(page)),
         );
     }
 
-    let search = style_button(
-        row![
-            glyph("icons/search.svg"),
-            text(t!("home.search").into_owned())
-                .size(design::typography::SECONDARY)
-                .wrapping(text::Wrapping::None),
-        ]
-        .align_y(iced::Center)
-        .spacing(design::space::TIGHT)
-        .into(),
-    )
-    .focus_id(SEARCH_ID)
-    .selected(search_open, |theme, status| {
-        let mut style = widgets::quiet(theme, status);
-        if status == iced::widget::button::Status::Active {
-            style.background = Some(theme.palette().primary.scale_alpha(0.05).into());
-        }
-        style
-    })
-    .on_press(Event::Search);
-
-    container(
-        workspaces
-            .push(Space::new().width(Fill))
-            .push(search)
-            .height(Fill),
-    )
-    .padding([0, design::space::SMALL as u16])
-    .width(Fill)
-    .height(design::NAVIGATION_ROW_HEIGHT)
-    .into()
+    container(workspaces.height(Fill))
+        .padding([0, design::space::SMALL as u16])
+        .width(Fill)
+        .height(design::NAVIGATION_ROW_HEIGHT)
+        .into()
 }
 
 pub(super) fn page_list(current: Page, settings: &Settings) -> Option<Element<'static, Event>> {

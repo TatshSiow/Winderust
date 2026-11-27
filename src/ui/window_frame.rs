@@ -8,6 +8,7 @@ const HEIGHT: u32 = 36;
 const BUTTON_WIDTH: u32 = 46;
 const EDGE: u32 = 5;
 const CORNER: u32 = 10;
+pub(super) const SEARCH_WIDTH: u32 = 420;
 pub(super) const SIDE_PANEL_TOGGLE: &str = "side-panel-toggle";
 
 #[derive(Debug, Clone, Copy)]
@@ -22,12 +23,18 @@ pub(super) enum Event {
 
 pub(super) fn view<'a, M: Clone + 'a>(
     content: Element<'a, M>,
+    search: Element<'a, M>,
     maximized: bool,
     side_panel: Option<bool>,
     caption_focusable: bool,
     message: impl Fn(Event) -> M + Copy + 'a,
 ) -> Element<'a, M> {
-    let caption = mouse_area(
+    let drag = |content: Element<'a, M>| {
+        mouse_area(content)
+            .on_press(message(Event::Drag))
+            .on_double_click(message(Event::ToggleMaximize))
+    };
+    let caption = drag(
         container(
             row![
                 iced::widget::image(assets::logo()).width(18).height(18),
@@ -43,10 +50,9 @@ pub(super) fn view<'a, M: Clone + 'a>(
         .padding([0, design::space::LARGE as u16])
         .width(Fill)
         .height(HEIGHT)
-        .align_y(iced::Center),
-    )
-    .on_press(message(Event::Drag))
-    .on_double_click(message(Event::ToggleMaximize));
+        .align_y(iced::Center)
+        .into(),
+    );
     let caption_button = |icon, label, event| {
         control(icon, label, Some(event), caption_focusable, false).map(message)
     };
@@ -62,8 +68,8 @@ pub(super) fn view<'a, M: Clone + 'a>(
         side_panel == Some(true),
     )
     .map(message);
-    let title = container(row![
-        caption,
+    let controls = row![
+        drag(Space::new().width(Fill).height(HEIGHT).into()),
         panel_button,
         caption_button("icons/minus.svg", "window.minimize", Event::Minimize),
         caption_button(
@@ -80,9 +86,18 @@ pub(super) fn view<'a, M: Clone + 'a>(
             Event::ToggleMaximize,
         ),
         caption_button("icons/x.svg", "common.close", Event::Close),
-    ])
-    .width(Fill)
-    .style(widgets::navigation_surface);
+    ]
+    .width(Fill);
+    let search = drag(
+        container(search)
+            .width(SEARCH_WIDTH)
+            .height(HEIGHT)
+            .align_y(iced::Center)
+            .into(),
+    );
+    let title = container(row![caption, search, controls])
+        .width(Fill)
+        .style(widgets::navigation_surface);
     let frame = column![title, widgets::settings_divider(), content]
         .width(Fill)
         .height(Fill);
@@ -193,6 +208,7 @@ mod tests {
     #[derive(Debug, Clone)]
     enum Message {
         Chrome(Event),
+        Search,
         Body,
     }
 
@@ -208,6 +224,11 @@ mod tests {
                 .width(Fill)
                 .height(Fill)
                 .on_press(Message::Body)
+                .into(),
+            widgets::button(Space::new())
+                .width(Fill)
+                .height(26)
+                .on_press(Message::Search)
                 .into(),
             maximized,
             side_panel,
@@ -251,6 +272,7 @@ mod tests {
                 .into_iter()
                 .map(|message| match message {
                     Message::Chrome(event) => format!("{event:?}"),
+                    Message::Search => "Search".into(),
                     Message::Body => "Body".into(),
                 })
                 .collect(),
@@ -263,6 +285,12 @@ mod tests {
         for maximized in [false, true] {
             for (x, y, action) in [
                 (100.0, 18.0, "Drag"),
+                (239.0, 18.0, "Drag"),
+                (241.0, 18.0, "Search"),
+                (450.0, 18.0, "Search"),
+                (450.0, 34.0, "Drag"),
+                (659.0, 18.0, "Search"),
+                (661.0, 18.0, "Drag"),
                 (739.0, 18.0, "ToggleSidePanel"),
                 (785.0, 18.0, "Minimize"),
                 (831.0, 18.0, "ToggleMaximize"),
@@ -277,6 +305,10 @@ mod tests {
             assert_eq!(
                 click(maximized, Some(false), Point::new(100.0, 18.0), 2).0,
                 ["Drag", "Drag", "ToggleMaximize"]
+            );
+            assert_eq!(
+                click(maximized, Some(false), Point::new(450.0, 18.0), 2).0,
+                ["Search", "Search"]
             );
             assert_eq!(
                 click(maximized, Some(true), Point::new(739.0, 18.0), 1).0,
@@ -368,6 +400,7 @@ mod tests {
             let mut renderer = iced::Renderer::new(design::typography::FONT, iced::Pixels(14.0));
             let mut view = view(
                 Space::new().width(Fill).height(Fill).into(),
+                Space::new().into(),
                 false,
                 Some(false),
                 true,

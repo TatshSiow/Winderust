@@ -99,7 +99,12 @@ impl Run {
 
     fn scenarios(pages: &[Page]) -> VecDeque<usize> {
         let extra_start = pages.len() * 2;
-        if std::env::args().any(|arg| arg == "--navigation-only") {
+        if std::env::args().any(|arg| arg == "--search-only") {
+            [0, pages.len()]
+                .into_iter()
+                .chain([26, 27, 28, 43].map(|extra| extra_start + extra))
+                .collect()
+        } else if std::env::args().any(|arg| arg == "--navigation-only") {
             [0, pages.len()]
                 .into_iter()
                 .chain(
@@ -282,6 +287,7 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                         | NAVIGATION_CPU_COMPACT_ZH_TW
                         | 40
                         | NAVIGATION_POWER_COMPACT_ZH_TW
+                        | 43
                         | 45
                         | 46
                         | 49
@@ -895,13 +901,12 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
             assert!(app.side_panel(is_plugged_in).is_some());
         }
         if extra == Some(0) {
-            let _ = app.update(Message::Navigation(navigation::Event::Search));
-            assert!(app.navigation_search_open);
             let _ = app.update(Message::NavigationSearch("cpu".into()));
+            assert!(app.navigation_search_open);
             let _ = app.update(Message::CloseNavigationSearch);
             assert!(!app.navigation_search_open);
             assert!(app.navigation_search.is_empty());
-            let _ = app.update(Message::Navigation(navigation::Event::Search));
+            let _ = app.update(Message::OpenNavigationSearch);
             let _ = app.update(Message::Page(page));
             assert!(!app.navigation_search_open);
             assert!(app.navigation_search.is_empty());
@@ -1214,16 +1219,15 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     status: iced::event::Status::Captured,
                 });
                 assert!(!app.navigation_search_open);
-                let _ = app.update(Message::SearchKeyboard {
+                let focus = app.update(Message::SearchKeyboard {
                     key: iced::keyboard::Key::Character("k".into()),
                     modifiers: iced::keyboard::Modifiers::CTRL,
                     repeat: false,
                     status: iced::event::Status::Ignored,
                 });
                 assert!(app.navigation_search_open);
-            }
-            let open = app.update(Message::OpenNavigationSearch);
-            if extra != Some(26) {
+                focus
+            } else {
                 let _ = app.update(Message::NavigationSearch(
                     if matches!(extra, Some(27 | 43)) {
                         "cpu"
@@ -1232,26 +1236,27 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                     }
                     .into(),
                 ));
+                assert!(app.navigation_search_open);
+                if extra == Some(27) {
+                    let down = || Message::SearchKeyboard {
+                        key: iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowDown),
+                        modifiers: iced::keyboard::Modifiers::empty(),
+                        repeat: false,
+                        status: iced::event::Status::Ignored,
+                    };
+                    let _ = app.update(down());
+                    assert_eq!(app.navigation_search_selected, 1);
+                    let expected = app.search_choices()[1];
+                    let _ = app.update(Message::ConfirmSearch);
+                    assert_eq!(app.page, expected);
+                    assert!(!app.navigation_search_open);
+                    assert!(app.navigation_search.is_empty());
+                    let _ = app.update(Message::Page(Page::Home));
+                    let _ = app.update(Message::NavigationSearch("cpu".into()));
+                    let _ = app.update(down());
+                }
+                iced::widget::operation::focus(SEARCH_INPUT_ID)
             }
-            if extra == Some(27) {
-                let down = || Message::SearchKeyboard {
-                    key: iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowDown),
-                    modifiers: iced::keyboard::Modifiers::empty(),
-                    repeat: false,
-                    status: iced::event::Status::Ignored,
-                };
-                let _ = app.update(down());
-                assert_eq!(app.navigation_search_selected, 1);
-                let expected = app.search_choices()[1];
-                let _ = app.update(Message::ConfirmSearch);
-                assert_eq!(app.page, expected);
-                assert!(!app.navigation_search_open);
-                let _ = app.update(Message::Page(Page::Home));
-                let _ = app.update(Message::OpenNavigationSearch);
-                let _ = app.update(Message::NavigationSearch("cpu".into()));
-                let _ = app.update(down());
-            }
-            open
         } else if matches!(extra, Some(16 | 49)) {
             let query = if extra == Some(16) {
                 "1234"
@@ -1765,7 +1770,8 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
                 6 | 11 | CONTRAST_DARK_APPEARANCE | HOME_HISTORY_WIDE | CPU_LIMITER_AFFINITY_WIDE,
             ) => iced::Size::new(1120.0, 760.0),
             _ if compact_navigation => iced::Size::new(900.0, 620.0),
-            Some(40 | 44..=50 | 52..=69 | 71..=93) => iced::Size::new(900.0, 620.0),
+            Some(40 | 43..=50 | 52..=69 | 71..=93) => iced::Size::new(900.0, 620.0),
+            Some(26..=28) => iced::Size::new(1120.0, 760.0),
             Some(30) => iced::Size::new(1280.0, 720.0),
             Some(31) => iced::Size::new(1440.0, 900.0),
             Some(32) => iced::Size::new(1920.0, 720.0),
@@ -1837,6 +1843,16 @@ pub(super) fn advance(app: &mut WinderustApp) -> Option<Task<Message>> {
     }
     if run.ticks == 3 {
         match extra {
+            Some(26..=28 | 43) => {
+                return Some(iced::advanced::widget::operate(NavigationLayout {
+                    search_open: true,
+                    ..NavigationLayout::new(
+                        app.page,
+                        app.window_settings.size.width,
+                        app.settings.global().advanced.show_advanced_controls,
+                    )
+                }));
+            }
             Some(CPU_LIMITER_AFFINITY_COMPACT) => {
                 return Some(iced::advanced::widget::operate(
                     ProcessorPickerVisibility::default(),
@@ -1958,6 +1974,7 @@ struct NavigationLayout {
     window_width: f32,
     workspaces: Vec<(Id, Option<Rectangle>)>,
     search: Option<Rectangle>,
+    search_open: bool,
     selected: Option<(Id, Option<Rectangle>)>,
     left: Option<(Rectangle, Vector)>,
     right_close: Option<Rectangle>,
@@ -1977,6 +1994,7 @@ impl NavigationLayout {
             window_width,
             workspaces,
             search: None,
+            search_open: false,
             selected,
             left: None,
             right_close: None,
@@ -2002,6 +2020,12 @@ impl Operation<Message> for NavigationLayout {
         }
     }
 
+    fn text_input(&mut self, id: Option<&Id>, bounds: Rectangle, _: &mut dyn operation::TextInput) {
+        if id == Some(&Id::from(SEARCH_INPUT_ID)) {
+            assert!(self.search.replace(bounds).is_none(), "Search is one input");
+        }
+    }
+
     fn focusable(
         &mut self,
         id: Option<&Id>,
@@ -2017,8 +2041,11 @@ impl Operation<Message> for NavigationLayout {
                 *selected = Some(bounds);
             }
         }
-        if id == Some(&Id::from(navigation::SEARCH_ID)) {
-            self.search = Some(bounds);
+        if self.search_open && id == Some(&Id::from(SEARCH_INPUT_ID)) {
+            assert!(
+                state.is_focused(),
+                "Search results keep title bar input focused"
+            );
         }
         if id == Some(&Id::from(SIDE_PANEL_CLOSE)) {
             self.right_close = Some(bounds);
@@ -2026,18 +2053,20 @@ impl Operation<Message> for NavigationLayout {
     }
 
     fn finish(&self) -> operation::Outcome<Message> {
-        let search = self
-            .search
-            .expect("Search is available in the workspace row");
+        let search = self.search.expect("Search is a title bar text input");
+        assert!(search.width > 0.0 && search.x >= 0.0);
+        assert!((search.center_x() - self.window_width / 2.0).abs() <= 1.0);
+        if self.search_open {
+            return operation::Outcome::None;
+        }
         for bounds in self
             .workspaces
             .iter()
             .map(|(id, rect)| rect.unwrap_or_else(|| panic!("workspace is focusable: {id:?}")))
-            .chain([search])
         {
             assert!(bounds.width > 0.0 && bounds.x >= 0.0);
             assert!(bounds.x + bounds.width <= self.window_width + 1.0);
-            assert!((bounds.center_y() - search.center_y()).abs() <= 1.0);
+            assert!(search.y + search.height <= bounds.y);
         }
         if let Some((_, selected)) = self.selected {
             let (left, translation) = self.left.expect("selected workspace has a page list");
@@ -2323,6 +2352,9 @@ pub(super) fn captured(app: &mut WinderustApp, shot: iced::window::Screenshot) -
         .pop_front()
         .unwrap_or(run.pages.len() * 2 + EXTRA_STATES);
     run.ticks = 0;
+    if app.navigation_search_open {
+        return app.update(Message::CloseNavigationSearch);
+    }
     if app.page == Page::CpuLimiter && app.cpu_limiter.has_pending_editor() {
         let cancel = app.update(Message::CpuLimiter(cpu_limiter::Message::CancelRule));
         assert!(!app.cpu_limiter.has_pending_editor());

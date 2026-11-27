@@ -279,6 +279,8 @@ Append `--side-panel-only` to check the title bar toggle and dock in both langua
 and window sizes, including navigation through a page without panel content.
 Append `--navigation-only` to check workspace navigation, the page list, and
 resizing at the minimum window width.
+Append `--search-only` to check the centered title-bar Search field, results,
+and keyboard selection in both languages.
 Append `--watchdog-only` to capture the configured Watchdog pages and rule
 editors in both languages.
 

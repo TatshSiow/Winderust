@@ -257,7 +257,6 @@ admin_rights:
   relaunch: "Relaunch"
 
 home:
-  search: "Search"
   intro_1: "Dashboard summarizes the current automation decision, detected state, and active power plan."
   intro_2: "Use it to verify what Winderust is doing before changing page settings."
   master_switch_enabled: "Master switch enabled"

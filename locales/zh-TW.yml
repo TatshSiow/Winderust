@@ -257,7 +257,6 @@ admin_rights:
   relaunch: "重新啟動"
 
 home:
-  search: "搜尋"
   intro_1: "儀表板會摘要目前的自動化決策、偵測狀態與作用中的電源計畫。"
   intro_2: "變更各頁設定前，可先在此確認 Winderust 正在執行的動作。"
   master_switch_enabled: "主要開關已啟用"
