@@ -50,20 +50,24 @@ If `target\release\winderust.exe` is locked because the app is running:
 ## Recovery subprocess tests
 
 The optional recovery harness launches the actual executable as a fixture parent
-and helper, then verifies native Process Priority restoration after pipe EOF or
-forced parent termination:
+and helper. It verifies native Process Priority restoration after pipe EOF or
+forced parent termination. For the CPU Sets case, the test driver sets a default
+CPU Set on its owned child. The fixture parent clears it under a pending intent.
+After terminating the parent, the driver reads back the exact original CPU Set
+from Windows.
 
 ```powershell
 cargo test --locked --features recovery-smoke --test recovery_smoke
 ```
 
-It owns a disposable `System32\ping.exe` process and permits only Normal,
-Below Normal, and Idle priority journal entries for that exact process identity.
-The helper shares the production protocol and replay loop, with stale Adaptive
-plan cleanup replaced by a no-op. These tests cover committed and pending
-process intents; they do not exercise machine-wide power-plan cleanup, jobs,
-threads, or GUI startup. Fixture modes are absent from default builds. If a
-running app locks the debug executable, add `--target-dir target/recovery-smoke`.
+The helper accepts journal entries for the exact identity of a disposable
+`System32\ping.exe` process. The priority scenarios admit Normal, Below Normal,
+and Idle. The CPU Sets scenario admits a clear from the captured singleton
+baseline. The harness exercises the production protocol and replay loop for
+committed and pending process intents. Stale Adaptive plan cleanup is a no-op
+in the harness. Coverage is limited to process mutations and helper exit.
+Fixture modes are available in `recovery-smoke` builds. If a running app locks
+the debug executable, add `--target-dir target/recovery-smoke`.
 
 ## Sleep Prevention checks
 
